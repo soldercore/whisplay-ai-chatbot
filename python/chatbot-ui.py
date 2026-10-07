@@ -7,10 +7,18 @@ import sys
 import threading
 import signal
 import re
+import traceback
 
 from camera import CameraThread
-from utils import ColorUtils, ImageUtils, TextUtils
+from utils import ColorUtils, ImageUtils, TextUtils, EmojiUtils
 from whisplay_client import create_whisplay_hardware
+try:
+    from whisplay_ui import ui_mode
+except Exception as _ui_import_error:  # package missing or broken: classic UI only
+    print(f"[Render] whisplay_ui unavailable, using classic UI: {_ui_import_error}")
+
+    def ui_mode():
+        return "classic"
 
 STATUS_ICON_DIR = os.path.join(os.path.dirname(__file__), "status-bar-icon")
 if STATUS_ICON_DIR not in sys.path:
@@ -67,6 +75,7 @@ current_scroll_sync_duration_ms = None
 current_scroll_sync_target_top = None
 current_scroll_sync_speed = None
 current_scroll_sync_hold_until = 0.0
+current_speech_sync = None  # (seq, char_end, duration_ms) for the terminal UI
 current_transaction_id = None
 current_image_path = ""
 current_image = None
@@ -115,6 +124,85 @@ class RenderThread(threading.Thread):
         self.main_text_cache_char_offset = 0
         self.pending_auto_scroll_after_hold = False
         self.render_event = threading.Event()
+        # Terminal UI (python/whisplay_ui). WHISPLAY_UI=classic keeps the
+        # original renderer; any failure falls back to it.
+        self.terminal_ui = None
+        self.terminal_wait = None
+        if ui_mode() == "terminal":
+            self.terminal_ui = self.create_terminal_ui()
+
+    def create_terminal_ui(self):
+        try:
+            from whisplay_ui import create_terminal_ui
+            terminal_ui = create_terminal_ui(
+                self.whisplay,
+                self.font_path,
+                prepare_text=self.prepare_terminal_text,
+                emoji_loader=EmojiUtils.get_local_emoji_svg_image,
+                status_icon_factories=status_icon_factories,
+                icon_context=self.terminal_icon_context,
+            )
+            print("[Render] Terminal UI enabled (set WHISPLAY_UI=classic for the classic UI)")
+            return terminal_ui
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[Render] Terminal UI unavailable, using classic UI: {e}")
+            return None
+
+    def prepare_terminal_text(self, text):
+        # Same truncation and tool-tag parsing as the classic UI, but unwrapped:
+        # the terminal UI wraps lines itself with its own font.
+        display_text, char_offset = self.limit_main_text(text)
+        items = self.build_main_text_lines(None, display_text, self.main_text_font, float("inf"))
+        return items, char_offset
+
+    def terminal_icon_context(self, model):
+        return {
+            "battery_level": model.get("battery_level"),
+            "battery_color": model.get("battery_color"),
+            "battery_font": self.battery_font,
+            "status_font_size": status_font_size,
+            "network_connected": model.get("network_connected"),
+            "wifi_signal_level": model.get("wifi_level"),
+            "vpn_connected": model.get("vpn"),
+            "rag_icon_visible": model.get("rag"),
+            "image_icon_visible": model.get("image"),
+        }
+
+    def terminal_snapshot(self):
+        return {
+            "status": current_status,
+            "emoji": current_emoji,
+            "text": apply_tool_placeholders(current_text),
+            "terminal_text": current_terminal_text,
+            "battery_level": current_battery_level,
+            "battery_color": current_battery_color,
+            "network_connected": current_network_connected,
+            "wifi_signal_level": current_wifi_signal_level,
+            "vpn_connected": current_vpn_connected,
+            "rag_icon_visible": current_rag_icon_visible,
+            "image_icon_visible": current_image_icon_visible,
+            "music_progress": current_music_progress,
+            "music_duration_ms": current_music_duration_ms,
+            "approval_mode": current_approval_mode,
+            "transaction_id": current_transaction_id,
+            "scroll_speed": current_scroll_speed,
+            "speech_sync": current_speech_sync,
+        }
+
+    def render_terminal_frame(self):
+        """Render one terminal UI frame. Returns False (after disabling the
+        terminal UI) if it fails, so the caller draws the classic UI instead."""
+        try:
+            self.terminal_wait = self.terminal_ui.render(self.terminal_snapshot())
+            return True
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[Render] Terminal UI failed, falling back to classic UI: {e}")
+            self.terminal_ui = None
+            self.terminal_wait = None
+            self.current_render_text = ""
+            return False
 
     def render_init_screen(self):
         # Display logo on startup
@@ -162,6 +250,8 @@ class RenderThread(threading.Thread):
             return False
         else:
             current_image = None
+            if self.terminal_ui is not None and self.render_terminal_frame():
+                return False
             header_height = 88 + 10  # header + margin
             # create a black background image for header
             image = Image.new("RGBA", (self.whisplay.LCD_WIDTH, header_height), (0, 0, 0, 255))
@@ -674,6 +764,11 @@ class RenderThread(threading.Thread):
     def run(self):
         frame_interval = 1 / self.fps
         while self.running:
+            if self.terminal_ui is not None:
+                self.terminal_wait = None
+                if camera_mode or current_image_path not in [None, ""]:
+                    # Camera/image mode draws over the screen; redraw fully after.
+                    self.terminal_ui.invalidate()
             animation_active = self.render_frame(current_status, current_emoji, current_text, current_scroll_top, current_battery_level, current_battery_color)
             if animation_active:
                 time.sleep(frame_interval)
@@ -682,6 +777,8 @@ class RenderThread(threading.Thread):
             wait_timeout = None
             if self.pending_auto_scroll_after_hold:
                 wait_timeout = max(0.0, current_scroll_sync_hold_until - time.time())
+            if self.terminal_ui is not None and self.terminal_wait is not None:
+                wait_timeout = self.terminal_wait if wait_timeout is None else min(wait_timeout, self.terminal_wait)
             self.render_event.wait(wait_timeout)
             self.render_event.clear()
             
@@ -702,6 +799,7 @@ def update_display_data(status=None, emoji=None, text=None,
     global current_scroll_sync_char_end, current_scroll_sync_duration_ms
     global current_scroll_sync_target_top, current_scroll_sync_speed
     global current_scroll_sync_hold_until
+    global current_speech_sync
     global current_network_connected, current_vpn_connected, current_rag_icon_visible, current_image_icon_visible, current_transaction_id
     global current_wifi_signal_level
     global current_music_progress, current_music_duration_ms
@@ -756,6 +854,11 @@ def update_display_data(status=None, emoji=None, text=None,
                 current_scroll_sync_hold_until = max(
                     current_scroll_sync_hold_until,
                     time.time() + hold_seconds,
+                )
+                current_speech_sync = (
+                    (current_speech_sync[0] + 1) if current_speech_sync else 1,
+                    current_scroll_sync_char_end,
+                    current_scroll_sync_duration_ms,
                 )
         except Exception as e:
             print(f"[Display] Invalid scroll_sync payload: {e}")

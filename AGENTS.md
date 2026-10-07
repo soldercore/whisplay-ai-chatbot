@@ -430,6 +430,13 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 2. Status icons: `python/status-bar-icon/` directory
 3. Node.js controller: `src/device/display.ts`
 
+### Terminal UI (`python/whisplay_ui/`)
+- Default renderer; `WHISPLAY_UI=classic` forces the original RenderThread drawing. Any init/render exception falls back to classic for the rest of the process.
+- `RenderThread.render_frame()` delegates to `TerminalUI.render(snapshot)` only in the non-camera, non-image branch; camera and image modes always use the original code.
+- `terminal_ui.py` is the coordinator (status string -> visual state, time-based animation, per-region redraw, pixel-diff partial LCD pushes, sleep scheduling). Scenes: `statusbar.py`, `stage.py`, `panes.py`, `body.py`; foundation: `theme.py`, `fonts.py`, `text_layout.py`, `typewriter.py`, `visual_state.py`, `clock.py`.
+- No socket protocol change: the terminal UI reads the same globals; `scroll_sync` is also recorded as `current_speech_sync` for speech focus.
+- Preview/self-test with the production renderer and a fake LCD: `python3 python/dev/preview_ui.py` (PNG contact sheet) and `python3 python/dev/preview_ui.py --selftest`.
+
 ### Troubleshooting
 - **Audio issues**: Check `amixer` output, verify WM8960 driver loaded
 - **Display not updating**: Check socket connection on port 12345

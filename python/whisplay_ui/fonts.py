@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - depends on the system
 FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts")
 ZERO_WIDTH = frozenset("​‌‍⁠︎️")
 _MISSING = object()
+GLYPH_CACHE_MAX = 4096
 _CMAP_CACHE = {}
 
 
@@ -71,6 +72,30 @@ class Face:
         self._cover = {}
         self._notdef = None
         self._cmap = _cmap_for(path) if (check_coverage and self.freetype) else None
+        self._glyphs = {}
+
+    def glyph(self, ch):
+        """Cached (mask, dx, dy) for one glyph, relative to (x, baseline).
+        Pasting cached masks is far cheaper than FreeType rendering per frame."""
+        cached = self._glyphs.get(ch, _MISSING)
+        if cached is _MISSING:
+            if len(self._glyphs) >= GLYPH_CACHE_MAX:  # bound memory for long CJK sessions
+                self._glyphs.clear()
+            cached = None
+            try:
+                bbox = self.font.getbbox(ch, anchor="ls")
+                width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                if width > 0 and height > 0:
+                    mask = Image.new("L", (width, height), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    if self.pixel:
+                        mask_draw.fontmode = "1"
+                    mask_draw.text((-bbox[0], -bbox[1]), ch, font=self.font, fill=255, anchor="ls")
+                    cached = (mask, bbox[0], bbox[1])
+            except Exception:
+                cached = None
+            self._glyphs[ch] = cached
+        return cached
 
     def _signature(self, ch):
         bbox = self.font.getbbox(ch)
@@ -163,35 +188,31 @@ class FontStack:
 
     def draw(self, draw, image, x, baseline, text, fill):
         """Draw text with its left edge at x and baseline at `baseline`.
+        Glyphs are placed one by one with the same advances the layout uses.
         Returns the x after the last glyph."""
-        run = []
-        run_face = None
-        run_x = x
         cursor = x
+        base_y = int(round(baseline))
         for ch in text:
             if ch in ZERO_WIDTH:
                 continue
             emoji = self.emoji(ch)
             if emoji is not None:
-                if run:
-                    _draw_run(draw, run_face, run_x, baseline, "".join(run), fill)
-                    run = []
                 top = int(round(baseline - emoji.height + 2))
                 image.paste(emoji, (int(round(cursor)), top), emoji)
                 cursor += emoji.width
-                run_x = cursor
                 continue
-            face = self.face_for(ch)
-            if face is not run_face and run:
-                _draw_run(draw, run_face, run_x, baseline, "".join(run), fill)
-                run = []
-            if not run:
-                run_x = cursor
-                run_face = face
-            run.append(ch)
+            if not ch.isspace():
+                face = self.face_for(ch)
+                if face.freetype:
+                    glyph = face.glyph(ch)
+                    if glyph is not None:
+                        mask, dx, dy = glyph
+                        px = int(round(cursor)) + dx
+                        py = base_y + dy
+                        image.paste(fill, (px, py, px + mask.width, py + mask.height), mask)
+                else:
+                    _draw_run(draw, face, cursor, baseline, ch, fill)
             cursor += self.advance(ch)
-        if run:
-            _draw_run(draw, run_face, run_x, baseline, "".join(run), fill)
         return cursor
 
 
