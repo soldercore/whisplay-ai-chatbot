@@ -190,7 +190,9 @@ class TerminalUI:
 
         approval = bool(_snap(snapshot, "approval_mode", False))
         body_top = theme.PANE_Y + self.pane_h
-        body_bottom = theme.HEIGHT - (theme.APPROVAL_H if approval else 0)
+        # Body text runs to the side margins, so it stops above the rounded
+        # bottom corners (theme.CONTENT_SAFE_BOTTOM) or at the approval bar.
+        body_bottom = theme.HEIGHT - theme.APPROVAL_H if approval else theme.CONTENT_SAFE_BOTTOM
         body_h = max(0, body_bottom - body_top)
         self.body.update(now, dt, body_h)
 
@@ -229,6 +231,11 @@ class TerminalUI:
         if approval and (not self.approval_drawn or geometry_changed):
             self.frame.paste(render_approval(self.fonts), (0, theme.HEIGHT - theme.APPROVAL_H))
             dirty.append((0, theme.HEIGHT - theme.APPROVAL_H, theme.WIDTH, theme.HEIGHT))
+        elif not approval and geometry_changed and body_bottom < theme.HEIGHT:
+            # Keep the strip under the body blank (it may still hold the
+            # approval bar that was just dismissed).
+            self.frame.paste(theme.VOID, (0, body_bottom, theme.WIDTH, theme.HEIGHT))
+            dirty.append((0, body_bottom, theme.WIDTH, theme.HEIGHT))
         self.approval_drawn = approval
 
         self.full = False

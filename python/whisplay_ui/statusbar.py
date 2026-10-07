@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw
 from . import theme
 from .draw_util import draw_text, fit_text
 
-CENTER_Y = 11
+CENTER_Y = theme.STATUS_CENTER_Y
 GAP = 6
 
 
@@ -47,17 +47,8 @@ class StatusBar:
         # Divider with a state-coloured accent under the badge.
         draw.line([(0, theme.DIVIDER_Y), (theme.WIDTH - 1, theme.DIVIDER_Y)], fill=theme.LINE)
 
-        # ---- left: state badge
-        x = theme.CHROME_LEFT
-        draw.rectangle([x, CENTER_Y - 3, x + 5, CENTER_Y + 2], fill=color)
-        label = model["label"]
-        label_x = x + 10
-        label = fit_text(fonts.pixel8, label, 86)
-        left_end = draw_text(draw, image, fonts.pixel8, label_x, CENTER_Y, label, color)
-        draw.line([(x, theme.DIVIDER_Y), (int(left_end), theme.DIVIDER_Y)], fill=color)
-
         # ---- right cluster, laid out right to left
-        right = theme.CHROME_RIGHT
+        right = theme.STATUS_SAFE_RIGHT
         level = model["battery_level"]
         if level is not None:
             right = self._battery(draw, image, right, level)
@@ -72,6 +63,14 @@ class StatusBar:
             if model[flag]:
                 right = self._tag(draw, image, right - GAP, text, fg, border)
         right = self._plugin_icons(image, right, model)
+
+        # ---- left: state badge, fitted to the room the indicators leave
+        x = theme.STATUS_SAFE_LEFT
+        draw.rectangle([x, CENTER_Y - 3, x + 5, CENTER_Y + 2], fill=color)
+        label_x = x + 10
+        label = fit_text(fonts.pixel8, model["label"], max(0, min(86, right - GAP - label_x)))
+        left_end = draw_text(draw, image, fonts.pixel8, label_x, CENTER_Y, label, color)
+        draw.line([(x, theme.DIVIDER_Y), (int(left_end), theme.DIVIDER_Y)], fill=color)
 
         # ---- centre: clock, only if it fits between badge and indicators
         clock = model["clock"]

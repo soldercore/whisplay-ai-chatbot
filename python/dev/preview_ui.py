@@ -32,6 +32,7 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from whisplay_ui import clock  # noqa: E402
+from whisplay_ui import theme  # noqa: E402
 
 W, H = 240, 280
 FALLBACK_BASE_FONTS = [
@@ -113,6 +114,41 @@ def load_chatbot_ui(lcd, block_whisplay_ui=False):
     if block_whisplay_ui:
         del sys.modules["whisplay_ui"]
     return module
+
+
+def safe_area_violations(fb):
+    """Pixels that break the rounded-corner safe area (same check as the
+    Whisplay launcher's cyber_ui/preview.py). fb is an (H, W, 3) frame.
+
+    - nothing lit inside any corner curve of radius SAFE_CHECK_RADIUS, except
+      the full-width status divider hairline;
+    - status-bar content (rows above DIVIDER_Y) only between
+      STATUS_SAFE_LEFT and STATUS_SAFE_RIGHT (both columns inclusive).
+    """
+    problems = []
+    radius = theme.SAFE_CHECK_RADIUS
+    ys, xs = np.mgrid[0:radius, 0:radius]
+    curve = (radius - xs) ** 2 + (radius - ys) ** 2 > radius ** 2
+    lit = fb.any(axis=2)
+    corners = {
+        "top-left": (slice(0, radius), slice(0, radius), False, False),
+        "top-right": (slice(0, radius), slice(W - radius, W), False, True),
+        "bottom-left": (slice(H - radius, H), slice(0, radius), True, False),
+        "bottom-right": (slice(H - radius, H), slice(W - radius, W), True, True),
+    }
+    for name, (rows, cols, flip_y, flip_x) in corners.items():
+        mask = curve[::-1] if flip_y else curve
+        mask = mask[:, ::-1] if flip_x else mask
+        for y, x in zip(*np.nonzero(lit[rows, cols] & mask)):
+            ay, ax = y + rows.start, x + cols.start
+            if ay == theme.DIVIDER_Y and tuple(fb[ay, ax]) == theme.LINE:
+                continue
+            problems.append(f"{name} corner pixel at ({ax},{ay})")
+    status = lit[:theme.DIVIDER_Y]
+    cols = np.flatnonzero(status.any(axis=0))
+    if cols.size and (cols[0] < theme.STATUS_SAFE_LEFT or cols[-1] > theme.STATUS_SAFE_RIGHT):
+        problems.append(f"status content spans x={cols[0]}..{cols[-1]}")
+    return problems
 
 
 # --------------------------------------------------------------- driver
@@ -297,6 +333,16 @@ def scenario(session):
     s.send(music_progress=-1, music_duration_ms=0, status="idle", emoji="😴", text="")
     wait(1.0)
 
+    # Every status indicator at once, low battery and a long custom status.
+    s.send(status="Downloading model weights", emoji="📦", text="Fetching whisper-small...",
+           battery_level=9, battery_color="#ff0000", vpn_connected=True,
+           rag_icon_visible=True, image_icon_visible=True, wifi_signal_level=1)
+    wait(0.6)
+    s.shot("status_all_indicators")
+    s.send(status="idle", emoji="😴", text="", battery_level=87, battery_color="#34d351",
+           vpn_connected=False, rag_icon_visible=False, image_icon_visible=False, wifi_signal_level=3)
+    wait(1.0)
+
 
 def contact_sheet(shots, columns=4, scale=1, bezel=True):
     pad, label_h = 12, 18
@@ -369,6 +415,11 @@ def selftest():
         check(before is not None and after is not None and after >= before,
               f"tool placeholder update keeps typed text ({before:.0f} -> {after:.0f} units)")
         check(s.lcd.fb.any(), "frames reached the LCD")
+        for name, image in s.shots:
+            problems = safe_area_violations(np.asarray(image))
+            if name != "approval" and np.asarray(image)[theme.CONTENT_SAFE_BOTTOM:].any():
+                problems.append("content below CONTENT_SAFE_BOTTOM")
+            check(not problems, f"safe area respected: {name}" + (f" {problems[:3]}" if problems else ""))
     finally:
         s.close()
 
@@ -391,7 +442,7 @@ def selftest():
         s.run_until(71.5)
         top = min(y for _, y, _, _ in s.lcd.pushes)
         bottom = max(y + h for _, y, _, h in s.lcd.pushes)
-        check(top >= 23 and bottom <= 127, "listening animates only the stage region")
+        check(top >= theme.PANE_Y and bottom <= theme.BODY_TOP_STAGE, "listening animates only the stage region")
     finally:
         s.close()
 

@@ -35,17 +35,33 @@ RED_DIM = _hex("521818")
 # ---- Layout (absolute pixels unless noted) -------------------------------
 WIDTH = 240
 HEIGHT = 280
-STATUS_H = 23             # status bar rows 0..21 plus the divider row 22
-DIVIDER_Y = 22
-PANE_Y = 23               # first row of the stage / strip pane
+
+# ---- Safe area: rounded LCD corners ---------------------------------------
+# Identical in soldercore/Whisplay daemon/cyber_ui/theme.py and
+# soldercore/whisplay-ai-chatbot python/whisplay_ui/theme.py; keep in sync.
+# The Whisplay panel has rounded corners (radius about 40 px). Status-bar
+# content stays between STATUS_SAFE_LEFT and STATUS_SAFE_RIGHT on the
+# STATUS_CENTER_Y line, and content that runs to the side margins ends above
+# CONTENT_SAFE_BOTTOM, so nothing reaches the curve even for a 44 px radius
+# (SAFE_CHECK_RADIUS, enforced by the tests in both repos).
+SCREEN_CORNER_RADIUS = 40
+SAFE_CHECK_RADIUS = 44
+STATUS_SAFE_LEFT = 24     # first usable column
+STATUS_SAFE_RIGHT = 216   # last usable column (inclusive), = WIDTH - 24
+STATUS_CENTER_Y = 13      # centre line of badge, labels, battery and Wi-Fi
+STATUS_H = 27             # status bar rows 0..25 plus the divider row 26
+DIVIDER_Y = 26
+PANE_Y = 27               # content top: first row under the status bar
+CONTENT_SAFE_BOTTOM = 264 # = HEIGHT - 16
+
 STAGE_H = 104             # stage image: visual rows 0..79, caption rows 80..103 (pane coords)
 STAGE_VISUAL_H = 80
-STAGE_MID_Y = 40          # visual centre line (absolute y=63)
-CAPTION_MID_Y = 93        # caption centre line (absolute y=116)
-BODY_TOP_STAGE = 127
-BODY_TOP_CONSOLE = 49
-BODY_TOP_TERMINAL = 94
-STRIP_MID_Y = 12          # strip centre line (absolute y=35)
+STAGE_MID_Y = 40          # visual centre line (pane coords)
+CAPTION_MID_Y = 93        # caption centre line (pane coords)
+BODY_TOP_STAGE = PANE_Y + STAGE_H
+BODY_TOP_CONSOLE = PANE_Y + 26     # 26 px answer strip
+BODY_TOP_TERMINAL = PANE_Y + 71    # 71 px command-output pane
+STRIP_MID_Y = 12          # strip centre line (pane coords)
 CHROME_LEFT = 14
 CHROME_RIGHT = 226
 TEXT_LEFT = 12

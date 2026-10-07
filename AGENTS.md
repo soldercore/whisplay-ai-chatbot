@@ -435,6 +435,7 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 - `RenderThread.render_frame()` delegates to `TerminalUI.render(snapshot)` only in the non-camera, non-image branch; camera and image modes always use the original code.
 - `terminal_ui.py` is the coordinator (status string -> visual state, time-based animation, per-region redraw, pixel-diff partial LCD pushes, sleep scheduling). Scenes: `statusbar.py`, `stage.py`, `panes.py`, `body.py`; foundation: `theme.py`, `fonts.py`, `text_layout.py`, `typewriter.py`, `visual_state.py`, `clock.py`.
 - No socket protocol change: the terminal UI reads the same globals; `scroll_sync` is also recorded as `current_speech_sync` for speech focus.
+- Rounded-corner safe area: the `Safe area` block in `whisplay_ui/theme.py` (status content x 24..216 on y=13, 27 px status bar, body above y=264) is identical to the Whisplay launcher's `daemon/cyber_ui/theme.py`; keep both in sync. `preview_ui.py --selftest` checks every state against it.
 - Preview/self-test with the production renderer and a fake LCD: `python3 python/dev/preview_ui.py` (PNG contact sheet) and `python3 python/dev/preview_ui.py --selftest`.
 
 ### Troubleshooting
