@@ -315,7 +315,7 @@ State transitions are triggered by button events, wake word detection, or comple
 ## Testing Strategy
 
 ### Unit Testing
-- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`)
+- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`) and `src/test/web-search.spec.ts` (Ollama tool calls and automatic web search, using a fake Ollama server)
 - Test scripts in `python/test/` for hardware validation
 
 ### Integration Testing
@@ -424,6 +424,8 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 ```
 
 **Usage:** Once enabled, LLM automatically uses `webSearch` tool when users ask about current events, news, or time-sensitive information.
+
+**Ollama:** small local models often skip the tool, so `src/config/web-search-router.ts` flags clearly time-sensitive questions (recency words, prices, weather, news, release dates, office holders) and `ollama-llm.ts` runs `web_search` before the first model call. The next request then offers only `web_search`/`fetch_webpage`. Today's date and search guidance are added to the system message at request time when tools are enabled. `web_search` results end with a short note telling the model to answer only from them, or to say it could not check when the search failed.
 
 ### Modifying UI/Display
 1. Python rendering: `python/chatbot-ui.py` (RenderThread class)

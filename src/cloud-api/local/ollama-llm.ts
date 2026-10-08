@@ -28,6 +28,11 @@ import {
   hasPendingCapturedImgForChat,
 } from "../../utils/image";
 import { compactMessagesForContextWindow } from "../context-window";
+import { getWebSearchSystemNote } from "../../config/web-search";
+import {
+  needsCurrentInformation,
+  searchTypeFor,
+} from "../../config/web-search-router";
 
 dotenv.config();
 
@@ -134,6 +139,11 @@ const resetChatHistory = (): void => {
 type ToolLoopState = {
   round: number;
   signatures: Set<string>;
+  // Set after a routed web search: the next request offers only the read-only
+  // web tools, so the model cannot follow up with an unrelated tool that has
+  // side effects (e.g. setVolume). Removing tools entirely makes qwen3 echo the
+  // raw tool output instead of answering.
+  webToolsOnly?: boolean;
 };
 
 const stableStringify = (value: unknown): string => {
@@ -159,6 +169,60 @@ const previousToolResultFor = (toolName: string): string => {
   return previous?.content || "";
 };
 
+// Today's date and when to search, added to the system message at request time
+// (only when tools are enabled) so the date never goes stale.
+const withRequestSystemNote = <T extends { role: string; content: string }>(
+  msg: T,
+  index: number,
+): T => {
+  const note = ollamaEnableTools ? getWebSearchSystemNote() : "";
+  return note && index === 0 && msg.role === "system"
+    ? { ...msg, content: `${msg.content}${note}` }
+    : msg;
+};
+
+/**
+ * Runs web_search before the first model call when the user's question
+ * clearly needs current information (see web-search-router), and adds the
+ * call and its result to the conversation as if the model had made it.
+ */
+const prefetchWebSearchIfNeeded = async (
+  inputMessages: Message[],
+  toolLoopState: ToolLoopState,
+  invokeFunctionCallback?: (functionName: string, result?: string) => void,
+): Promise<void> => {
+  const search = llmFuncMap.web_search;
+  if (!ollamaEnableTools || !search) return;
+  const lastUser = [...inputMessages].reverse().find((msg) => msg.role === "user");
+  const question = typeof lastUser?.content === "string" ? lastUser.content.trim() : "";
+  if (!question || !needsCurrentInformation(question)) return;
+
+  const args = { query: question, search_type: searchTypeFor(question) };
+  console.log(`[WebSearch] Time-sensitive question, searching first: ${JSON.stringify(args)}`);
+  invokeFunctionCallback?.("web_search");
+  const result = await search(args).catch((err: Error) => {
+    console.error("Error executing function web_search:", err);
+    return `${ToolReturnTag.Error}Error executing function web_search: ${err.message}`;
+  });
+  invokeFunctionCallback?.("web_search", result);
+
+  const call = { function: { index: 0, name: "web_search", arguments: args } };
+  messages.push(
+    { role: "assistant", content: "", tool_calls: [[call]] },
+    { role: "tool", content: result, tool_name: "web_search" },
+  );
+  toolLoopState.signatures.add(toolCallSignature(call));
+  toolLoopState.webToolsOnly = true;
+};
+
+const WEB_TOOL_NAMES = new Set(["web_search", "fetch_webpage"]);
+const toolsForRequest = (toolLoopState: ToolLoopState) => {
+  if (!ollamaEnableTools) return undefined;
+  return toolLoopState.webToolsOnly
+    ? llmTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name))
+    : llmTools;
+};
+
 const answerFromAvailableToolResults = async ({
   instruction,
   partialCallback,
@@ -180,10 +244,9 @@ const answerFromAvailableToolResults = async ({
       {
         model: ollamaModel,
         messages: [
-          ...messages.map((msg) => ({
-            role: msg.role,
-            content: msg.content,
-          })),
+          ...messages.map((msg, index) =>
+            withRequestSystemNote({ role: msg.role, content: msg.content }, index),
+          ),
           {
             role: "user",
             content: instruction,
@@ -265,6 +328,9 @@ const chatWithLLMStreamInternal = async (
   }
   updateLastMessageTime();
   messages.push(...(inputMessages as OllamaMessage[]));
+  if (toolLoopState.round === 0) {
+    await prefetchWebSearchIfNeeded(inputMessages, toolLoopState, invokeFunctionCallback);
+  }
   await compactMessagesForContextWindow({
     provider: "ollama",
     model: ollamaModel,
@@ -310,7 +376,7 @@ const chatWithLLMStreamInternal = async (
         model: ollamaModel,
         messages: messages.map((msg, index) => ({
           role: msg.role,
-          content: msg.content,
+          content: withRequestSystemNote(msg, index).content,
           ...(capturedImageBase64 &&
           msg.role === "user" &&
           lastUserMessageIndex !== undefined &&
@@ -324,7 +390,7 @@ const chatWithLLMStreamInternal = async (
           temperature: 0.7,
           num_predict: ollamaPredictNum,
         },
-        tools: ollamaEnableTools ? llmTools : undefined,
+        tools: toolsForRequest(toolLoopState),
         keep_alive: -1,
       },
       {

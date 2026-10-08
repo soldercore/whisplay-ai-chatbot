@@ -39,6 +39,28 @@ type SearchResult = {
 
 const lastPage: { url: string; links: WebLink[] } = { url: "", links: [] };
 
+// Appended to web_search results so small models answer from the results and
+// admit when they cannot verify something instead of answering from memory.
+const SEARCH_ANSWER_NOTE =
+  "\n\nAnswer the user's question using only these search results. Do not state any number, date or name that does not appear in them. If they do not contain the answer, say that you could not verify it.";
+const SEARCH_FAILED_NOTE =
+  "\n\nThe web search failed, so there is no current information. Tell the user you could not check this right now. Do not guess or give a date, number or name from memory.";
+
+/**
+ * Request-time system prompt addition: today's date plus when to search.
+ * Empty when web search is disabled.
+ */
+export const getWebSearchSystemNote = (now: Date = new Date()): string => {
+  if (!webSearchEnabled) return "";
+  const today = now.toLocaleDateString("en-GB", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  return ` Today is ${today}. Your built-in knowledge stops in the past. Only for questions whose answer changes over time (news, prices, weather, release dates, who currently holds a role, recent events) call web_search before answering. Answer stable general knowledge, jokes and small talk directly without any tool.`;
+};
+
 if (webSearchEnabled) {
   webSearchTools.push({
     type: "function",
@@ -90,7 +112,7 @@ if (webSearchEnabled) {
     function: {
       name: "web_search",
       description:
-        "Search the web and return compact result titles and URLs. search_type=web uses DuckDuckGo HTML, search_type=news uses Google News RSS, and search_type=sites uses Google Programmable Search JSON API when configured.",
+        "Search the internet for facts that change over time and that you cannot know from training: today's news, live prices, weather, sports results, release dates of upcoming products, who currently holds an office. Do not use it for stable knowledge (geography, history, science, definitions, how-to, math), jokes, small talk or device control. search_type=web uses DuckDuckGo HTML, search_type=news uses Google News RSS, and search_type=sites uses Google Programmable Search JSON API when configured.",
       parameters: {
         type: "object",
         properties: {
@@ -114,10 +136,10 @@ if (webSearchEnabled) {
     func: async (params: any) => {
       try {
         const result = await performUniversalWebSearch(params || {});
-        return `${ToolReturnTag.Success}${formatSearchResponse(result)}`;
+        return `${ToolReturnTag.Success}${formatSearchResponse(result)}${SEARCH_ANSWER_NOTE}`;
       } catch (error: any) {
         console.error("[WebSearch] web_search error:", error);
-        return `${ToolReturnTag.Error}Failed to search web: ${error.message}`;
+        return `${ToolReturnTag.Error}Failed to search web: ${error.message}${SEARCH_FAILED_NOTE}`;
       }
     },
   });
@@ -454,6 +476,13 @@ async function searchDuckDuckGo(query: string, limit: number) {
     throw new Error(`DuckDuckGo search error: ${response.status} ${response.statusText}`);
   }
   const html = await response.text();
+  const results = parseDuckDuckGoHtml(html, limit);
+  console.log(`[WebSearch] DuckDuckGo returned ${results.length} result(s)`);
+  return { query, url: response.url || url, source: "duckduckgo_html", results };
+}
+
+/** Parse result titles, URLs and snippets from DuckDuckGo's HTML endpoint. */
+export function parseDuckDuckGoHtml(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
   const seen = new Set<string>();
   const resultRe = /<a\b([^>]*class=["'][^"']*\bresult__a\b[^"']*["'][^>]*)>([\s\S]*?)<\/a>/gi;
@@ -470,13 +499,21 @@ async function searchDuckDuckGo(query: string, limit: number) {
       continue;
     }
     seen.add(finalUrl);
-    results.push({ title, url: finalUrl });
+    // The snippet sits between this result's link and the next one; it often
+    // holds the actual fact (a price, a date) that the title only hints at.
+    const rest = html.slice(resultRe.lastIndex);
+    const nextResult = rest.search(/class=["'][^"']*\bresult__a\b/i);
+    const block = nextResult === -1 ? rest : rest.slice(0, nextResult);
+    const snippetMatch = block.match(
+      /class=["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div|td)>/i,
+    );
+    const snippet = snippetMatch ? cleanText(snippetMatch[1].replace(/<[^>]+>/g, " ")) : "";
+    results.push(snippet ? { title, url: finalUrl, snippet } : { title, url: finalUrl });
     if (results.length >= limit) {
       break;
     }
   }
-  console.log(`[WebSearch] DuckDuckGo returned ${results.length} result(s)`);
-  return { query, url: response.url || url, source: "duckduckgo_html", results };
+  return results;
 }
 
 async function searchGoogleNewsRss(query: string, limit: number) {
@@ -644,6 +681,7 @@ function decodeHtml(text: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
     .replace(/&#x2F;/g, "/");
 }
 
