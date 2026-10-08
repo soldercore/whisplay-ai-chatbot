@@ -233,6 +233,45 @@ test("a body labelled audio/wav without a WAV header is rejected", async () => {
   assert.deepEqual(newTempFiles(), []);
 });
 
+test("PIPER_HTTP_VOICE selects a Piper voice; unset keeps the server default", async () => {
+  mode = "ok";
+  const modulePath = require.resolve("../cloud-api/local/piper-http-tts");
+  try {
+    await piperHttpTTS("Default voice.");
+    assert.equal("voice" in requests[requests.length - 1], false, "no voice field by default");
+
+    process.env.PIPER_HTTP_VOICE = "glados";
+    delete require.cache[modulePath];
+    const gladosTTS = require(modulePath).default;
+    const result = await gladosTTS("The cake is a lie.");
+    assert.deepEqual(requests[requests.length - 1], { text: "The cake is a lie.", length_scale: 1, voice: "glados" });
+    assert.ok(result.filePath && result.duration > 0);
+  } finally {
+    delete process.env.PIPER_HTTP_VOICE;
+    delete require.cache[modulePath];
+  }
+});
+
+test("scripts/piper-voice.sh switches the voice in .env and keeps a backup", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "whisplay-voice-env-"));
+  const envFile = path.join(dir, ".env");
+  fs.writeFileSync(envFile, "TTS_SERVER=piper-http\nPIPER_HTTP_PATH=/synthesize\n");
+  const script = path.join(__dirname, "..", "..", "scripts", "piper-voice.sh");
+  const run = (...args: string[]) =>
+    childProcess.execFileSync("bash", [script, ...args], { env: { ...process.env, ENV_FILE: envFile }, encoding: "utf8" });
+  try {
+    run("use", "glados", "--force", "--no-restart");
+    assert.match(fs.readFileSync(envFile, "utf8"), /^PIPER_HTTP_VOICE=glados$/m);
+    run("use", "default", "--no-restart");
+    const restored = fs.readFileSync(envFile, "utf8");
+    assert.equal(/PIPER_HTTP_VOICE/.test(restored), false);
+    assert.match(restored, /^PIPER_HTTP_PATH=\/synthesize$/m, "other settings are untouched");
+    assert.equal(fs.readdirSync(path.join(dir, ".env.backups")).length >= 1, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("PIPER_HTTP_PATH=/synthesize works with Piper 1.8; the default root path is unchanged", async () => {
   mode = "ok";
   piper18 = true;

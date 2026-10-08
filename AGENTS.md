@@ -324,6 +324,11 @@ State transitions are triggered by button events, wake word detection, or comple
 - Writes are atomic; an unreadable file is kept as `memory.json.corrupt-*`. Older stores get a one-time import of "Remember ..." requests from saved conversations (backup `memory.json.bak-*`).
 - Facts go to the model in the third person ("The user's favorite color is blue"); replies to the user use "your". Memory text sent to the model is English.
 - `src/config/spoken-text-guard.ts`: an Ollama answer that starts with JSON or markup is held back; a tool call written as text is executed, other markup is never spoken.
+
+### Piper voices
+- `PIPER_HTTP_VOICE` (optional) is sent as the `voice` field of Piper 1.8 `/synthesize`; Piper loads `<voice>.onnx` from its working directory or `--data-dir` and falls back to its `-m` default voice when the file is missing. Unset = server default.
+- `scripts/piper-voice.sh` installs the GLaDOS voice (pinned Hugging Face revision, sha256-checked, never committed: `assets/voices/` is gitignored), tests synthesis and switches voices (`use glados|default`, backs up `.env`). It reads but never edits the Piper systemd unit.
+- Piper 1.8 lists voices in `GET /voices` with mangled names (`glados` appears as `glad`) and labels WAV responses `text/html`; Whisplay checks the WAV header instead.
 - Test scripts in `python/test/` for hardware validation
 
 ### Integration Testing

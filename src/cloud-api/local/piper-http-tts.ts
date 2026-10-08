@@ -26,12 +26,18 @@ const piperHttpPath =
     ? `/${piperHttpPathEnv}`
     : piperHttpPathEnv;
 const piperHttpUrl = `http://${piperHttpHost}:${piperHttpPort}${piperHttpPath}`;
+// Optional voice name sent with each request (Piper 1.8 /synthesize "voice"
+// field, e.g. "glados" for glados.onnx in the server's data directory). Unset
+// keeps the server's default voice; an unknown name also falls back to it.
+const piperHttpVoice = (process.env.PIPER_HTTP_VOICE || "").trim();
 
 const ttsServer = (process.env.TTS_SERVER || "").toLowerCase();
 
 // TEMPORARY (Phase 0 TTS diagnostics): remove the [TTS-DIAG] lines once the
 // audio path is confirmed on the device.
-console.log(`[TTS-DIAG][piper-http] endpoint ${piperHttpUrl}, timeout ${piperHttpTimeoutSec}s`);
+console.log(
+  `[TTS-DIAG][piper-http] endpoint ${piperHttpUrl}, voice ${piperHttpVoice || "(server default)"}, timeout ${piperHttpTimeoutSec}s`
+);
 
 let pyProcess: ChildProcess | null = null;
 if (ttsServer === TTSServer.piperhttp) {
@@ -117,6 +123,7 @@ const piperHttpTTS = async (
     const body = JSON.stringify({
       text,
       length_scale: Number(piperHttpLengthScale),
+      ...(piperHttpVoice ? { voice: piperHttpVoice } : {}),
     });
 
     const piperProcess = spawn(

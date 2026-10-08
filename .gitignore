@@ -19,3 +19,5 @@ docker/volume
 .DS_Store
 __pycache__
 .env.backups
+# Downloaded voice models (fetched by scripts/piper-voice.sh, too large for Git)
+assets/voices/
