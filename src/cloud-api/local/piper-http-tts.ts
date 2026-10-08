@@ -18,7 +18,14 @@ const piperHttpLengthScale =
 // Upper bound for one synthesis request, so a stalled Piper server cannot
 // block the playback queue forever.
 const piperHttpTimeoutSec = process.env.PIPER_HTTP_TIMEOUT_SEC || "60";
-const piperHttpUrl = `http://${piperHttpHost}:${piperHttpPort}`;
+// Request path on the Piper HTTP server. Empty (the default) posts to the
+// server root as before; Piper 1.8 serves synthesis at /synthesize.
+const piperHttpPathEnv = (process.env.PIPER_HTTP_PATH || "").trim();
+const piperHttpPath =
+  piperHttpPathEnv && !piperHttpPathEnv.startsWith("/")
+    ? `/${piperHttpPathEnv}`
+    : piperHttpPathEnv;
+const piperHttpUrl = `http://${piperHttpHost}:${piperHttpPort}${piperHttpPath}`;
 
 const ttsServer = (process.env.TTS_SERVER || "").toLowerCase();
 

@@ -59,9 +59,12 @@ const makeWav = (seed: number, ms: number): Buffer => {
   return wav;
 };
 
-type Mode = "ok" | "error500" | "html200" | "reset" | "hang";
+type Mode = "ok" | "error500" | "html200" | "reset" | "hang" | "wavWrongType" | "fakeWav";
 let mode: Mode = "ok";
+// Piper 1.8 serves synthesis only at /synthesize and answers 404 on "/".
+let piper18 = false;
 const requests: { text: string; length_scale: number }[] = [];
+const requestUrls: string[] = [];
 const wavHashByText = new Map<string, string>();
 const sockets = new Set<Socket>();
 
@@ -71,6 +74,12 @@ const server = http.createServer((req, res) => {
   req.on("end", () => {
     const payload = JSON.parse(body);
     requests.push(payload);
+    requestUrls.push(req.url || "");
+    if (piper18 && req.url !== "/synthesize") {
+      res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+      res.end("<!doctype html><title>404 Not Found</title><h1>Not Found</h1>");
+      return;
+    }
     if (mode === "hang") return;
     if (mode === "reset") {
       req.socket.destroy();
@@ -86,11 +95,18 @@ const server = http.createServer((req, res) => {
       res.end("<html><body>Piper is starting</body></html>");
       return;
     }
+    if (mode === "fakeWav") {
+      res.writeHead(200, { "Content-Type": "audio/wav" });
+      res.end("ERROR: voice model missing");
+      return;
+    }
     const wav = makeWav(requests.length, 300 + payload.text.length * 10);
     wavHashByText.set(payload.text, fnv1a(wav));
     // Later requests finish first, which is what Piper does with short sentences.
     setTimeout(() => {
-      res.writeHead(200, { "Content-Type": "audio/wav" });
+      res.writeHead(200, {
+        "Content-Type": mode === "wavWrongType" ? "application/octet-stream" : "audio/wav",
+      });
       res.end(wav);
     }, Math.max(20, 120 - requests.length * 15));
   });
@@ -129,6 +145,7 @@ before(async () => {
   Object.assign(process.env, {
     PIPER_HTTP_HOST: "127.0.0.1",
     PIPER_HTTP_PORT: String(port),
+    PIPER_HTTP_PATH: "",
     PIPER_HTTP_TIMEOUT_SEC: "2",
     PIPER_HTTP_LENGTH_SCALE: "1",
     TTS_SERVER: "test",
@@ -193,6 +210,56 @@ test("a 200 response that is not WAV audio returns no audio", async () => {
   assert.match(errors, /Piper is starting/);
   assert.equal(soxLogLines().length, linesBefore);
   assert.deepEqual(newTempFiles(), []);
+});
+
+test("WAV audio is accepted even when the Content-Type is wrong", async () => {
+  mode = "wavWrongType";
+  const result = await piperHttpTTS("Octet stream audio.");
+  assert.ok(result.filePath && result.duration > 0);
+  assert.equal(fnv1a(fs.readFileSync(result.filePath)), wavHashByText.get("Octet stream audio."));
+});
+
+test("a body labelled audio/wav without a WAV header is rejected", async () => {
+  mode = "fakeWav";
+  const linesBefore = soxLogLines().length;
+  let result: any;
+  const errors = await capture("error", async () => {
+    result = await piperHttpTTS("Fake audio.");
+  });
+  assert.deepEqual(result, { duration: 0 });
+  assert.match(errors, /no WAV audio \(HTTP 200, audio\/wav\)/);
+  assert.match(errors, /voice model missing/);
+  assert.equal(soxLogLines().length, linesBefore);
+  assert.deepEqual(newTempFiles(), []);
+});
+
+test("PIPER_HTTP_PATH=/synthesize works with Piper 1.8; the default root path is unchanged", async () => {
+  mode = "ok";
+  piper18 = true;
+  const modulePath = require.resolve("../cloud-api/local/piper-http-tts");
+  try {
+    // Default: posts to "/" exactly as before, which Piper 1.8 rejects.
+    let rootResult: any;
+    const errors = await capture("error", async () => {
+      rootResult = await piperHttpTTS("Root path.");
+    });
+    assert.equal(requestUrls[requestUrls.length - 1], "/");
+    assert.deepEqual(rootResult, { duration: 0 });
+    assert.match(errors, /HTTP 404/);
+
+    // Configured: load a fresh copy of the module with PIPER_HTTP_PATH set.
+    process.env.PIPER_HTTP_PATH = "/synthesize";
+    delete require.cache[modulePath];
+    const synthesizeTTS = require(modulePath).default;
+    const result = await synthesizeTTS("Synthesize path.");
+    assert.equal(requestUrls[requestUrls.length - 1], "/synthesize");
+    assert.ok(result.filePath && result.duration > 0);
+    assert.equal(fnv1a(fs.readFileSync(result.filePath)), wavHashByText.get("Synthesize path."));
+  } finally {
+    piper18 = false;
+    delete process.env.PIPER_HTTP_PATH;
+    delete require.cache[modulePath];
+  }
 });
 
 test("a dropped connection returns no audio", async () => {
