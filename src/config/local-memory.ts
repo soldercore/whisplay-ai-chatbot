@@ -11,6 +11,7 @@ import {
   parseMemoryCommand,
   toSecondPerson,
 } from "./memory-commands";
+import { memoryReply } from "./persona";
 
 type MemoryExchange = {
   at: string;
@@ -679,7 +680,7 @@ export const handleMemoryCommand = (userText: string): MemoryCommandReply | null
   try {
     if (command.type === "remember" || command.type === "update") {
       if (containsSecret(command.statement)) {
-        return reply("I won't save passwords, PINs or other secret details. Please keep those somewhere safe.");
+        return reply(memoryReply("secret"));
       }
       const store = readStore();
       if (command.type === "update") {
@@ -690,34 +691,34 @@ export const handleMemoryCommand = (userText: string): MemoryCommandReply | null
       writeStore(store);
       const said = factForUser(result.memory);
       if (result.status === "updated") {
-        return reply(`Got it. I've updated that: ${said}.`, true);
+        return reply(memoryReply("updated", said), true);
       }
       if (result.status === "unchanged") {
-        return reply(`I already have that saved: ${said}.`);
+        return reply(memoryReply("unchanged", said));
       }
-      return reply(`I'll remember that ${said}.`);
+      return reply(memoryReply("saved", said));
     }
 
     if (command.type === "forget") {
       const store = readStore();
       const removed = forgetTopic(store, command.topic);
       if (removed === 0) {
-        return reply(`I don't have anything saved about ${toSecondPerson(command.topic)}.`);
+        return reply(memoryReply("notFound", toSecondPerson(command.topic)));
       }
       writeStore(store);
-      return reply(`Okay, I've forgotten ${toSecondPerson(command.topic)}.`, true);
+      return reply(memoryReply("forgotten", toSecondPerson(command.topic)), true);
     }
 
     const facts = findFacts(readStore(), command.topic);
     if (facts.length > 0) {
-      return reply(facts.slice(0, 3).map((memory) => sentence(factForUser(memory))).join(" "));
+      return reply(memoryReply("recalled", facts.slice(0, 3).map((memory) => sentence(factForUser(memory))).join(" ")));
     }
     return command.explicit
-      ? reply(`I don't have anything saved about ${toSecondPerson(command.topic)}.`)
+      ? reply(memoryReply("notFound", toSecondPerson(command.topic)))
       : null;
   } catch (error: any) {
     console.error(`[Memory] ${command.type} command failed: ${error.message}`);
-    return reply("Sorry, I couldn't reach my memory just now. Please try again.");
+    return reply(memoryReply("failed"));
   }
 };
 

@@ -166,6 +166,7 @@ const topLevelGroups: TopLevelGroup[] = [
 
 const entryDisplayNameMap: Record<string, string> = {
   SYSTEM_PROMPT: "Prompt",
+  ASSISTANT_PERSONA: "Persona",
 };
 
 function getEntryDisplayName(key: string): string {

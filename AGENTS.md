@@ -315,7 +315,7 @@ State transitions are triggered by button events, wake word detection, or comple
 ## Testing Strategy
 
 ### Unit Testing
-- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`) , `src/test/web-search.spec.ts` (Ollama tool calls and automatic web search, using a fake Ollama server) and `src/test/memory.spec.ts` (local memory commands, persistence, file safety, spoken-JSON guard)
+- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`) , `src/test/web-search.spec.ts` (Ollama tool calls and automatic web search, using a fake Ollama server) `src/test/memory.spec.ts` (local memory commands, persistence, file safety, spoken-JSON guard) and `src/test/persona.spec.ts` (persona selection, system prompt composition, persona memory replies)
 
 ### Local Memory
 - `MEMORY_ENABLED=true` stores facts and conversation summaries in `data/memory/memory.json` (override with `MEMORY_DIR`).
@@ -323,7 +323,12 @@ State transitions are triggered by button events, wake word detection, or comple
 - Secrets (passwords, PINs, card numbers ...) are never stored; exchanges with secrets or long numbers are not auto-saved. Forgetting also scrubs matching saved conversations.
 - Writes are atomic; an unreadable file is kept as `memory.json.corrupt-*`. Older stores get a one-time import of "Remember ..." requests from saved conversations (backup `memory.json.bak-*`).
 - Facts go to the model in the third person ("The user's favorite color is blue"); replies to the user use "your". Memory text sent to the model is English.
-- `src/config/spoken-text-guard.ts`: an Ollama answer that starts with JSON or markup is held back; a tool call written as text is executed, other markup is never spoken.
+- `src/config/spoken-text-guard.ts`: an Ollama answer that starts with JSON or markup is held back; a tool call written as text (bare JSON, `<tool_call>` or `<tool>`) is executed, other markup is never spoken.
+
+### Assistant persona
+- `ASSISTANT_PERSONA=default|glados` (`src/config/persona.ts`). The persona replaces only the first part of `systemPrompt` in `src/config/llm-config.ts`; the speech formatting rule, the wake word tool rule, the memory system message and the Ollama date/web search note are appended unchanged. `glados` takes precedence over `SYSTEM_PROMPT`; `default` keeps `SYSTEM_PROMPT` or the original prompt. Independent of `PIPER_HTTP_VOICE`.
+- Memory command replies (spoken without the LLM) get persona wording via `memoryReply()`; the stored and recalled facts are identical for every persona.
+- The GLaDOS prompt is tuned for the 1.7B Ollama model: no example lines (small models repeat them verbatim and as catchphrases), no mention of files or records (that triggers memory tool calls), the emergency rule last and phrased "only when" (earlier placement made it fire for burned toast). Re-check tool calls and emergency answers on the real model after any wording change.
 
 ### Piper voices
 - `PIPER_HTTP_VOICE` (optional) is sent as the `voice` field of Piper 1.8 `/synthesize`; Piper loads `<voice>.onnx` from its working directory or `--data-dir` and falls back to its `-m` default voice when the file is missing. Unset = server default.

@@ -60,6 +60,7 @@ before(async () => {
     MEMORY_AUTO_SAVE: "true",
     MEMORY_DIR: memoryDir,
     WAKE_WORD_ENABLED: "false",
+    ASSISTANT_PERSONA: "default",
   });
   commands = require("../config/memory-commands");
   guard = require("../config/spoken-text-guard");
@@ -278,6 +279,8 @@ test("internal markup is never spoken", () => {
   const tools = new Set(["searchLocalMemory"]);
   assert.deepEqual(guard.interpretHeldAnswer('```json\n{"name":"searchLocalMemory","arguments":{"query":"x"}}\n```', tools).toolCall,
     { function: { index: 0, name: "searchLocalMemory", arguments: { query: "x" } } });
+  assert.deepEqual(guard.interpretHeldAnswer('<tool> {"name": "searchLocalMemory", "arguments": {"query": "sister"}} </tool>', tools).toolCall,
+    { function: { index: 0, name: "searchLocalMemory", arguments: { query: "sister" } } });
   assert.equal(guard.interpretHeldAnswer('{"name":"unknownTool","arguments":{}}', tools).spoken, guard.FALLBACK_REPLY);
   assert.equal(guard.interpretHeldAnswer('{"name": "searchLocal', tools).spoken, guard.FALLBACK_REPLY);
   assert.equal(guard.interpretHeldAnswer("[success]Stored local memory. Your color is blue.", tools).spoken, "Stored local memory. Your color is blue.");

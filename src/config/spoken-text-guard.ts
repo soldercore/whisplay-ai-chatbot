@@ -32,8 +32,8 @@ export const interpretHeldAnswer = (
   toolNames: Set<string>,
 ): { toolCall?: ToolCallFromText; spoken: string } => {
   const body = text.trim().replace(/^(?:\[(?:success|error|response)\]\s*)+/i, "");
-  const tagged = body.match(/<tool_call>\s*([\s\S]*?)\s*(?:<\/tool_call>|$)/i);
-  const candidate = (tagged ? tagged[1] : body)
+  const tagged = body.match(/<(tool_call|tool)>\s*([\s\S]*?)\s*(?:<\/\1>|$)/i);
+  const candidate = (tagged ? tagged[2] : body)
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/, "")
     .trim();
@@ -54,7 +54,7 @@ export const interpretHeldAnswer = (
   }
 
   const spoken = body
-    .replace(/<\/?(?:response|answer|tool_call|tool_response)>/gi, "")
+    .replace(/<\/?(?:response|answer|tool_call|tool_response|tool)>/gi, "")
     .replace(/\[(?:success|error|response)\]/gi, "")
     .trim();
   return { spoken: spoken || FALLBACK_REPLY };
