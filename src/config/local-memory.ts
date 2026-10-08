@@ -3,6 +3,14 @@ import path from "path";
 import moment from "moment";
 import { LLMTool, ToolReturnTag } from "../type";
 import { dataDir } from "../utils/dir";
+import {
+  containsSecret,
+  isSensitiveForAutoSave,
+  normalizeSubject,
+  parseFact,
+  parseMemoryCommand,
+  toSecondPerson,
+} from "./memory-commands";
 
 type MemoryExchange = {
   at: string;
@@ -25,6 +33,9 @@ type UserMemory = {
   id: string;
   kind: "preference" | "context" | "fact";
   content: string;
+  // Set for "my <subject> is <value>" facts so an update replaces the old value.
+  subject?: string;
+  value?: string;
   createdAt: string;
   updatedAt: string;
   keywords: string[];
@@ -34,6 +45,8 @@ type MemoryStore = {
   version: 1;
   sessions: MemorySession[];
   userMemories: UserMemory[];
+  // Set once "Remember ..." commands from saved conversations were imported.
+  rememberedFactsImported?: boolean;
 };
 
 const memoryEnabled = (process.env.MEMORY_ENABLED || "").toLowerCase() === "true";
@@ -55,7 +68,7 @@ const memoryWakeupMaxItems = parseInt(process.env.MEMORY_WAKEUP_MAX_ITEMS || "5"
 const memoryProfileText = (process.env.MEMORY_PROFILE_TEXT || "").trim();
 const memorySummaryPromptPrefix =
   process.env.MEMORY_SUMMARY_PROMPT_PREFIX ||
-  "请把下面这段用户与助手的对话整理成可供下次召回使用的简短中文记忆摘要。保留用户偏好、事实、决定、未完成事项和重要上下文；不要逐字复述原文；80字以内：";
+  "Summarize the following user-assistant conversation into a concise memory for future recall. Preserve user preferences, facts, decisions, open tasks, and important context. Do not quote the transcript verbatim. Write in English. Keep it under 80 words:";
 const memorySessionIdleMs =
   parseInt(
     process.env.MEMORY_SESSION_IDLE_SECONDS ||
@@ -64,11 +77,16 @@ const memorySessionIdleMs =
     10,
   ) * 1000;
 
+const UNTITLED = "Untitled conversation";
+const HAN = /\p{Script=Han}/u;
+
 let activeSessionId = "";
 let lastExchangeAt = 0;
 let writeQueue: Promise<void> = Promise.resolve();
 let recalledMemoryKeys = new Set<string>();
 let recalledMemoryTexts = new Map<string, string>();
+// User turns answered by handleMemoryCommand; they are not auto-saved.
+const handledCommandTexts = new Set<string>();
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -92,6 +110,13 @@ const textPreview = (text: string, max = 220): string => {
   return compactText.length > max
     ? `${compactText.slice(0, Math.max(0, max - 1))}...`
     : compactText;
+};
+
+const sentence = (text: string): string => {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  const capitalized = trimmed[0].toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`;
 };
 
 const uniqueStrings = (items: string[]): string[] =>
@@ -127,6 +152,94 @@ const persistedKeywords = (text: string): string[] => {
     .slice(0, 24);
 };
 
+const titleFromText = (text: string): string => {
+  const clean = textPreview(text, 36).replace(/[。！？!?，,：:；;.]+$/g, "");
+  return clean || UNTITLED;
+};
+
+const titleFromSummary = (summary: string, fallback: string): string => {
+  const normalized = summary
+    .replace(/\s+/g, " ")
+    .replace(/^(用户)?(查询|询问|提问|想知道|讨论|聊到|关注|偏好)[：:，,\s]*/i, "")
+    .replace(/^上次(聊|讨论|提到)[：:，,\s]*/i, "")
+    .replace(/^(the )?user (asked about|asked|discussed|wanted to know|mentioned)[:,\s]*/i, "")
+    .trim();
+  const firstSentence = normalized
+    .split(/[。！？!?；;\n\r]|\.(?:\s|$)/)[0]
+    .trim();
+  const colonTopic = firstSentence.split(/[：:]/)[0]?.trim();
+  const firstClause = (colonTopic && colonTopic.length >= 4 ? colonTopic : firstSentence)
+    .split(/[，,]/)
+    .map((item) => item.trim())
+    .find((item) => item.length >= 4) || firstSentence || normalized;
+  const title = titleFromText(firstClause);
+  return title === UNTITLED ? fallback : title;
+};
+
+const buildHeuristicSessionSummary = (session: MemorySession): string => {
+  const userTexts = session.exchanges
+    .slice(-5)
+    .map((exchange) => textPreview(exchange.user, 90));
+  const assistantTexts = session.exchanges
+    .slice(-3)
+    .map((exchange) => textPreview(exchange.assistant, 90));
+  return textPreview(
+    [
+      userTexts.length > 0 ? `The user said: ${userTexts.join("; ")}` : "",
+      assistantTexts.length > 0 ? `The assistant replied: ${assistantTexts.join("; ")}` : "",
+    ]
+      .filter(Boolean)
+      .join(". "),
+    420,
+  );
+};
+
+// Older stores may hold Chinese summaries and titles; never feed those to the
+// model (it then answers in Chinese). The stored text itself is left as is.
+const englishSummary = (session: MemorySession): string =>
+  session.summary && !HAN.test(session.summary)
+    ? session.summary
+    : buildHeuristicSessionSummary(session);
+
+const englishTitle = (session: MemorySession): string =>
+  !HAN.test(session.title || "")
+    ? session.title
+    : titleFromText(session.exchanges[0]?.user || "");
+
+const sanitizeStore = (parsed: any): MemoryStore => {
+  const sessions: MemorySession[] = (Array.isArray(parsed?.sessions) ? parsed.sessions : [])
+    .filter((session: any) => session && typeof session === "object" && session.id)
+    .map((session: any) => ({
+      ...session,
+      title: `${session.title || UNTITLED}`,
+      summary: `${session.summary || ""}`,
+      startedAt: `${session.startedAt || session.updatedAt || nowIso()}`,
+      updatedAt: `${session.updatedAt || session.startedAt || nowIso()}`,
+      exchanges: (Array.isArray(session.exchanges) ? session.exchanges : []).filter(
+        (exchange: any) => exchange && typeof exchange.user === "string",
+      ),
+      keywords: Array.isArray(session.keywords) ? session.keywords : [],
+    }));
+  const userMemories: UserMemory[] = (
+    Array.isArray(parsed?.userMemories) ? parsed.userMemories : []
+  )
+    .filter((memory: any) => memory && typeof memory.content === "string" && memory.content.trim())
+    .map((memory: any) => ({
+      ...memory,
+      id: `${memory.id || makeId("memory")}`,
+      kind: memory.kind || "fact",
+      createdAt: `${memory.createdAt || nowIso()}`,
+      updatedAt: `${memory.updatedAt || memory.createdAt || nowIso()}`,
+      keywords: Array.isArray(memory.keywords) ? memory.keywords : [],
+    }));
+  return {
+    version: 1,
+    sessions,
+    userMemories,
+    ...(parsed?.rememberedFactsImported ? { rememberedFactsImported: true } : {}),
+  };
+};
+
 const normalizeStoreKeywords = (store: MemoryStore): MemoryStore => {
   store.sessions.forEach((session) => {
     if (session.summary) {
@@ -148,15 +261,19 @@ const readStore = (): MemoryStore => {
   if (!memoryEnabled) return emptyStore();
   ensureMemoryDir();
   if (!fs.existsSync(memoryStorePath)) return emptyStore();
+  let raw = "";
   try {
-    const parsed = JSON.parse(fs.readFileSync(memoryStorePath, "utf8"));
-    return normalizeStoreKeywords({
-      version: 1,
-      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
-      userMemories: Array.isArray(parsed.userMemories) ? parsed.userMemories : [],
-    });
+    raw = fs.readFileSync(memoryStorePath, "utf8");
+    return normalizeStoreKeywords(sanitizeStore(JSON.parse(raw)));
   } catch (error: any) {
-    console.error(`[Memory] Failed to read ${memoryStorePath}: ${error.message}`);
+    // Keep the unreadable file instead of overwriting it on the next save.
+    const backup = `${memoryStorePath}.corrupt-${moment().format("YYYYMMDD-HHmmss")}`;
+    try {
+      fs.renameSync(memoryStorePath, backup);
+      console.error(`[Memory] Could not read ${memoryStorePath} (${error.message}); kept it as ${backup}`);
+    } catch (renameError: any) {
+      console.error(`[Memory] Could not read ${memoryStorePath}: ${error.message}`);
+    }
     return emptyStore();
   }
 };
@@ -171,56 +288,19 @@ const writeStore = (store: MemoryStore): void => {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, Math.max(1, memoryMaxSessions)),
     userMemories: normalized.userMemories,
+    // Files written by this version never need the one-time import below.
+    rememberedFactsImported: true,
   };
-  fs.writeFileSync(memoryStorePath, `${JSON.stringify(trimmed, null, 2)}\n`);
+  // Write a temp file and rename it, so a power cut cannot leave half a file.
+  const tempPath = `${memoryStorePath}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(trimmed, null, 2)}\n`);
+  fs.renameSync(tempPath, memoryStorePath);
 };
 
 const enqueueWrite = (fn: () => void | Promise<void>): void => {
   writeQueue = writeQueue
     .then(() => fn())
     .catch((error) => console.error(`[Memory] Write failed: ${error.message}`));
-};
-
-const titleFromText = (text: string): string => {
-  const clean = textPreview(text, 36).replace(/[。！？!?，,：:；;]+$/g, "");
-  return clean || "未命名对话";
-};
-
-const titleFromSummary = (summary: string, fallback: string): string => {
-  const normalized = summary
-    .replace(/\s+/g, " ")
-    .replace(/^(用户)?(查询|询问|提问|想知道|讨论|聊到|关注|偏好)[：:，,\s]*/i, "")
-    .replace(/^上次(聊|讨论|提到)[：:，,\s]*/i, "")
-    .trim();
-  const firstSentence = normalized
-    .split(/[。！？!?；;\n\r]/)[0]
-    .trim();
-  const colonTopic = firstSentence.split(/[：:]/)[0]?.trim();
-  const firstClause = (colonTopic && colonTopic.length >= 4 ? colonTopic : firstSentence)
-    .split(/[，,]/)
-    .map((item) => item.trim())
-    .find((item) => item.length >= 4) || firstSentence || normalized;
-  const title = titleFromText(firstClause);
-  if (title === "未命名对话") return fallback;
-  return title;
-};
-
-const buildHeuristicSessionSummary = (session: MemorySession): string => {
-  const userTexts = session.exchanges
-    .slice(-5)
-    .map((exchange) => textPreview(exchange.user, 90));
-  const assistantTexts = session.exchanges
-    .slice(-3)
-    .map((exchange) => textPreview(exchange.assistant, 90));
-  return textPreview(
-    [
-      userTexts.length > 0 ? `用户近期主题：${userTexts.join("；")}` : "",
-      assistantTexts.length > 0 ? `助手已回应：${assistantTexts.join("；")}` : "",
-    ]
-      .filter(Boolean)
-      .join("。"),
-    420,
-  );
 };
 
 const buildSessionSummary = async (
@@ -232,7 +312,7 @@ const buildSessionSummary = async (
 
   const transcript = session.exchanges
     .slice(-6)
-    .map((exchange) => `用户：${exchange.user}\n助手：${exchange.assistant}`)
+    .map((exchange) => `User: ${exchange.user}\nAssistant: ${exchange.assistant}`)
     .join("\n\n");
   if (!transcript.trim()) return fallback;
 
@@ -241,8 +321,9 @@ const buildSessionSummary = async (
     const normalizedSummary = (summary || "").trim();
     const looksLikeTranscript =
       normalizedSummary === transcript.trim() ||
-      (/用户[：:]/.test(normalizedSummary) && /助手[：:]/.test(normalizedSummary));
-    return textPreview(!normalizedSummary || looksLikeTranscript ? fallback : normalizedSummary, 600);
+      (/\bUser:/.test(normalizedSummary) && /\bAssistant:/.test(normalizedSummary));
+    const usable = normalizedSummary && !looksLikeTranscript && !HAN.test(normalizedSummary);
+    return textPreview(usable ? normalizedSummary : fallback, 600);
   } catch (error: any) {
     console.error(`[Memory] Summary generation failed: ${error.message}`);
     return fallback;
@@ -292,16 +373,147 @@ type SearchResult = {
   text: string;
 };
 
+// ---- Facts ------------------------------------------------------------------
+
+const factSubject = (memory: UserMemory): string =>
+  memory.subject || parseFact(memory.content)?.subject || "";
+
+const factValue = (memory: UserMemory): string =>
+  memory.value || parseFact(memory.content)?.value || "";
+
+/** The fact as said to the user: "your favorite color is blue". */
+const factForUser = (memory: UserMemory): string =>
+  factSubject(memory) && factValue(memory)
+    ? `your ${factSubject(memory)} is ${factValue(memory)}`
+    : toSecondPerson(memory.content);
+
+/**
+ * The fact as given to the model. In a system message "you" is the assistant,
+ * so facts about the user must be in the third person.
+ */
+const factForModel = (memory: UserMemory): string =>
+  factSubject(memory) && factValue(memory)
+    ? `The user's ${factSubject(memory)} is ${factValue(memory)}.`
+    : `The user told you: "${memory.content.replace(/[.!?]$/, "")}".`;
+
+const STOPWORDS = new Set([
+  "my", "the", "a", "an", "is", "are", "was", "were", "of", "to", "and", "what", "about",
+  "that", "your", "i", "me", "do", "you", "it",
+]);
+
+const topicWords = (topic: string): string[] =>
+  normalizeSubject(topic)
+    .split(" ")
+    .filter((word) => word.length > 1 && !STOPWORDS.has(word));
+
+const containsWord = (haystack: string, word: string): boolean =>
+  new RegExp(`(^|[^\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`, "u").test(haystack);
+
+const findFacts = (store: MemoryStore, topic: string): UserMemory[] => {
+  const subject = normalizeSubject(topic);
+  const exact = store.userMemories.filter((memory) => factSubject(memory) === subject);
+  if (exact.length > 0) return exact;
+  const words = topicWords(topic);
+  if (words.length === 0) return [];
+  return store.userMemories.filter((memory) => {
+    const haystack = normalizeSubject(`${factSubject(memory)} ${memory.content}`);
+    const hits = words.filter((word) => containsWord(haystack, word)).length;
+    return hits > 0 && hits >= Math.ceil(words.length / 2);
+  });
+};
+
+const forgetRecall = (memory: UserMemory): void => {
+  recalledMemoryKeys.delete(`user:${memory.id}`);
+  recalledMemoryTexts.delete(`user:${memory.id}`);
+};
+
+type SaveResult =
+  | { status: "saved" | "unchanged"; memory: UserMemory }
+  | { status: "updated"; memory: UserMemory; previous: string };
+
+const saveFact = (
+  store: MemoryStore,
+  statement: string,
+  kind: UserMemory["kind"] = "fact",
+): SaveResult => {
+  const content = sentence(textPreview(statement, 300));
+  const fact = parseFact(statement);
+  const now = nowIso();
+  if (fact) {
+    const existing = store.userMemories.filter((memory) => factSubject(memory) === fact.subject);
+    if (existing.length > 0) {
+      const [keep, ...duplicates] = existing;
+      store.userMemories = store.userMemories.filter((memory) => !duplicates.includes(memory));
+      const previous = factValue(keep);
+      Object.assign(keep, { content, subject: fact.subject, value: fact.value, updatedAt: now });
+      forgetRecall(keep);
+      return previous.toLowerCase() !== fact.value.toLowerCase()
+        ? { status: "updated", memory: keep, previous }
+        : { status: "unchanged", memory: keep };
+    }
+  } else {
+    const same = store.userMemories.find(
+      (memory) => memory.content.toLowerCase().replace(/[.!?]$/, "") === content.toLowerCase().replace(/[.!?]$/, ""),
+    );
+    if (same) {
+      same.updatedAt = now;
+      return { status: "unchanged", memory: same };
+    }
+  }
+  const memory: UserMemory = {
+    id: makeId("memory"),
+    kind,
+    content,
+    ...(fact ? { subject: fact.subject, value: fact.value } : {}),
+    createdAt: now,
+    updatedAt: now,
+    keywords: persistedKeywords(content),
+  };
+  store.userMemories.unshift(memory);
+  return { status: "saved", memory };
+};
+
+/** Removes matching facts and scrubs them from saved conversations. */
+const forgetTopic = (store: MemoryStore, topic: string): number => {
+  const facts = findFacts(store, topic);
+  store.userMemories = store.userMemories.filter((memory) => !facts.includes(memory));
+  facts.forEach(forgetRecall);
+
+  const words = topicWords(topic);
+  const values = facts.map(factValue).filter(Boolean).map((value) => value.toLowerCase());
+  const mentions = (text: string): boolean => {
+    const lower = text.toLowerCase();
+    return (words.length > 0 && words.every((word) => containsWord(lower, word))) ||
+      values.some((value) => words.some((word) => containsWord(lower, word)) && lower.includes(value));
+  };
+  store.sessions = store.sessions.filter((session) => {
+    const before = session.exchanges.length;
+    session.exchanges = session.exchanges.filter(
+      (exchange) => !mentions(`${exchange.user}\n${exchange.assistant}`),
+    );
+    if (session.exchanges.length !== before || mentions(`${session.title}\n${session.summary}`)) {
+      if (session.exchanges.length === 0) return false;
+      session.summary = buildHeuristicSessionSummary(session);
+      session.title = titleFromText(session.exchanges[0].user);
+    }
+    return true;
+  });
+  return facts.length;
+};
+
+// ---- Search & prompt --------------------------------------------------------
+
 const buildSearchMatches = (query: string): SearchResult[] => {
   if (!memoryEnabled || !query.trim()) return [];
   const store = readStore();
   const memoryMatches = store.userMemories
     .map((memory) => ({
       key: `user:${memory.id}`,
-      score: scoreText(query, memory.content, memory.keywords),
-      text: `用户记忆/${memory.kind}: ${memory.content}`,
+      // Saved facts rank above conversation summaries.
+      score: scoreText(query, memory.content, memory.keywords) + 10,
+      text: `Saved fact: ${factForModel(memory)}`,
     }))
-    .filter((item) => item.score > 0);
+    .filter((item) => item.score > 10);
   const sessionMatches = store.sessions
     .filter((session) => session.id !== activeSessionId)
     .map((session) => {
@@ -313,9 +525,7 @@ const buildSearchMatches = (query: string): SearchResult[] => {
       return {
         key: `session:${session.id}`,
         score: scoreText(query, body, session.keywords),
-        text: `历史对话《${session.title}》（${session.updatedAt.slice(0, 10)}）摘要: ${
-          session.summary || "这段对话的摘要还在生成中，暂不使用原始对话内容。"
-        }`,
+        text: `Earlier conversation "${englishTitle(session)}" (${session.updatedAt.slice(0, 10)}): ${englishSummary(session)}`,
       };
     })
     .filter((item) => item.score > 0);
@@ -363,11 +573,11 @@ const searchStoreForTool = (query: string): string => {
     ].join("\n");
   }
 
-  return "No local memories found.";
+  return "No saved memories match. If the question was about the user, say you don't have that saved and do not guess; otherwise just answer it.";
 };
 
 const shouldSearchHistory = (userText: string): boolean =>
-  /之前|上次|以前|刚才|历史|记得|回忆|聊过|说过|提到|last time|previous|before|remember/i.test(
+  /之前|上次|以前|刚才|历史|记得|回忆|聊过|说过|提到|last time|previous|before|remember|earlier|we talked|did i (tell|say|mention)/i.test(
     userText,
   );
 
@@ -379,37 +589,139 @@ const inferPreference = (userText: string): string => {
   return "";
 };
 
+// Starts a new memory session after the idle time without writing anything;
+// a session is only stored once an exchange is auto-saved.
+const rollSessionIfIdle = (): void => {
+  if (activeSessionId && lastExchangeAt > 0 && Date.now() - lastExchangeAt > memorySessionIdleMs) {
+    activeSessionId = "";
+    recalledMemoryKeys = new Set<string>();
+    recalledMemoryTexts = new Map<string, string>();
+  }
+};
+
 export const prepareMemoryPrompt = (userText: string): string => {
   if (!memoryEnabled) return "";
+  try {
+    return buildMemoryPrompt(userText);
+  } catch (error: any) {
+    // A memory problem must not stop the assistant from answering.
+    console.error(`[Memory] Could not prepare memory context: ${error.message}`);
+    return "";
+  }
+};
+
+const buildMemoryPrompt = (userText: string): string => {
+  rollSessionIfIdle();
   const store = readStore();
-  getActiveSession(store, userText);
-  writeStore(store);
 
   const wakeupItems = store.userMemories
     .slice()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .filter((memory) => !recalledMemoryKeys.has(`user:${memory.id}`))
+    .filter((memory) => !HAN.test(memory.content))
     .slice(0, Math.max(0, memoryWakeupMaxItems))
     .map((memory) => {
-      const text = `用户记忆/${memory.kind}: ${memory.content}`;
-      markRecalled([{ key: `user:${memory.id}`, score: 0, text }]);
-      return `- ${memory.content}`;
+      const text = factForModel(memory);
+      markRecalled([{ key: `user:${memory.id}`, score: 0, text: `Saved fact: ${text}` }]);
+      return `- ${text}`;
     });
   const searchResults = shouldSearchHistory(userText) ? searchStore(userText) : [];
   const sections = [
-    memoryProfileText ? `固定用户画像/偏好：\n${memoryProfileText}` : "",
-    wakeupItems.length > 0 ? `简短偏好/情景记忆：\n${wakeupItems.join("\n")}` : "",
+    memoryProfileText ? `User profile:\n${memoryProfileText}` : "",
+    wakeupItems.length > 0
+      ? `Facts the user told you about themselves (when you mention them, talk to the user as "you"):\n${wakeupItems.join("\n")}`
+      : "",
     searchResults.length > 0
-      ? `可能相关的历史对话记忆：\n${searchResults.map((item) => `- ${item}`).join("\n")}`
+      ? `Possibly relevant earlier conversations:\n${searchResults.map((item) => `- ${item}`).join("\n")}`
       : "",
   ].filter(Boolean);
 
   if (sections.length === 0) return "";
   return [
-    "以下是本地轻量记忆模块提供的上下文。自然使用这些信息；如果历史记忆不确定，不要编造。",
+    "Local memory about this user. Use it only when relevant, answer in English, and never invent details that are not listed here.",
     ...sections,
   ].join("\n\n");
 };
+
+// ---- Memory commands --------------------------------------------------------
+
+export type MemoryCommandReply = {
+  text: string;
+  // True when saved facts changed or were removed: the conversation context
+  // may still contain the old value and should be cleared.
+  contextChanged: boolean;
+};
+
+const commandKey = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * Answers explicit memory commands ("remember that ...", "what is my ...",
+ * "actually, my ... is ...", "forget my ...") directly from the local store.
+ * Returns null when the text is not a memory command, or when the model should
+ * answer (a recall with no saved match, an update of an unknown fact).
+ */
+export const handleMemoryCommand = (userText: string): MemoryCommandReply | null => {
+  if (!memoryEnabled) return null;
+  const command = parseMemoryCommand(userText);
+  if (!command) return null;
+
+  const reply = (text: string, contextChanged = false): MemoryCommandReply => {
+    handledCommandTexts.add(commandKey(userText));
+    // The memory prompt prepared for this turn never reaches the model (and the
+    // caller clears the history when facts changed), so offer the saved facts
+    // to the model again on its next turn.
+    recalledMemoryKeys = new Set<string>();
+    recalledMemoryTexts = new Map<string, string>();
+    console.log(`[Memory] Handled "${command.type}" command without the LLM`);
+    return { text, contextChanged };
+  };
+
+  try {
+    if (command.type === "remember" || command.type === "update") {
+      if (containsSecret(command.statement)) {
+        return reply("I won't save passwords, PINs or other secret details. Please keep those somewhere safe.");
+      }
+      const store = readStore();
+      if (command.type === "update") {
+        const fact = parseFact(command.statement);
+        if (!fact || findFacts(store, fact.subject).length === 0) return null;
+      }
+      const result = saveFact(store, command.statement);
+      writeStore(store);
+      const said = factForUser(result.memory);
+      if (result.status === "updated") {
+        return reply(`Got it. I've updated that: ${said}.`, true);
+      }
+      if (result.status === "unchanged") {
+        return reply(`I already have that saved: ${said}.`);
+      }
+      return reply(`I'll remember that ${said}.`);
+    }
+
+    if (command.type === "forget") {
+      const store = readStore();
+      const removed = forgetTopic(store, command.topic);
+      if (removed === 0) {
+        return reply(`I don't have anything saved about ${toSecondPerson(command.topic)}.`);
+      }
+      writeStore(store);
+      return reply(`Okay, I've forgotten ${toSecondPerson(command.topic)}.`, true);
+    }
+
+    const facts = findFacts(readStore(), command.topic);
+    if (facts.length > 0) {
+      return reply(facts.slice(0, 3).map((memory) => sentence(factForUser(memory))).join(" "));
+    }
+    return command.explicit
+      ? reply(`I don't have anything saved about ${toSecondPerson(command.topic)}.`)
+      : null;
+  } catch (error: any) {
+    console.error(`[Memory] ${command.type} command failed: ${error.message}`);
+    return reply("Sorry, I couldn't reach my memory just now. Please try again.");
+  }
+};
+
+// ---- Auto-save --------------------------------------------------------------
 
 export function autoSaveExchange(
   userText: string,
@@ -418,8 +730,16 @@ export function autoSaveExchange(
 ): void {
   if (!memoryAutoSave) return;
   if (!userText.trim() || !assistantText.trim()) return;
+  // Memory commands are already stored as facts; saving the exchange too would
+  // keep a forgotten value in the conversation history.
+  if (handledCommandTexts.delete(commandKey(userText))) return;
+  if (isSensitiveForAutoSave(userText) || isSensitiveForAutoSave(assistantText)) {
+    console.log("[Memory] Exchange contains sensitive details; not saved.");
+    return;
+  }
 
   enqueueWrite(async () => {
+    // Step 1: append the exchange (synchronous read-modify-write).
     const store = readStore();
     const session = getActiveSession(store, userText);
     const exchange: MemoryExchange = {
@@ -432,51 +752,80 @@ export function autoSaveExchange(
     if (session.exchanges.length === 1) {
       session.title = titleFromText(userText);
     }
-    session.summary = await buildSessionSummary(session, summaryText);
-    session.summaryUpdatedAt = nowIso();
-    const summaryTitle = titleFromSummary(session.summary, session.title);
-    if (summaryTitle && summaryTitle !== session.title) {
-      session.title = summaryTitle;
-    }
-    session.keywords = persistedKeywords(
-      [session.title, session.summary, userText, assistantText].join("\n"),
-    );
     session.updatedAt = nowIso();
     lastExchangeAt = Date.now();
 
     const preference = inferPreference(userText);
-    if (preference) {
-      const existing = store.userMemories.find((memory) => memory.content === preference);
-      if (existing) {
-        existing.updatedAt = nowIso();
-      } else {
-        store.userMemories.unshift({
-          id: makeId("memory"),
-          kind: "preference",
-          content: preference,
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-          keywords: persistedKeywords(preference),
-        });
-      }
+    if (preference && !containsSecret(preference)) {
+      saveFact(store, preference, "preference");
     }
-
     writeStore(store);
-    console.log(`[Memory] Saved exchange to: ${session.title}`);
+    const sessionCopy: MemorySession = { ...session, exchanges: session.exchanges.slice() };
+
+    // Step 2: summarize without holding the store, so facts saved or forgotten
+    // meanwhile are not overwritten.
+    const summary = await buildSessionSummary(sessionCopy, summaryText);
+
+    // Step 3: store the summary if the exchange still exists.
+    const latest = readStore();
+    const target = latest.sessions.find((item) => item.id === session.id);
+    if (!target || !target.exchanges.some((item) => item.at === exchange.at)) return;
+    target.summary = summary;
+    target.summaryUpdatedAt = nowIso();
+    target.title = titleFromSummary(summary, target.title);
+    target.keywords = persistedKeywords([target.title, summary, userText, assistantText].join("\n"));
+    writeStore(latest);
+    console.log(`[Memory] Saved exchange to: ${target.title}`);
   });
 }
+
+// ---- One-time repair of older stores ----------------------------------------
+
+/**
+ * Older versions only kept "Remember that ..." requests inside conversation
+ * history (often with a Chinese summary), so they were never found again.
+ * Imports them as facts once, oldest first, after backing up the file.
+ */
+const importRememberedFacts = (): void => {
+  if (!fs.existsSync(memoryStorePath)) return;
+  const store = readStore();
+  if (store.rememberedFactsImported) return;
+  const exchanges = store.sessions
+    .flatMap((session) => session.exchanges)
+    .sort((a, b) => `${a.at}`.localeCompare(`${b.at}`));
+  let imported = 0;
+  for (const exchange of exchanges) {
+    const command = parseMemoryCommand(exchange.user);
+    if (command?.type === "remember" && !containsSecret(command.statement)) {
+      if (saveFact(store, command.statement).status !== "unchanged") imported += 1;
+    }
+  }
+  if (imported > 0) {
+    const backup = `${memoryStorePath}.bak-${moment().format("YYYYMMDD-HHmmss")}`;
+    fs.copyFileSync(memoryStorePath, backup);
+    console.log(`[Memory] Imported ${imported} remembered fact(s) from saved conversations (backup: ${backup})`);
+  }
+  writeStore(store);
+};
+
+// ---- Tools ------------------------------------------------------------------
 
 export const localMemoryTools: LLMTool[] = [];
 
 if (memoryEnabled) {
   console.log(`[Memory] Enabled, store: ${memoryStorePath}`);
+  try {
+    importRememberedFacts();
+  } catch (error: any) {
+    console.error(`[Memory] Could not import remembered facts: ${error.message}`);
+  }
   localMemoryTools.push(
     {
       type: "function",
       function: {
         name: "searchLocalMemory",
         description:
-          "Search local lightweight memory for user preferences, situations, and previous conversations. Use it when the user refers to earlier chats or asks what was discussed before.",
+          "Look up personal facts the user told you to remember (for example their favorite color or name) and earlier conversations with this user.",
         parameters: {
           type: "object",
           properties: {
@@ -489,7 +838,7 @@ if (memoryEnabled) {
         },
       },
       func: async (params: { query: string }) => {
-        return `${ToolReturnTag.Success}${searchStoreForTool(params.query)}`;
+        return `${ToolReturnTag.Success}${searchStoreForTool(`${params?.query || ""}`)}`;
       },
     },
     {
@@ -497,13 +846,13 @@ if (memoryEnabled) {
       function: {
         name: "storeLocalMemory",
         description:
-          "Store a concise user preference, situation, or durable fact in local lightweight memory.",
+          "Save a short fact or preference the user wants remembered, written in English from the user's point of view, e.g. 'My favorite color is blue'.",
         parameters: {
           type: "object",
           properties: {
             content: {
               type: "string",
-              description: "A concise durable memory to remember later",
+              description: "The fact to remember, in English",
             },
             kind: {
               type: "string",
@@ -515,21 +864,15 @@ if (memoryEnabled) {
         },
       },
       func: async (params: { content: string; kind?: "preference" | "context" | "fact" }) => {
-        const content = textPreview(params.content || "", 300);
+        const content = textPreview(`${params?.content || ""}`, 300);
         if (!content) return `${ToolReturnTag.Error}Memory content is empty.`;
-        enqueueWrite(() => {
-          const store = readStore();
-          store.userMemories.unshift({
-            id: makeId("memory"),
-            kind: params.kind || "fact",
-            content,
-            createdAt: nowIso(),
-            updatedAt: nowIso(),
-            keywords: persistedKeywords(content),
-          });
-          writeStore(store);
-        });
-        return `${ToolReturnTag.Success}Stored local memory.`;
+        if (containsSecret(content)) {
+          return `${ToolReturnTag.Error}Not saved: secrets such as passwords are never stored. Tell the user.`;
+        }
+        const store = readStore();
+        const result = saveFact(store, content, params?.kind || "fact");
+        writeStore(store);
+        return `${ToolReturnTag.Success}Saved: ${factForModel(result.memory)} Confirm this to the user in one short sentence.`;
       },
     },
   );

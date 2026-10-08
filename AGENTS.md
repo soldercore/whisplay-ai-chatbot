@@ -315,7 +315,15 @@ State transitions are triggered by button events, wake word detection, or comple
 ## Testing Strategy
 
 ### Unit Testing
-- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`) and `src/test/web-search.spec.ts` (Ollama tool calls and automatic web search, using a fake Ollama server)
+- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`) , `src/test/web-search.spec.ts` (Ollama tool calls and automatic web search, using a fake Ollama server) and `src/test/memory.spec.ts` (local memory commands, persistence, file safety, spoken-JSON guard)
+
+### Local Memory
+- `MEMORY_ENABLED=true` stores facts and conversation summaries in `data/memory/memory.json` (override with `MEMORY_DIR`).
+- `src/config/memory-commands.ts` recognises explicit commands ("remember that ...", "what is my ...", "actually, my ... is ...", "forget my ..."); `handleMemoryCommand` in `local-memory.ts` answers them from the store, and `src/cloud-api/llm.ts` speaks that reply without calling the LLM. Recalls with no saved match and updates of unknown facts still go to the model.
+- Secrets (passwords, PINs, card numbers ...) are never stored; exchanges with secrets or long numbers are not auto-saved. Forgetting also scrubs matching saved conversations.
+- Writes are atomic; an unreadable file is kept as `memory.json.corrupt-*`. Older stores get a one-time import of "Remember ..." requests from saved conversations (backup `memory.json.bak-*`).
+- Facts go to the model in the third person ("The user's favorite color is blue"); replies to the user use "your". Memory text sent to the model is English.
+- `src/config/spoken-text-guard.ts`: an Ollama answer that starts with JSON or markup is held back; a tool call written as text is executed, other markup is never spoken.
 - Test scripts in `python/test/` for hardware validation
 
 ### Integration Testing

@@ -7,6 +7,7 @@ import {
   SummaryTextWithLLMFunction,
 } from "./interface";
 import { pluginRegistry, LLMProvider } from "../plugin";
+import { handleMemoryCommand } from "../config/local-memory";
 
 dotenv.config();
 
@@ -25,6 +26,19 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
   invokeFunctionCallback?,
 ) => {
   const isTopLevel = functionCallDepth === 0;
+  if (isTopLevel) {
+    // Explicit memory commands are answered from the local store without an
+    // LLM round trip; the reply is spoken and displayed like any answer.
+    const lastUser = [...inputMessages].reverse().find((message) => message.role === "user");
+    const memoryReply =
+      typeof lastUser?.content === "string" ? handleMemoryCommand(lastUser.content) : null;
+    if (memoryReply) {
+      if (memoryReply.contextChanged) resetChatHistory();
+      partialCallback(memoryReply.text);
+      endCallBack();
+      return;
+    }
+  }
   functionCallDepth++;
   if (functionCallDepth > MAX_FUNCTION_CALL_DEPTH) {
     console.warn(`[LLM] Function call depth exceeded ${MAX_FUNCTION_CALL_DEPTH}, stopping.`);

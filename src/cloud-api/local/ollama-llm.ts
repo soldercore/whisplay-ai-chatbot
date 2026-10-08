@@ -33,6 +33,7 @@ import {
   needsCurrentInformation,
   searchTypeFor,
 } from "../../config/web-search-router";
+import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 
 dotenv.config();
 
@@ -352,6 +353,9 @@ const chatWithLLMStreamInternal = async (
   });
   let partialAnswer = "";
   let partialThinking = "";
+  // An answer that starts with JSON or markup is held back from speech until
+  // it is complete (see spoken-text-guard); everything else streams as before.
+  let contentMode: "undecided" | "stream" | "hold" = "undecided";
   const functionCallsPackages: OllamaFunctionCall[][] = [];
 
   try {
@@ -413,8 +417,13 @@ const chatWithLLMStreamInternal = async (
           // Handle content from Ollama
           if (parsedData.message?.content) {
             const content = parsedData.message.content;
-            partialCallback(content);
             partialAnswer += content;
+            if (contentMode === "stream") {
+              partialCallback(content);
+            } else if (contentMode === "undecided" && partialAnswer.trim()) {
+              contentMode = startsWithMarkup(partialAnswer) ? "hold" : "stream";
+              if (contentMode === "stream") partialCallback(partialAnswer);
+            }
           }
 
           // Handle thinking from Ollama
@@ -437,6 +446,17 @@ const chatWithLLMStreamInternal = async (
 
     response.data.on("end", async () => {
       console.log("Stream ended");
+      if (contentMode === "hold") {
+        const held = interpretHeldAnswer(partialAnswer, new Set(Object.keys(llmFuncMap)));
+        if (held.toolCall && functionCallsPackages.length === 0) {
+          console.warn(`[LLM] Tool call arrived as text; running ${held.toolCall.function.name} instead of speaking it.`);
+          functionCallsPackages.push([held.toolCall]);
+          partialAnswer = "";
+        } else {
+          partialAnswer = held.spoken;
+          if (partialAnswer) partialCallback(partialAnswer);
+        }
+      }
       const functionCalls = functionCallsPackages.flat().map((call, index) => ({
         id: `call_${Date.now()}_${Math.random()}_${index}`,
         type: "function",
@@ -605,6 +625,7 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
 ): Promise<string> => {
   const prompt = `${promptPrefix}\n\n${text}\n\n`;
 
+  // Bounded so a slow memory summary cannot occupy the model indefinitely.
   const response = await axios.post(
     `${ollamaEndpoint}/api/generate`,
     {
@@ -612,7 +633,9 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
       prompt: prompt,
       stream: false,
       think: false,
-    }
+      options: { num_predict: 160 },
+    },
+    { timeout: 60000 },
   );
 
   if (response.data && response.data.response) {
