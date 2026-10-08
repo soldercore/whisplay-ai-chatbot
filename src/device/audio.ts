@@ -56,6 +56,18 @@ const ttsAudioFormat: AudioFormat = normalizeAudioFormat(
   defaultTtsAudioFormat,
 );
 
+// TEMPORARY (Phase 0 TTS diagnostics): remove the [TTS-DIAG] lines once the
+// audio path is confirmed on the device.
+console.log(
+  `[TTS-DIAG][audio] TTS_SERVER=${ttsServer}, output device ${alsaOutputDevice} (${
+    process.env.ALSA_OUTPUT_DEVICE
+      ? "from ALSA_OUTPUT_DEVICE"
+      : soundCardRef
+        ? `derived from sound card ${soundCardRef}`
+        : "fallback"
+  }), WEB_AUDIO_ENABLED=${process.env.WEB_AUDIO_ENABLED || "unset"}`
+);
+
 const useWavPlayer = ttsAudioFormat === "wav";
 const MP3_SOX_GAIN_DB = "2";
 
@@ -319,20 +331,38 @@ const playAudioData = (params: TTSResult): Promise<void> => {
   }
   // play wav file using aplay
   if (filePath) {
+    let soxExited = false;
     return Promise.race([
       new Promise<void>((resolve) => {
         setTimeout(() => {
+          if (!soxExited) {
+            console.warn(
+              `[TTS-DIAG][audio] playback timeout won after ${Math.round(audioDuration + 1000)}ms; sox has not exited (${filePath})`
+            );
+          }
           resolve();
         }, audioDuration + 1000);
       }),
       new Promise<void>((resolve, reject) => {
         console.log("Playback duration:", audioDuration);
+        console.log(`[TTS-DIAG][audio] sox -q ${filePath} -t alsa ${alsaOutputDevice}`);
         player.isPlaying = true;
         const process = spawn("sox", ["-q", filePath, "-t", "alsa", alsaOutputDevice]);
+        let soxErr = "";
+        process.stderr?.on("data", (data) => (soxErr += data.toString()));
+        process.on("error", (error) => {
+          soxExited = true;
+          player.isPlaying = false;
+          reject(error);
+        });
         process.on("close", (code: number) => {
+          soxExited = true;
           player.isPlaying = false;
           if (code !== 0) {
             console.error(`Audio playback error: ${code}`);
+            if (soxErr.trim()) {
+              console.error(soxErr.trim());
+            }
             reject(code);
           } else {
             console.log("Audio playback completed");

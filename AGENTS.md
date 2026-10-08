@@ -315,7 +315,7 @@ State transitions are triggered by button events, wake word detection, or comple
 ## Testing Strategy
 
 ### Unit Testing
-- Currently minimal test coverage (`npm test` returns placeholder)
+- Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`)
 - Test scripts in `python/test/` for hardware validation
 
 ### Integration Testing

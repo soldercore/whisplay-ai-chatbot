@@ -13,7 +13,7 @@
     "configure-env": "node -r ts-node/register -r tsconfig-paths/register dist/configure-env.js",
     "upgrade-env": "node -r ts-node/register -r tsconfig-paths/register dist/upgrade-env.js",
     "postinstall": "patch-package",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --require ts-node/register/transpile-only --test src/test/tts-pipeline.spec.ts"
   },
   "author": "",
   "license": "GPL-3.0-only",

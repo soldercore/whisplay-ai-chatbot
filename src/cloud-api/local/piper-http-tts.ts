@@ -15,8 +15,16 @@ const piperHttpModel =
   process.env.PIPER_HTTP_MODEL || "en_US-amy-medium";
 const piperHttpLengthScale =
   process.env.PIPER_HTTP_LENGTH_SCALE || "1";
+// Upper bound for one synthesis request, so a stalled Piper server cannot
+// block the playback queue forever.
+const piperHttpTimeoutSec = process.env.PIPER_HTTP_TIMEOUT_SEC || "60";
+const piperHttpUrl = `http://${piperHttpHost}:${piperHttpPort}`;
 
 const ttsServer = (process.env.TTS_SERVER || "").toLowerCase();
+
+// TEMPORARY (Phase 0 TTS diagnostics): remove the [TTS-DIAG] lines once the
+// audio path is confirmed on the device.
+console.log(`[TTS-DIAG][piper-http] endpoint ${piperHttpUrl}, timeout ${piperHttpTimeoutSec}s`);
 
 let pyProcess: ChildProcess | null = null;
 if (ttsServer === TTSServer.piperhttp) {
@@ -42,46 +50,123 @@ if (ttsServer === TTSServer.piperhttp) {
         stdio: "inherit",
       }
     );
+    pyProcess.on("error", (error) => {
+      console.error("Failed to start the embedded Piper HTTP server:", error.message);
+    });
+    pyProcess.on("exit", (code, signal) => {
+      // Exits right away when another Piper server already owns the port.
+      console.log(
+        `[TTS-DIAG][piper-http] embedded Piper HTTP server exited (code ${code}, signal ${signal})`
+      );
+    });
   }
 }
+
+let requestSeq = 0;
+const PREVIEW_BYTES = 200;
+
+const readPreview = (file: string): string => {
+  try {
+    const buffer = fs.readFileSync(file).subarray(0, PREVIEW_BYTES);
+    return buffer.toString("utf8").replace(/[^\x20-\x7e]/g, ".");
+  } catch {
+    return "";
+  }
+};
+
+const isWavFile = (file: string): boolean => {
+  try {
+    const fd = fs.openSync(file, "r");
+    const header = Buffer.alloc(12);
+    const read = fs.readSync(fd, header, 0, 12, 0);
+    fs.closeSync(fd);
+    return (
+      read === 12 &&
+      header.toString("ascii", 0, 4) === "RIFF" &&
+      header.toString("ascii", 8, 12) === "WAVE"
+    );
+  } catch {
+    return false;
+  }
+};
+
+const removeFile = (file: string): void => {
+  try {
+    fs.unlinkSync(file);
+  } catch {}
+};
 
 const piperHttpTTS = async (
   text: string
 ): Promise<TTSResult> => {
   return new Promise((resolve, reject) => {
-    const now = Date.now();
-    const tempWavFile = path.join(ttsDir, `piper_http_${now}.wav`);
-    const convertedWavFile = path.join(ttsDir, `piper_http_${now}_converted.wav`);
+    // Several sentences can start synthesizing in the same millisecond, so the
+    // file name also carries a per-process sequence number.
+    const id = `${Date.now()}_${process.pid}_${++requestSeq}`;
+    const tempWavFile = path.join(ttsDir, `piper_http_${id}.wav`);
+    const convertedWavFile = path.join(ttsDir, `piper_http_${id}_converted.wav`);
 
     // curl -X POST -H 'Content-Type: application/json' -d '{ "text": "This is a test." }' -o test.wav localhost:8805
-    // text may contain double quotes, need to escape them
-    const escapedText = text.replace(/"/g, '\\"');
+    const body = JSON.stringify({
+      text,
+      length_scale: Number(piperHttpLengthScale),
+    });
 
-    const piperProcess = spawn('curl', [
-      "-X",
-      "POST",
-      "-H",
-      "Content-Type: application/json",
-      "-d",
-      `{ "text": "${escapedText}", "length_scale": ${piperHttpLengthScale} }`,
-      "-o",
-      tempWavFile,
-      `${piperHttpHost}:${piperHttpPort}`
-    ]);
+    const piperProcess = spawn(
+      "curl",
+      [
+        "-sS",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        piperHttpTimeoutSec,
+        "-w",
+        "%{http_code} %{size_download} %{content_type}",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        body,
+        "-o",
+        tempWavFile,
+        piperHttpUrl,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
 
-    piperProcess.stdin.write(text);
-    piperProcess.stdin.end();
+    let curlOut = "";
+    let curlErr = "";
+    piperProcess.stdout?.on("data", (data) => (curlOut += data.toString()));
+    piperProcess.stderr?.on("data", (data) => (curlErr += data.toString()));
 
     piperProcess.on("close", async (code: number) => {
+      const [httpStatus = "", bytes = "", contentType = ""] = curlOut.trim().split(" ");
+      console.log(
+        `[TTS-DIAG][piper-http] POST ${piperHttpUrl} -> curl exit ${code}, HTTP ${httpStatus || "-"}, ${bytes || 0} bytes, ${contentType || "no content type"}`
+      );
+
       if (code !== 0) {
-        // reject(new Error(`Piper process exited with code ${code}`));
-        console.error(`Piper process exited with code ${code}`);
+        console.error(
+          `Piper process exited with code ${code}${curlErr.trim() ? `: ${curlErr.trim()}` : ""}`
+        );
+        removeFile(tempWavFile);
         resolve({ duration: 0 });
         return;
       }
 
       if (fs.existsSync(tempWavFile) === false) {
         console.log("Piper output file not found:", tempWavFile);
+        resolve({ duration: 0 });
+        return;
+      }
+
+      if (httpStatus !== "200" || !isWavFile(tempWavFile)) {
+        // Never hand an HTTP error body to SoX as if it were audio.
+        console.error(
+          `Piper returned no WAV audio (HTTP ${httpStatus}, ${contentType || "no content type"}): ${readPreview(tempWavFile)}`
+        );
+        removeFile(tempWavFile);
         resolve({ duration: 0 });
         return;
       }
@@ -103,9 +188,14 @@ const piperHttpTTS = async (
             convertedWavFile,
           ]);
 
+          let soxErr = "";
+          soxProcess.stderr?.on("data", (data) => (soxErr += data.toString()));
+          soxProcess.on("error", rej);
           soxProcess.on("close", (soxCode: number) => {
             if (soxCode !== 0) {
-              console.error(`Sox process exited with code ${soxCode}`);
+              console.error(
+                `Sox process exited with code ${soxCode}${soxErr.trim() ? `: ${soxErr.trim()}` : ""}`
+              );
               rej(new Error(`Sox process exited with code ${soxCode}`));
             } else {
               // Replace original file with converted file
@@ -118,11 +208,13 @@ const piperHttpTTS = async (
         const duration = (await getAudioDurationInSeconds(convertedWavFile)) * 1000;
         // Clean up temp file
         // fs.unlinkSync(convertedWavFile);
-        
+        console.log(`[TTS-DIAG][piper-http] ${convertedWavFile} duration ${Math.round(duration)}ms`);
+
         resolve({ filePath: convertedWavFile, duration });
       } catch (error) {
         // reject(error);
         console.log("Error processing Piper output:", `"${text}"`, error);
+        removeFile(tempWavFile);
         resolve({ duration: 0 });
       }
     });

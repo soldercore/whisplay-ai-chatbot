@@ -225,6 +225,8 @@ export class StreamResponser {
       sentences.forEach((sentence, index) => {
         const purified = purifyTextForTTS(sentence);
         if (!purified) {
+          // TEMPORARY (Phase 0 TTS diagnostics)
+          console.warn("[TTS-DIAG] nothing left to speak after purifyTextForTTS:", JSON.stringify(sentence));
           return;
         }
         const ttsPromise = this.enqueueTTS(purified);
@@ -250,6 +252,10 @@ export class StreamResponser {
       this.displaySentences.push(this.partialContent);
       this.sentencesCallback?.(this.displaySentences);
       const text = purifyTextForTTS(this.partialContent);
+      if (!text) {
+        // TEMPORARY (Phase 0 TTS diagnostics)
+        console.warn("[TTS-DIAG] nothing left to speak after purifyTextForTTS:", JSON.stringify(this.partialContent));
+      }
       if (text) {
         const length = this.speakQueue.length;
         this.speakQueue.push({
