@@ -34,6 +34,7 @@ import {
   searchTypeFor,
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
+import { toolsRelevantTo } from "../../config/tool-router";
 
 dotenv.config();
 
@@ -160,8 +161,21 @@ const stableStringify = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+// Text arguments are compared without case and punctuation, so "What is 2 plus 2"
+// and "what is 2 plus 2?" count as the same call.
+const normalizeArguments = (value: unknown): unknown => {
+  if (typeof value === "string") return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  if (Array.isArray(value)) return value.map(normalizeArguments);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, normalizeArguments(item)]),
+    );
+  }
+  return value;
+};
+
 const toolCallSignature = (call: OllamaFunctionCall): string =>
-  `${call.function?.name || ""}:${stableStringify(call.function?.arguments || {})}`;
+  `${call.function?.name || ""}:${stableStringify(normalizeArguments(call.function?.arguments || {}))}`;
 
 const previousToolResultFor = (toolName: string): string => {
   const previous = [...messages]
@@ -219,9 +233,16 @@ const prefetchWebSearchIfNeeded = async (
 const WEB_TOOL_NAMES = new Set(["web_search", "fetch_webpage"]);
 const toolsForRequest = (toolLoopState: ToolLoopState) => {
   if (!ollamaEnableTools) return undefined;
-  return toolLoopState.webToolsOnly
-    ? llmTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name))
-    : llmTools;
+  if (toolLoopState.webToolsOnly) {
+    return llmTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name));
+  }
+  // Memory and volume tools only when the request (or the request a follow-up
+  // continues) concerns them; see tool-router.
+  const [latest, previous] = messages
+    .filter((msg) => msg.role === "user")
+    .reverse()
+    .map((msg) => (typeof msg.content === "string" ? msg.content : ""));
+  return toolsRelevantTo(latest || "", llmTools, previous || "");
 };
 
 const answerFromAvailableToolResults = async ({
@@ -374,6 +395,7 @@ const chatWithLLMStreamInternal = async (
       ? fs.readFileSync(capturedImagePath).toString("base64")
       : "";
 
+    const requestTools = toolsForRequest(toolLoopState);
     const response = await axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
@@ -394,7 +416,7 @@ const chatWithLLMStreamInternal = async (
           temperature: 0.7,
           num_predict: ollamaPredictNum,
         },
-        tools: toolsForRequest(toolLoopState),
+        tools: requestTools,
         keep_alive: -1,
       },
       {
@@ -447,7 +469,9 @@ const chatWithLLMStreamInternal = async (
     response.data.on("end", async () => {
       console.log("Stream ended");
       if (contentMode === "hold") {
-        const held = interpretHeldAnswer(partialAnswer, new Set(Object.keys(llmFuncMap)));
+        // A tool call written as text runs only if that tool was offered.
+        const offered = requestTools ? requestTools.map((tool) => tool.function.name) : Object.keys(llmFuncMap);
+        const held = interpretHeldAnswer(partialAnswer, new Set(offered));
         if (held.toolCall && functionCallsPackages.length === 0) {
           console.warn(`[LLM] Tool call arrived as text; running ${held.toolCall.function.name} instead of speaking it.`);
           functionCallsPackages.push([held.toolCall]);

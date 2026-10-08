@@ -826,7 +826,9 @@ if (memoryEnabled) {
       function: {
         name: "searchLocalMemory",
         description:
-          "Look up personal facts the user told you to remember (for example their favorite color or name) and earlier conversations with this user.",
+          // No concrete example here or below: the 1.7B model copies it into the
+          // arguments (it searched for and saved "My favorite color is blue").
+          "Look up what the user told you earlier about themselves, or what you talked about before. Use the user's own words as the query.",
         parameters: {
           type: "object",
           properties: {
@@ -847,7 +849,7 @@ if (memoryEnabled) {
       function: {
         name: "storeLocalMemory",
         description:
-          "Save a short fact or preference the user wants remembered, written in English from the user's point of view, e.g. 'My favorite color is blue'.",
+          "Save something the user asked you to remember about themselves. Write it in English in the first person, as the user would say it.",
         parameters: {
           type: "object",
           properties: {

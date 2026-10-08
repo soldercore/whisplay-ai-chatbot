@@ -297,3 +297,78 @@ test("automatic web search still works with memory enabled", async () => {
   await ask("Remember that the GTA 6 party is at my place.");
   assert.equal(searches.length, 1, "a memory command never triggers a web search");
 });
+
+// ---- Tool choice for unrelated questions ---------------------------------------
+
+const toolCall = (name: string, args: object): object[] => [chunk({ tool_calls: [{ function: { name, arguments: args } }] }), done];
+const offered = (request: ChatRequest) => (request.tools || []).map((tool) => tool.function.name);
+
+test("an unrelated question is not offered the memory or volume tools", async () => {
+  await ask("Remember that my favorite color is blue.");
+  responders = [() => say("2 plus 2 is 4.")];
+  const { answer } = await ask("What is 2 plus 2? Answer in one sentence.");
+  assert.equal(answer, "2 plus 2 is 4.");
+  assert.equal(chatRequests.length, 1);
+  const tools = offered(chatRequests[0]);
+  assert.equal(tools.some((name) => /LocalMemory|Volume/.test(name)), false, `offered: ${tools}`);
+  assert.ok(tools.includes("web_search"), "web search stays available");
+});
+
+test("questions about the user still get the memory tools", async () => {
+  await ask("Remember that my favorite color is blue.");
+  responders = [() => toolCall("searchLocalMemory", { query: "color I like" }), () => say("You like blue.")];
+  const { answer } = await ask("Which color do I like?");
+  assert.ok(offered(chatRequests[0]).includes("searchLocalMemory"));
+  assert.ok(offered(chatRequests[0]).includes("storeLocalMemory"));
+  assert.match(chatRequests[1].messages.find((m) => m.role === "tool")?.content || "", /favorite color is blue/);
+  assert.equal(answer, "You like blue.");
+});
+
+test("a memory search repeated with different punctuation is not run again", async () => {
+  responders = [
+    () => toolCall("searchLocalMemory", { query: "What is my dog's name" }),
+    () => toolCall("searchLocalMemory", { query: "what is my dog's name?" }),
+    () => say("I don't have your dog's name saved."),
+  ];
+  const { answer } = await ask("Which pet do I have?");
+  const toolResults = chatRequests.flatMap((request) => request.messages.filter((m) => m.role === "tool"));
+  assert.equal(new Set(toolResults.map((m) => m.content)).size, 1, "the search ran once");
+  assert.equal(chatRequests.length, 3);
+  assert.equal(chatRequests[2].tools, undefined, "the final answer request offers no tools");
+  assert.equal(answer, "I don't have your dog's name saved.");
+});
+
+test("memory and volume tools are offered only for requests that concern them", () => {
+  const { mayConcernUserMemory } = commands;
+  const { mentionsVolume, toolsRelevantTo } = require("../config/tool-router");
+  for (const text of ["Which color do I like?", "What is my favorite color?", "My sister is called Anna, keep that in mind.", "Do you remember what we talked about?", "Please note that I prefer tea."]) {
+    assert.equal(mayConcernUserMemory(text), true, text);
+  }
+  for (const text of ["What is 2 plus 2? Answer in one sentence.", "What is the capital of France?", "Can you tell me a joke?", "When is GTA VI releasing?"]) {
+    assert.equal(mayConcernUserMemory(text), false, text);
+  }
+  for (const text of ["Turn the volume up a bit.", "Make it louder", "It's too loud", "I can't hear you", "Mute"]) {
+    assert.equal(mentionsVolume(text), true, text);
+  }
+  assert.equal(mentionsVolume("What is 2 plus 2? Answer in one sentence."), false);
+  const tools = ["setVolume", "web_search", "searchLocalMemory", "someTool"].map((name) => ({ function: { name } }));
+  assert.deepEqual(toolsRelevantTo("What is 2 plus 2?", tools).map((t: any) => t.function.name), ["web_search", "someTool"]);
+});
+
+test("a follow-up keeps the tools of the request it continues; a new question does not", async () => {
+  const { toolsRelevantTo } = require("../config/tool-router");
+  const tools = ["searchLocalMemory", "setVolume", "web_search"].map((name) => ({ function: { name } }));
+  const names = (request: string, previous: string) => toolsRelevantTo(request, tools, previous).map((t: any) => t.function.name);
+  assert.deepEqual(names("What about her birthday?", "Have I told you about my sister?"), ["searchLocalMemory", "web_search"]);
+  assert.deepEqual(names("She lives in Berlin, too.", "My sister is called Anna, keep that in mind."), ["searchLocalMemory", "web_search"]);
+  assert.deepEqual(names("Anything else?", "What did we talk about last time?"), ["searchLocalMemory", "web_search"]);
+  assert.deepEqual(names("A bit more.", "Turn the volume up."), ["setVolume", "web_search"]);
+  assert.deepEqual(names("What is 2 plus 2? Answer in one sentence.", "Which color do I like?"), ["web_search"]);
+  assert.deepEqual(names("What about her birthday?", "What is the capital of France?"), ["web_search"]);
+
+  responders = [() => say("I don't have anything about your sister.")];
+  await ask("Have I told you about my sister?");
+  responders = [() => say("I don't have her birthday saved.")];
+  await ask("What about her birthday?");
+  assert.ok(offered(chatRequests[1]).includes("searchLocalMemory"), "the follow-up can still search memory");
+});

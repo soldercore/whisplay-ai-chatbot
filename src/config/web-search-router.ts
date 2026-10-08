@@ -20,7 +20,7 @@ const LIVE_DATA =
 const DATE_ONLY =
   /^\s*(what(?:'s| is) (?:the )?(?:date|day)(?: is it)?(?: today)?|what day is (?:it|today)(?: today)?)\s*\??\s*$/i;
 const RELEASE_OR_RESULT =
-  /\b(release date|launch date|coming out|come out|comes out|who won|who is winning|who's winning|election results?)\b/i;
+  /\b(release date|launch date|releasing|be released|launching|be launched|coming out|come out|comes out|who won|who is winning|who's winning|election results?)\b/i;
 const OFFICE_HOLDER =
   /\bwho(?: is|'s| are)(?: the)? (president|prime minister|chancellor|ceo|king|queen|pope|leader|mayor|governor)\b/i;
 const YEAR = /\b(20\d\d)\b/g;

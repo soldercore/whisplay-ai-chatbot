@@ -115,5 +115,22 @@ const LONG_NUMBER = /\d(?:[\s.-]?\d){8,}/;
 
 export const containsSecret = (text: string): boolean => SECRET.test(text || "");
 
+// Words that ask about saved memory or earlier conversations.
+const MEMORY_WORDS =
+  /\b(remember|recall|forget|forgot|note|notes|save|store|memori[sz]e|memory|memories|keep (that |this |it )?in mind|told you|tell you|mentioned|last time|earlier|we (talked|spoke|discussed|chatted))\b/i;
+// The user talking about themselves ("my", "I"), not "tell me" / "help me".
+const ABOUT_USER = /\b(i|i'm|i've|i'd|im|my|mine|myself|we|our|ours)\b/i;
+const QUESTION = /\?|^\s*(what|which|who|whom|whose|where|when|why|how|do|does|did|is|are|am|was|were|can|could|have|has)\b/i;
+
+/**
+ * True when the request may need the memory tools: it mentions memory, or it
+ * is a question about the user. Small models otherwise call searchLocalMemory
+ * for ordinary questions ("What is 2 plus 2? Answer in one sentence.").
+ */
+export const mayConcernUserMemory = (input: string): boolean => {
+  const text = `${input || ""}`.replace(/[‘’]/g, "'");
+  return MEMORY_WORDS.test(text) || (ABOUT_USER.test(text) && QUESTION.test(text));
+};
+
 export const isSensitiveForAutoSave = (text: string): boolean =>
   containsSecret(text) || LONG_NUMBER.test(text || "");

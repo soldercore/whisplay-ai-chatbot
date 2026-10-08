@@ -131,6 +131,8 @@ test("clearly time-sensitive questions are routed to web search", () => {
   const now = new Date("2026-10-08T12:00:00Z");
   for (const question of [
     "When is GTA 6 coming out?",
+    "When is GTA VI releasing?",
+    "When will GTA VI be released?",
     "Who is the current president of the United States?",
     "What's the latest AI news?",
     "What is the weather in Oslo today?",
@@ -159,6 +161,8 @@ test("stable questions are left to the model", () => {
     "Set the volume to 50 percent.",
     "What day is it today?",
     "What happened in 1969?",
+    "When was Windows 95 released?",
+    "What is 2 plus 2? Answer in one sentence.",
     "Explain price elasticity.",
     "",
   ]) {
@@ -217,7 +221,7 @@ test("streamed Ollama tool calls are parsed, executed and their results sent bac
 
   assert.deepEqual(searches, [args]);
   assert.equal(chatRequests.length, 2);
-  assert.equal(toolNames(chatRequests[0]).length, 5, "the model chose the tool with the full tool list");
+  assert.deepEqual(toolNames(chatRequests[0]), ["fetch_webpage", "web_search"], "the model chose the tool itself; volume tools are not offered");
   const toolMessage = chatRequests[1].messages.find((m) => m.role === "tool");
   assert.equal(toolMessage?.content, GTA_RESULTS);
   assert.equal(answer, "Let me check. GTA 6 launches on November 19, 2026.");
@@ -229,7 +233,7 @@ test("an ordinary question is answered without searching", async () => {
 
   assert.deepEqual(searches, []);
   assert.equal(chatRequests.length, 1);
-  assert.equal(toolNames(chatRequests[0]).length, 5);
+  assert.deepEqual(toolNames(chatRequests[0]), ["fetch_webpage", "web_search"], "web tools stay available");
   assert.equal(chatRequests[0].messages.some((m) => m.role === "tool"), false);
   assert.equal(answer, "The capital of France is Paris.");
 });

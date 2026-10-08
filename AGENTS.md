@@ -323,7 +323,8 @@ State transitions are triggered by button events, wake word detection, or comple
 - Secrets (passwords, PINs, card numbers ...) are never stored; exchanges with secrets or long numbers are not auto-saved. Forgetting also scrubs matching saved conversations.
 - Writes are atomic; an unreadable file is kept as `memory.json.corrupt-*`. Older stores get a one-time import of "Remember ..." requests from saved conversations (backup `memory.json.bak-*`).
 - Facts go to the model in the third person ("The user's favorite color is blue"); replies to the user use "your". Memory text sent to the model is English.
-- `src/config/spoken-text-guard.ts`: an Ollama answer that starts with JSON or markup is held back; a tool call written as text (bare JSON, `<tool_call>` or `<tool>`) is executed, other markup is never spoken.
+- `src/config/spoken-text-guard.ts`: an Ollama answer that starts with JSON or markup is held back; a tool call written as text (bare JSON, `<tool_call>` or `<tool>`) is executed only if that tool was offered, other markup is never spoken.
+- `src/config/tool-router.ts` (Ollama): `searchLocalMemory`/`storeLocalMemory` are offered only when the request may concern the user's memory (`mayConcernUserMemory` in `memory-commands.ts`: memory words, or a question about "I/my/we"), the volume tools only when the request mentions volume or sound; a short or elliptical follow-up ("What about her birthday?", "A bit more.") keeps the tools of the previous request; other tools are always offered. qwen3 1.7B with thinking off otherwise calls some tool for questions ending in an instruction ("What is 2 plus 2? Answer in one sentence."). The memory tool descriptions contain no concrete example; the model copied "My favorite color is blue" into the arguments. Repeated tool calls are compared without case and punctuation.
 
 ### Assistant persona
 - `ASSISTANT_PERSONA=default|glados` (`src/config/persona.ts`). The persona replaces only the first part of `systemPrompt` in `src/config/llm-config.ts`; the speech formatting rule, the wake word tool rule, the memory system message and the Ollama date/web search note are appended unchanged. `glados` takes precedence over `SYSTEM_PROMPT`; `default` keeps `SYSTEM_PROMPT` or the original prompt. Independent of `PIPER_HTTP_VOICE`.
@@ -443,7 +444,7 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 
 **Usage:** Once enabled, LLM automatically uses `webSearch` tool when users ask about current events, news, or time-sensitive information.
 
-**Ollama:** small local models often skip the tool, so `src/config/web-search-router.ts` flags clearly time-sensitive questions (recency words, prices, weather, news, release dates, office holders) and `ollama-llm.ts` runs `web_search` before the first model call. The next request then offers only `web_search`/`fetch_webpage`. Today's date and search guidance are added to the system message at request time when tools are enabled. `web_search` results end with a short note telling the model to answer only from them, or to say it could not check when the search failed.
+**Ollama:** small local models often skip the tool, so `src/config/web-search-router.ts` flags clearly time-sensitive questions (recency words, prices, weather, news, release dates or "releasing", office holders) and `ollama-llm.ts` runs `web_search` before the first model call. The next request then offers only `web_search`/`fetch_webpage`. Today's date and search guidance are added to the system message at request time when tools are enabled. `web_search` results end with a short note telling the model to answer only from them, or to say it could not check when the search failed.
 
 ### Modifying UI/Display
 1. Python rendering: `python/chatbot-ui.py` (RenderThread class)
