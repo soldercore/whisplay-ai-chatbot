@@ -66,8 +66,10 @@ if (webSearchEnabled) {
     type: "function",
     function: {
       name: "fetch_webpage",
+      // Tool descriptions are re-read by the model for every uncached prompt
+      // (~15 tokens/s on a Pi 5), so they stay short.
       description:
-        "Fetch a web page and return readable text plus links. Can also open a link from the current or previous page by link_text or link_index, e.g. open the Technology section.",
+        "Fetch a web page and return its text and links. To open a link from the previous page, give link_text or link_index.",
       parameters: {
         type: "object",
         properties: {
@@ -112,7 +114,7 @@ if (webSearchEnabled) {
     function: {
       name: "web_search",
       description:
-        "Search the internet for facts that change over time and that you cannot know from training: today's news, live prices, weather, sports results, release dates of upcoming products, who currently holds an office. Do not use it for stable knowledge (geography, history, science, definitions, how-to, math), jokes, small talk or device control. search_type=web uses DuckDuckGo HTML, search_type=news uses Google News RSS, and search_type=sites uses Google Programmable Search JSON API when configured.",
+        "Search the internet for facts that change over time: news, live prices, weather, sports results, release dates of upcoming products, who currently holds an office. Not for stable knowledge (geography, history, science, definitions, how-to, math), jokes, small talk or device control.",
       parameters: {
         type: "object",
         properties: {

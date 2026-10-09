@@ -1,8 +1,8 @@
 /**
  * Chooses which tools a small local model is offered for a request. Tools that
- * read private data (memory), change the device (volume), create images, or
- * search the web are offered only when the request may need them; all other
- * tools are always offered.
+ * read private data (memory), change the device (volume) or create images are
+ * offered only when the request may need them; all other tools, including web
+ * search, are always offered.
  *
  * Without this, qwen3 1.7B (thinking off) calls some tool for ordinary
  * questions that end in an instruction: "What is 2 plus 2? Answer in one
@@ -25,6 +25,9 @@ export const mentionsImage = (text: string): boolean => MENTIONS_IMAGE.test(text
 
 // The user asks for a short answer from what the model knows: an answer-format
 // instruction or plain arithmetic. Time-sensitive questions still get web search.
+// The web tools stay offered for these (removing them changes the tool list,
+// which makes Ollama re-read the whole conversation, about a minute on a Pi);
+// ollama-llm.ts does not run a web call made for such a request.
 const ANSWER_FORMAT =
   /\b(in (one|a single|1|two|2|three|3|a few) (sentences?|words?|lines?)|one[- ]sentence|briefly|keep it (short|brief)|short answer|in short|in simple (terms|words)|explain simply)\b/i;
 const ARITHMETIC = /\d\s*(plus|minus|times|multiplied by|divided by|over|[+\-*×÷/x])\s*\d/i;
@@ -32,15 +35,10 @@ const ARITHMETIC = /\d\s*(plus|minus|times|multiplied by|divided by|over|[+\-*×
 export const isDirectAnswerRequest = (text: string): boolean =>
   (ANSWER_FORMAT.test(text || "") || ARITHMETIC.test(text || "")) && !needsCurrentInformation(text || "");
 
-const mayNeedWeb = (text: string): boolean => !isDirectAnswerRequest(text);
-
 // Gated tools in a fixed order after the always-offered ones. Ollama renders
 // the tools before the conversation, so a change in the offered set makes it
-// re-read everything after the first changed tool; the most often offered
-// (web) tools come first to keep that part short.
+// re-read everything after the first changed tool.
 const RELEVANT_WHEN: [string, (text: string) => boolean][] = [
-  ["web_search", mayNeedWeb],
-  ["fetch_webpage", mayNeedWeb],
   ["searchLocalMemory", mayConcernUserMemory],
   ["storeLocalMemory", mayConcernUserMemory],
   ["setVolume", mentionsVolume],

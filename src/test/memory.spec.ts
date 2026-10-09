@@ -329,7 +329,8 @@ test("an unrelated question is not offered the memory or volume tools", async ()
   assert.equal(answer, "2 plus 2 is 4.");
   assert.equal(chatRequests.length, 1);
   const tools = offered(chatRequests[0]);
-  assert.equal(tools.some((name) => /LocalMemory|Volume|web_search|fetch_webpage|Image/.test(name)), false, `offered: ${tools}`);
+  assert.equal(tools.some((name) => /LocalMemory|Volume|Image/.test(name)), false, `offered: ${tools}`);
+  assert.deepEqual(tools, ["fetch_webpage", "web_search"], "web tools stay offered, in a stable order");
 });
 
 test("questions about the user still get the memory tools", async () => {
@@ -370,8 +371,8 @@ test("memory and volume tools are offered only for requests that concern them", 
   }
   assert.equal(mentionsVolume("What is 2 plus 2? Answer in one sentence."), false);
   const tools = ["setVolume", "web_search", "searchLocalMemory", "someTool"].map((name) => ({ function: { name } }));
-  assert.deepEqual(toolsRelevantTo("What is 2 plus 2?", tools).map((t: any) => t.function.name), ["someTool"]);
-  assert.deepEqual(toolsRelevantTo("Who won the race yesterday?", tools).map((t: any) => t.function.name), ["someTool", "web_search"], "always-offered tools first");
+  assert.deepEqual(toolsRelevantTo("What is 2 plus 2?", tools).map((t: any) => t.function.name), ["web_search", "someTool"]);
+  assert.deepEqual(toolsRelevantTo("Which color do I like?", tools).map((t: any) => t.function.name), ["web_search", "someTool", "searchLocalMemory"], "always-offered tools first");
 });
 
 test("a follow-up keeps the tools of the request it continues; a new question does not", async () => {
@@ -382,7 +383,7 @@ test("a follow-up keeps the tools of the request it continues; a new question do
   assert.deepEqual(names("She lives in Berlin, too.", "My sister is called Anna, keep that in mind."), ["web_search", "searchLocalMemory"]);
   assert.deepEqual(names("Anything else?", "What did we talk about last time?"), ["web_search", "searchLocalMemory"]);
   assert.deepEqual(names("A bit more.", "Turn the volume up."), ["web_search", "setVolume"]);
-  assert.deepEqual(names("What is 2 plus 2? Answer in one sentence.", "Which color do I like?"), []);
+  assert.deepEqual(names("What is 2 plus 2? Answer in one sentence.", "Which color do I like?"), ["web_search"]);
   assert.deepEqual(names("What about her birthday?", "What is the capital of France?"), ["web_search"]);
 
   responders = [() => say("I don't have anything about your sister.")];
@@ -392,21 +393,30 @@ test("a follow-up keeps the tools of the request it continues; a new question do
   assert.ok(offered(chatRequests[1]).includes("searchLocalMemory"), "the follow-up can still search memory");
 });
 
-test("image tools only for image requests; no web tools for direct-answer requests", () => {
+test("image tools only for image requests; web tools always, in registration order", () => {
   const { toolsRelevantTo, isDirectAnswerRequest } = require("../config/tool-router");
-  const tools = ["web_search", "fetch_webpage", "generateImage", "showPreviouslyGeneratedImage"].map((name) => ({ function: { name } }));
+  const tools = ["fetch_webpage", "web_search", "generateImage", "showPreviouslyGeneratedImage"].map((name) => ({ function: { name } }));
   const names = (request: string) => toolsRelevantTo(request, tools).map((t: any) => t.function.name);
-  assert.deepEqual(names("Draw a cat for me."), ["web_search", "fetch_webpage", "generateImage", "showPreviouslyGeneratedImage"]);
-  assert.deepEqual(names("Show me the picture again."), ["web_search", "fetch_webpage", "generateImage", "showPreviouslyGeneratedImage"]);
-  assert.deepEqual(names("What does a cat look like?"), ["web_search", "fetch_webpage"]);
-  assert.deepEqual(names("Tell me about the Artemis moon program."), ["web_search", "fetch_webpage"]);
+  assert.deepEqual(names("Draw a cat for me."), ["fetch_webpage", "web_search", "generateImage", "showPreviouslyGeneratedImage"]);
+  assert.deepEqual(names("Show me the picture again."), ["fetch_webpage", "web_search", "generateImage", "showPreviouslyGeneratedImage"]);
+  assert.deepEqual(names("What does a cat look like?"), ["fetch_webpage", "web_search"]);
+  // The tool list does not change for direct-answer requests, so Ollama keeps its cache.
   for (const text of ["What is 2 plus 2? Answer in one sentence.", "Describe a sunset in one sentence.", "How much is 12 x 7?", "Why is the sky blue? Keep it short."]) {
     assert.equal(isDirectAnswerRequest(text), true, text);
-    assert.deepEqual(names(text), [], text);
+    assert.deepEqual(names(text), ["fetch_webpage", "web_search"], text);
   }
-  for (const text of ["What is the weather in Berlin today, briefly?", "When is GTA VI releasing? Keep it short.", "What is the latest news in one sentence?"]) {
-    assert.deepEqual(names(text), ["web_search", "fetch_webpage"], `time-sensitive keeps web search: ${text}`);
+  for (const text of ["What is the weather in Berlin today, briefly?", "When is GTA VI releasing? Keep it short.", "What is the latest news in one sentence?", "Tell me about the Artemis moon program."]) {
+    assert.equal(isDirectAnswerRequest(text), false, text);
   }
+});
+
+test("a web search requested for a direct-answer question is not run", async () => {
+  responders = [() => toolCall("web_search", { query: "2 plus 2" }), () => say("2 plus 2 is 4.")];
+  const { answer } = await ask("What is 2 plus 2? Answer in one sentence.");
+  assert.deepEqual(searches, [], "no search was run");
+  assert.equal(answer, "2 plus 2 is 4.");
+  assert.match(chatRequests[1].messages.find((m) => m.role === "tool")?.content || "", /Not needed/);
+  assert.deepEqual(offered(chatRequests[1]), offered(chatRequests[0]), "the same tool list, so Ollama's cache stays valid");
 });
 
 test("a new question cancels an unfinished answer and is answered on its own", async () => {

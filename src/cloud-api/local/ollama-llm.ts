@@ -10,6 +10,7 @@ import {
 import { llmTools, llmFuncMap } from "../../config/llm-tools";
 import dotenv from "dotenv";
 import {
+  LLMTool,
   Message,
   OllamaFunctionCall,
   OllamaMessage,
@@ -34,7 +35,7 @@ import {
   searchTypeFor,
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
-import { toolsRelevantTo } from "../../config/tool-router";
+import { isDirectAnswerRequest, toolsRelevantTo } from "../../config/tool-router";
 
 dotenv.config();
 
@@ -97,6 +98,58 @@ const messages: OllamaMessage[] = [
     content: systemPrompt,
   },
 ];
+
+// ---- Timing diagnostics -------------------------------------------------------
+// One log line per model request, so a slow answer can be attributed on the
+// device: prompt tokens read (prompt_eval_*), tokens generated (eval_*), model
+// load and time to the first streamed token. Ollama counts reused (cached)
+// prompt tokens in prompt_eval_count, so a prompt rate far above the device's
+// usual rate means most of the prompt came from its cache. "kept" tells how many
+// leading parts (system prompt, tool list, then messages) equal the previous
+// request; Ollama has to re-read everything after the first changed part.
+type OllamaStats = {
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
+  load_duration?: number;
+};
+
+let previousRequestShape: string[] = [];
+
+const requestShape = (sent: { role: string; content: string }[], tools?: LLMTool[]): string => {
+  const [system, ...rest] = sent;
+  const shape = [
+    `${system?.role}:${system?.content}`,
+    `tools:${(tools || []).map((tool) => tool.function.name).join(",")}`,
+    ...rest.map((msg) => `${msg.role}:${msg.content}`),
+  ];
+  let kept = 0;
+  while (kept < shape.length && shape[kept] === previousRequestShape[kept]) kept++;
+  previousRequestShape = shape;
+  return `tools=${(tools || []).length} msgs=${sent.length} kept=${kept}/${shape.length}`;
+};
+
+const rate = (count?: number, ns?: number): string =>
+  count && ns ? (count / (ns / 1e9)).toFixed(1) : "-";
+const ms = (ns?: number): number => Math.round((ns || 0) / 1e6);
+
+const logOllamaTiming = (
+  label: string,
+  stats: OllamaStats | undefined,
+  startedAt: number,
+  firstTokenAt: number,
+  detail = "",
+): void => {
+  const s = stats || {};
+  console.log(
+    `[Ollama timing] ${label}${detail ? ` ${detail}` : ""}` +
+      ` prompt=${s.prompt_eval_count ?? 0} tok/${ms(s.prompt_eval_duration)} ms (${rate(s.prompt_eval_count, s.prompt_eval_duration)} tok/s)` +
+      ` gen=${s.eval_count ?? 0} tok/${ms(s.eval_duration)} ms (${rate(s.eval_count, s.eval_duration)} tok/s)` +
+      ` load=${ms(s.load_duration)} ms first-token=${firstTokenAt ? `${firstTokenAt - startedAt} ms` : "-"}` +
+      ` total=${Date.now() - startedAt} ms`,
+  );
+};
 
 // Loads the model and keeps it loaded without evaluating a prompt: Ollama
 // answers a chat request with no messages with done_reason "load". The former
@@ -259,19 +312,24 @@ const answerFromAvailableToolResults = async ({
   let finalAnswer = "";
   let finalThinking = "";
   try {
+    const requestMessages = [
+      ...messages.map((msg, index) =>
+        withRequestSystemNote({ role: msg.role, content: msg.content }, index),
+      ),
+      {
+        role: "user",
+        content: instruction,
+      },
+    ];
+    const shape = requestShape(requestMessages);
+    const startedAt = Date.now();
+    let firstTokenAt = 0;
+    let stats: OllamaStats | undefined;
     const response = await axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
         model: ollamaModel,
-        messages: [
-          ...messages.map((msg, index) =>
-            withRequestSystemNote({ role: msg.role, content: msg.content }, index),
-          ),
-          {
-            role: "user",
-            content: instruction,
-          },
-        ],
+        messages: requestMessages,
         think: enableThinking,
         stream: true,
         options: {
@@ -299,6 +357,10 @@ const answerFromAvailableToolResults = async ({
         for (const line of dataLines) {
           try {
             const parsedData = JSON.parse(line);
+            if (!firstTokenAt && (parsedData.message?.content || parsedData.message?.thinking)) {
+              firstTokenAt = Date.now();
+            }
+            if (parsedData.done) stats = parsedData;
             if (parsedData.message?.content) {
               const content = parsedData.message.content;
               partialCallback(content);
@@ -320,6 +382,7 @@ const answerFromAvailableToolResults = async ({
         resolve();
       });
     });
+    logOllamaTiming("final-answer", stats, startedAt, firstTokenAt, shape);
 
     if (finalThinking.trim()) {
       console.log(`[Ollama] Final no-tools thinking length: ${finalThinking.length}`);
@@ -409,20 +472,25 @@ const chatWithLLMStreamInternal = async (
       : "";
 
     const requestTools = toolsForRequest(toolLoopState);
+    const requestMessages = messages.map((msg, index) => ({
+      role: msg.role,
+      content: withRequestSystemNote(msg, index).content,
+      ...(capturedImageBase64 &&
+      msg.role === "user" &&
+      lastUserMessageIndex !== undefined &&
+      index === lastUserMessageIndex
+        ? { images: [capturedImageBase64] }
+        : {}),
+    }));
+    const shape = requestShape(requestMessages, requestTools);
+    const startedAt = Date.now();
+    let firstTokenAt = 0;
+    let stats: OllamaStats | undefined;
     const response = await axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
         model: ollamaModel,
-        messages: messages.map((msg, index) => ({
-          role: msg.role,
-          content: withRequestSystemNote(msg, index).content,
-          ...(capturedImageBase64 &&
-          msg.role === "user" &&
-          lastUserMessageIndex !== undefined &&
-          index === lastUserMessageIndex
-            ? { images: [capturedImageBase64] }
-            : {}),
-        })),
+        messages: requestMessages,
         think: enableThinking,
         stream: true,
         options: {
@@ -458,6 +526,13 @@ const chatWithLLMStreamInternal = async (
       for (const line of filteredLines) {
         try {
           const parsedData = JSON.parse(line);
+          if (
+            !firstTokenAt &&
+            (parsedData.message?.content || parsedData.message?.thinking || parsedData.message?.tool_calls)
+          ) {
+            firstTokenAt = Date.now();
+          }
+          if (parsedData.done) stats = parsedData;
 
           // Handle content from Ollama
           if (parsedData.message?.content) {
@@ -493,6 +568,7 @@ const chatWithLLMStreamInternal = async (
       if (streamClosed) return;
       streamClosed = true;
       console.log("Stream ended");
+      logOllamaTiming(`round=${toolLoopState.round}`, stats, startedAt, firstTokenAt, shape);
       if (toolLoopState.signal?.aborted) {
         endResolve();
         endCallback();
@@ -572,12 +648,20 @@ const chatWithLLMStreamInternal = async (
           toolLoopState.signatures.add(toolCallSignature(call));
         }
 
+        const latestUser = [...messages].reverse().find((msg) => msg.role === "user");
+        const directAnswer = isDirectAnswerRequest(typeof latestUser?.content === "string" ? latestUser.content : "");
         const results = await Promise.all(
           functionCalls.map(async (call: OllamaFunctionCall) => {
             const {
               function: { arguments: args, name },
             } = call;
             const func = llmFuncMap[name! as string];
+            if (directAnswer && WEB_TOOL_NAMES.has(name as string)) {
+              // A direct-answer request ("in one sentence", arithmetic) needs no search;
+              // a short result costs far less to read than real search results.
+              console.warn(`[ToolLoop] ${name} not run for a direct-answer request.`);
+              return [name, `${ToolReturnTag.Error}Not needed. Answer this question directly from your own knowledge.`];
+            }
             if (func) {
               invokeFunctionCallback?.(name! as string);
               return [
@@ -720,6 +804,7 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
   const prompt = `${promptPrefix}\n\n${text}\n\n`;
 
   // Bounded so a slow memory summary cannot occupy the model indefinitely.
+  const startedAt = Date.now();
   const response = await axios.post(
     `${ollamaEndpoint}/api/generate`,
     {
@@ -731,6 +816,8 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
     },
     { timeout: 60000 },
   );
+  // The summary runs after the answer and occupies the model meanwhile.
+  logOllamaTiming("memory-summary", response.data, startedAt, 0);
 
   if (response.data && response.data.response) {
     const summary = response.data.response;
