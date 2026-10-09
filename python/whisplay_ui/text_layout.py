@@ -65,19 +65,21 @@ class Layout:
         return self.unit_line[unit], x_end
 
     def line_for_char(self, char_end):
-        """Same counting as RenderThread.compute_scroll_target_from_char_end:
-        tag lines count 0 chars, each line boundary counts 1."""
+        """(line index, unit) after `char_end` characters of the text.
+
+        Units are the text's own characters (wrapping keeps the spaces), so each
+        unit counts 1; tool-tag units count 0, like Node's speech positions.
+        Counting one extra character per line break (the classic renderer's
+        rule) placed the speech focus up to a word per line too early: the end
+        of a long answer stayed dimmed and the scroll fell behind."""
         if not self.lines:
             return 0, 0
-        total = 0
-        for index, line in enumerate(self.lines):
-            before = total
-            total += 0 if line.kind == "tag" else line.text_len
-            if total >= char_end:
-                offset = max(0, char_end - before)
-                return index, min(line.unit_end, line.unit_start + offset)
-            if index < len(self.lines) - 1:
-                total += 1
+        count = 0
+        for unit, ch in enumerate(self.unit_chars):
+            if count >= char_end:
+                return self.unit_line[unit], unit
+            if ch != TAG_UNIT_CHAR:
+                count += 1
         last = self.lines[-1]
         return len(self.lines) - 1, last.unit_end
 

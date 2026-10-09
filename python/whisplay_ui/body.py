@@ -9,6 +9,8 @@ from .draw_util import draw_text, fit_text, hash01, mix
 from .text_layout import build_layout, is_break
 from .typewriter import ECHO, INSTANT, STREAM, Typewriter
 
+SENTENCE_END = frozenset(".!?…。！？")
+
 SCRAMBLE = "#$%&*+<>?@=/\\01"
 AUTO_HOLD = 1.5
 DECODE_TAIL = 3          # only the newest few glyphs get the decode scramble
@@ -144,6 +146,10 @@ class Body:
         if self.tw.mode != STREAM or now - self.tw.last_growth >= theme.TW_HOLD:
             return total
         chars = layout.unit_chars
+        # A word that ends in sentence punctuation is complete: no need to wait
+        # for more text (the last word of a spoken sentence would lag 0.3 s).
+        if total > 0 and chars[total - 1] in SENTENCE_END:
+            return total
         i = total
         while i > 0 and total - i < theme.TW_HOLD_CHARS and not is_break(chars[i - 1]):
             i -= 1

@@ -471,6 +471,10 @@ test("the screen shows a sentence only when its audio starts", async () => {
     assert.equal(fullText.slice(s.charStart, s.charEnd), s.sentence, "positions match the displayed text");
     assert.ok(!/\s{2}/.test(fullText), "single spaces between sentences");
     assert.ok(s.durationMs > 0, "real audio duration from Piper");
+    const plan = (s as any).plan as { atMs: number; chars: number }[];
+    assert.ok(plan && plan.length === s.sentence.split(" ").length, "a word plan measured from the WAV");
+    assert.equal(plan[plan.length - 1].chars, s.sentence.length, "the plan ends on the whole sentence");
+    assert.ok(plan.every((step) => step.atMs <= s.durationMs), "the plan stays inside the audio");
   }
   await wait(50);
   assert.ok(reveal.revealed <= fullText.length);

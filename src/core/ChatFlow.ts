@@ -109,9 +109,9 @@ class ChatFlow implements ChatFlowContext {
           this.updateAnswerDisplayText(text || "");
         }
       },
-      ({ charStart, charEnd, durationMs }) => {
+      ({ charStart, charEnd, durationMs, plan }) => {
         if (!this.isAnswerFlow()) return;
-        this.spokenReveal.sentenceStarted(charStart, charEnd, durationMs);
+        this.spokenReveal.sentenceStarted(charStart, charEnd, durationMs, plan);
         if (!durationMs || durationMs <= 0) return;
         display({
           scroll_sync: {

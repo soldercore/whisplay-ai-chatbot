@@ -570,6 +570,38 @@ def selftest():
     check(np.array_equal(results["terminal"][0], results["classic"][0]), "image-mode pixels identical to classic")
     check(all(p == (0, 0, W, H) for p in results["terminal"][1]), "image mode drawn by the classic full-screen path")
 
+    print("[selftest] spoken answer: final word shown and in focus")
+    s = Session(env={"WHISPLAY_UI_RAIN": "false"})
+    try:
+        body = s.rt.terminal_ui.body
+        words = ("Remember, the Aperture Science Bring Your Daughter to Work Day is the perfect "
+                 "time to have her tested. ") * 4
+        text = words + "Any contact with the chamber floor will result in an unsatisfactory mark"
+        s.send(status="answering", emoji="", text="")
+        s.run_until(0.5)
+        s.send(text=text[:-4])
+        s.run_until(1.0)
+        s.send(text=text + ".", scroll_sync={"char_end": len(text) + 1, "duration_ms": 3000})
+        s.run_until(1.1)
+        layout = body.layout
+        check(body.reveal_limit(s.now) == layout.total_units,
+              "a word ending in a full stop is not held back")
+        s.send(text=text + ". The")
+        s.run_until(1.2)
+        check(body.reveal_limit(s.now) < body.layout.total_units, "a partial word is still held back")
+        s.send(text=text + ".")
+        s.run_until(1.3)
+        layout = body.layout
+        line, unit = layout.line_for_char(len(text) + 1)
+        check(unit == layout.total_units and line == len(layout.lines) - 1,
+              f"char_end at the end of a {len(layout.lines)}-line answer maps to its last unit ({unit}/{layout.total_units})")
+        focus = body.focus_unit(s.now)
+        check(focus == layout.total_units, f"the last spoken word is not dimmed (focus {focus})")
+        _, unit = layout.line_for_char(len(words))
+        check(unit == len(words), f"wrapped lines add no characters ({unit} == {len(words)})")
+    finally:
+        s.close()
+
     print("[selftest] real RenderThread.run() loop on the wall clock (WHISPLAY_UI_RAIN=false)")
     s = Session(env={"WHISPLAY_UI_RAIN": "false"})
     try:

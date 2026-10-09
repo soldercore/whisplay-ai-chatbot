@@ -2,6 +2,8 @@ import { purifyTextForTTS, splitSentences } from "../utils";
 import dotenv from "dotenv";
 import { playAudioData, stopPlaying } from "../device/audio";
 import { TTSResult } from "../type";
+import fs from "fs";
+import { RevealStep, revealPlan, speechTimingFromWav } from "./speech-timing";
 
 dotenv.config();
 
@@ -17,6 +19,9 @@ type SentencePlayCallback = (payload: {
   durationMs: number;
   sentenceIndex: number;
   sentence: string;
+  // When each word of the sentence may appear (ms from its audio start), from
+  // the speech and pauses measured in the audio; see speech-timing.ts.
+  plan?: RevealStep[];
 }) => void;
 
 export class StreamResponser {
@@ -107,6 +112,23 @@ export class StreamResponser {
     return lastResult;
   };
 
+  private revealPlanFor = (sentence: string, durationMs: number, result: TTSResult): RevealStep[] => {
+    let timing;
+    try {
+      const wav = result.filePath
+        ? fs.readFileSync(result.filePath)
+        : result.buffer
+          ? result.buffer
+          : result.base64
+            ? Buffer.from(result.base64, "base64")
+            : undefined;
+      timing = wav ? speechTimingFromWav(wav) : undefined;
+    } catch (error: any) {
+      console.warn(`[SpeechSync] Could not measure the audio: ${error.message}`);
+    }
+    return revealPlan(sentence, durationMs, timing);
+  };
+
   private hasPlayableAudio = (result: TTSResult): boolean => {
     return !!(
       result &&
@@ -135,21 +157,25 @@ export class StreamResponser {
       if (currentIndex < this.speakQueue.length) {
         this.isPlaying = true;
         const item = this.speakQueue[currentIndex];
-        const announce = (durationMs: number) =>
+        const announce = (durationMs: number, plan?: RevealStep[]) =>
           this.sentencePlayCallback?.({
             charStart: this.getCharStartForSentence(item.sentenceIndex),
             charEnd: this.getCharEndForSentence(item.sentenceIndex),
             durationMs,
             sentenceIndex: item.sentenceIndex,
             sentence: item.sentence,
+            plan,
           });
         try {
           const playParams = await item.ttsPromise;
           console.log(
             `Playing audio ${currentIndex + 1}/${this.speakQueue.length}`
           );
-          announce(this.hasPlayableAudio(playParams) ? playParams.duration : 0);
-          await playAudioData(playParams);
+          const durationMs = this.hasPlayableAudio(playParams) ? playParams.duration : 0;
+          // Start playback first: measuring the audio adds no audio latency.
+          const playing = playAudioData(playParams);
+          announce(durationMs, durationMs > 0 ? this.revealPlanFor(item.sentence, durationMs, playParams) : undefined);
+          await playing;
         } catch (error) {
           console.error("Audio playback error:", error);
           // Without audio the sentence's text is shown at once.
