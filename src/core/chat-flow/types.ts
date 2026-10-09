@@ -52,6 +52,7 @@ export interface ChatFlowContext {
   keepCommandToolDisplayRunning: (jobId: string) => void;
   finishCommandToolDisplay: (jobId: string) => void;
   resetToolCallDisplay: () => void;
+  revealAllAnswerText: () => void;
   recognizeAudio: (path: string, isFromAutoListening?: boolean) => Promise<string>;
   partialThinkingCallback: (partialThinking: string) => void;
   startWakeSession: () => void;

@@ -449,6 +449,11 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 
 **Ollama:** small local models often skip the tool, so `src/config/web-search-router.ts` flags clearly time-sensitive questions (recency words, prices, weather, news, release dates or "releasing", office holders) and `ollama-llm.ts` runs `web_search` before the first model call. The next request then offers only `web_search`/`fetch_webpage`. Today's date and search guidance are added to the system message at request time when tools are enabled. `web_search` results end with a short note telling the model to answer only from them, or to say it could not check when the search failed.
 
+### Answer text follows the voice
+- The screen shows the answer as it is spoken, not as the LLM generates it. `StreamResponser` fires a sentence-play event (`charStart`, `charEnd`, real audio `durationMs`) when a sentence's audio starts; `src/core/spoken-text-reveal.ts` reveals that sentence linearly over its duration; `ChatFlow.composeAnswerDisplayText` shows only the revealed part (tool tags appear once the text before them is spoken). Sentence starts and ends are exact up to the audio output latency; within a sentence the pace is an even spread (Piper gives no word timings).
+- Sentences without audio (TTS or playback failed, nothing speakable) are revealed at once at their turn; when playback ends the whole answer is shown immediately (`revealAllAnswerText`). A new answer or an interruption resets the reveal.
+- The display text is the spoken sentences joined by single spaces (newlines become spaces); `splitSentences` keeps a trailing space of the unfinished remainder so streamed words are not glued together.
+
 ### Modifying UI/Display
 1. Python rendering: `python/chatbot-ui.py` (RenderThread class)
 2. Status icons: `python/status-bar-icon/` directory

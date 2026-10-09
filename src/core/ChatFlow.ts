@@ -8,6 +8,7 @@ import { recognizeAudio, ttsProcessor } from "../cloud-api/server";
 import { isImMode } from "../cloud-api/llm";
 import { DEFAULT_EMOJI, extractEmojis } from "../utils";
 import { StreamResponser } from "./StreamResponsor";
+import { SpokenTextReveal } from "./spoken-text-reveal";
 import { recordingsDir } from "../utils/dir";
 import dotEnv from "dotenv";
 import { WakeWordListener } from "../device/wakeword";
@@ -73,6 +74,8 @@ class ChatFlow implements ChatFlowContext {
   private toolDisplaySeq = 0;
   private answerDisplayTimer?: ReturnType<typeof setTimeout>;
   private lastAnswerDisplayAt = 0;
+  // The answer text is shown as it is spoken, not as the LLM generates it.
+  private spokenReveal = new SpokenTextReveal(() => this.updateAnswerDisplay());
 
   constructor(options: { enableCamera?: boolean } = {}) {
     console.log(`[${getCurrentTimeTag()}] ChatBot started.`);
@@ -83,6 +86,8 @@ class ChatFlow implements ChatFlowContext {
       (sentences: string[]) => {
         if (!this.isAnswerFlow()) return;
         const fullText = sentences.join(" ");
+        // The full text so far; the screen shows only its spoken part.
+        this.updateAnswerDisplayText(fullText);
         let emoji = DEFAULT_EMOJI;
         if (this.currentFlowName === "external_answer") {
           emoji = this.currentExternalEmoji || extractEmojis(fullText) || emoji;
@@ -102,8 +107,9 @@ class ChatFlow implements ChatFlowContext {
           this.updateAnswerDisplayText(text || "");
         }
       },
-      ({ charEnd, durationMs }) => {
+      ({ charStart, charEnd, durationMs }) => {
         if (!this.isAnswerFlow()) return;
+        this.spokenReveal.sentenceStarted(charStart, charEnd, durationMs);
         if (!durationMs || durationMs <= 0) return;
         display({
           scroll_sync: {
@@ -249,11 +255,12 @@ class ChatFlow implements ChatFlowContext {
   };
 
   composeAnswerDisplayText = (text?: string): string => {
-    const answerText = text ?? this.answerDisplayText;
+    const answerText = (text ?? this.answerDisplayText).slice(0, this.spokenReveal.revealed);
     if (this.toolDisplayItems.length === 0) {
       return answerText || "";
     }
-    const sortedItems = [...this.toolDisplayItems].sort((a, b) => {
+    // Tool calls show at their place in the text once the text before them was spoken.
+    const sortedItems = [...this.toolDisplayItems].filter((item) => item.anchorIndex <= answerText.length).sort((a, b) => {
       if (a.anchorIndex !== b.anchorIndex) {
         return a.anchorIndex - b.anchorIndex;
       }
@@ -429,6 +436,15 @@ class ChatFlow implements ChatFlowContext {
     this.toolDisplayText = "";
     this.toolDisplaySeq = 0;
     this.lastAnswerDisplayAt = 0;
+    this.spokenReveal.reset();
+  };
+
+  /** Speech finished (or there was none): show the whole answer. */
+  revealAllAnswerText = (): void => {
+    this.spokenReveal.revealAll();
+    // Render now: the flow usually leaves the answer state right after, and the
+    // idle screen keeps the last answer text.
+    this.updateAnswerDisplay(true);
   };
 
   streamExternalReply = async (text: string, emoji?: string): Promise<void> => {
@@ -450,7 +466,6 @@ class ChatFlow implements ChatFlowContext {
     }
     for (const part of parts) {
       this.streamResponser.partial(part);
-      this.updateAnswerDisplayText(`${this.answerDisplayText}${part}`);
       await new Promise((resolve) => setTimeout(resolve, 120));
     }
     this.streamResponser.endPartial();

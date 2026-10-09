@@ -157,7 +157,8 @@ export function splitSentences(text: string): {
     }
   }
 
-  const remaining = text.slice(lastIndex).trim();
+  // Only leading space: a trailing space separates the next streamed word.
+  const remaining = text.slice(lastIndex).trimStart();
 
   // merge short sentences
   const newSentences: string[] = [];

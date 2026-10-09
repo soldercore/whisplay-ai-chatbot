@@ -405,3 +405,82 @@ test("a streamed answer is spoken sentence by sentence, in order", async () => {
     .map((line) => line.split(" ")[1]);
   assert.deepEqual(played, sentences.map((sentence) => wavHashByText.get(sentence)));
 });
+
+// ---- Screen text follows the voice -------------------------------------------
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("spoken text is revealed from its audio start over its real duration, never ahead", async () => {
+  const { SpokenTextReveal } = require("../core/spoken-text-reveal");
+  const reveal = new SpokenTextReveal(() => {}, 10);
+  assert.equal(reveal.revealed, 0, "nothing before any audio");
+
+  reveal.sentenceStarted(0, 40, 400);
+  await wait(200);
+  assert.ok(reveal.revealed > 5 && reveal.revealed < 35, `about half after half the audio: ${reveal.revealed}`);
+  await wait(300);
+  assert.equal(reveal.revealed, 40, "the whole sentence once its audio has played");
+  await wait(100);
+  assert.equal(reveal.revealed, 40, "never beyond the sentence being spoken");
+
+  reveal.sentenceStarted(41, 80, 0);
+  assert.equal(reveal.revealed, 80, "a sentence without audio is shown at once");
+
+  reveal.reset();
+  reveal.sentenceStarted(0, 50, 300);
+  reveal.reset();
+  await wait(100);
+  assert.equal(reveal.revealed, 0, "an interrupted answer stops revealing");
+
+  reveal.revealAll();
+  assert.equal(reveal.revealed, Number.MAX_SAFE_INTEGER);
+});
+
+test("the screen shows a sentence only when its audio starts", async () => {
+  mode = "ok";
+  const { SpokenTextReveal } = require("../core/spoken-text-reveal");
+  const reveal = new SpokenTextReveal(() => {}, 5);
+  let fullText = "";
+  const revealedWhenParsed: number[] = [];
+  const starts: { charStart: number; charEnd: number; durationMs: number; sentence: string }[] = [];
+  const responder = new StreamResponser(
+    piperHttpTTS,
+    (sentences: string[]) => {
+      fullText = sentences.join(" ");
+      revealedWhenParsed.push(reveal.revealed);
+    },
+    undefined,
+    (event: any) => {
+      starts.push(event);
+      reveal.sentenceStarted(event.charStart, event.charEnd, event.durationMs);
+    },
+  );
+  const answer = "The capital of France is Paris. It lies on the Seine. Anything else?";
+  for (let i = 0; i < answer.length; i += 12) {
+    responder.partial(answer.slice(i, i + 12));
+    await wait(5);
+  }
+  responder.endPartial();
+  await responder.getPlayEndPromise();
+
+  assert.equal(revealedWhenParsed[0], 0, "the first sentence is parsed before any audio: nothing shown yet");
+  assert.deepEqual(starts.map((s) => s.sentence), ["The capital of France is Paris.", "It lies on the Seine.", "Anything else?"]);
+  for (const s of starts) {
+    assert.equal(fullText.slice(s.charStart, s.charEnd), s.sentence, "positions match the displayed text");
+    assert.ok(!/\s{2}/.test(fullText), "single spaces between sentences");
+    assert.ok(s.durationMs > 0, "real audio duration from Piper");
+  }
+  await wait(50);
+  assert.ok(reveal.revealed <= fullText.length);
+});
+
+test("a sentence whose speech fails is still shown, at its turn", async () => {
+  mode = "error500";
+  const starts: { charStart: number; charEnd: number; durationMs: number }[] = [];
+  const responder = new StreamResponser(piperHttpTTS, undefined, undefined, (event: any) => starts.push(event));
+  responder.partial("Piper is down. ");
+  responder.endPartial();
+  await responder.getPlayEndPromise();
+  mode = "ok";
+  assert.deepEqual(starts.map((s) => [s.charStart, s.charEnd, s.durationMs]), [[0, 14, 0]], "zero duration: shown at once");
+});

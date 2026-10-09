@@ -343,8 +343,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     const trackingPartial = (text: string): void => {
       if (!isCurrentAnswer()) return;
       llmResponseText += text;
+      // The screen shows the answer as it is spoken (see SpokenTextReveal).
       partial(text);
-      ctx.updateAnswerDisplayText(llmResponseText);
     };
     let resolveLlmDone: () => void = () => {};
     const llmDonePromise = new Promise<void>((resolve) => {
@@ -471,6 +471,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         }
       });
     llmDonePromise.then(() => getPlayEndPromise()).then(() => {
+      if (isCurrentAnswer()) ctx.revealAllAnswerText();
       if (ctx.currentFlowName === "answer") {
         autoSaveExchange(ctx.asrText, llmResponseText, summaryTextWithLLM);
         clearPendingCapturedImgForChat();
@@ -612,6 +613,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       void ctx.streamExternalReply(replyText, replyEmoji);
       ctx.streamResponser.getPlayEndPromise().then(() => {
         if (ctx.currentFlowName !== "external_answer") return;
+        ctx.revealAllAnswerText();
         if (ctx.wakeSessionActive || ctx.endAfterAnswer) {
           if (ctx.endAfterAnswer) {
             ctx.endWakeSession();

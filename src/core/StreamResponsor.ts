@@ -8,7 +8,11 @@ dotenv.config();
 type TTSFunc = (text: string) => Promise<TTSResult>;
 type SentencesCallback = (sentences: string[]) => void;
 type TextCallback = (text: string) => void;
+// Fired when a sentence's audio starts, with its position in the display text
+// (sentences joined by spaces). durationMs is 0 when the sentence has no audio
+// (TTS or playback failed), so its text can be shown at once.
 type SentencePlayCallback = (payload: {
+  charStart: number;
   charEnd: number;
   durationMs: number;
   sentenceIndex: number;
@@ -61,6 +65,10 @@ export class StreamResponser {
     this.sentencesCallback = sentencesCallback;
     this.textCallback = textCallback;
     this.sentencePlayCallback = sentencePlayCallback;
+  }
+
+  private getCharStartForSentence(sentenceIndex: number): number {
+    return sentenceIndex > 0 ? this.getCharEndForSentence(sentenceIndex - 1) + 1 : 0;
   }
 
   private getCharEndForSentence(sentenceIndex: number): number {
@@ -123,21 +131,26 @@ export class StreamResponser {
     const playNext = async () => {
       if (currentIndex < this.speakQueue.length) {
         this.isPlaying = true;
+        const item = this.speakQueue[currentIndex];
+        const announce = (durationMs: number) =>
+          this.sentencePlayCallback?.({
+            charStart: this.getCharStartForSentence(item.sentenceIndex),
+            charEnd: this.getCharEndForSentence(item.sentenceIndex),
+            durationMs,
+            sentenceIndex: item.sentenceIndex,
+            sentence: item.sentence,
+          });
         try {
-          const item = this.speakQueue[currentIndex];
           const playParams = await item.ttsPromise;
           console.log(
             `Playing audio ${currentIndex + 1}/${this.speakQueue.length}`
           );
-          this.sentencePlayCallback?.({
-            charEnd: this.getCharEndForSentence(item.sentenceIndex),
-            durationMs: playParams.duration,
-            sentenceIndex: item.sentenceIndex,
-            sentence: item.sentence,
-          });
+          announce(this.hasPlayableAudio(playParams) ? playParams.duration : 0);
           await playAudioData(playParams);
         } catch (error) {
           console.error("Audio playback error:", error);
+          // Without audio the sentence's text is shown at once.
+          announce(0);
         }
         currentIndex++;
         playNext();
@@ -213,7 +226,9 @@ export class StreamResponser {
     if (sentences.length > 0) {
       this.parsedSentences.push(...sentences);
       const startIndex = this.displaySentences.length;
-      this.displaySentences.push(...sentences);
+      // Display text is the sentences joined by single spaces; positions in the
+      // sentence-play event refer to it.
+      this.displaySentences.push(...sentences.map((sentence) => sentence.trim()));
       this.sentencesCallback?.(this.displaySentences);
       // remove emoji
       const length = this.speakQueue.length;
@@ -232,7 +247,7 @@ export class StreamResponser {
         const ttsPromise = this.enqueueTTS(purified);
         queueItems.push({
           sentenceIndex: startIndex + index,
-          sentence,
+          sentence: this.displaySentences[startIndex + index],
           ttsPromise,
         });
       });
@@ -247,9 +262,9 @@ export class StreamResponser {
   };
 
   endPartial = (): void => {
-    if (this.partialContent) {
+    if (this.partialContent.trim()) {
       this.parsedSentences.push(this.partialContent);
-      this.displaySentences.push(this.partialContent);
+      this.displaySentences.push(this.partialContent.trim());
       this.sentencesCallback?.(this.displaySentences);
       const text = purifyTextForTTS(this.partialContent);
       if (!text) {
@@ -267,8 +282,8 @@ export class StreamResponser {
           this.playAudioInOrder();
         }
       }
-      this.partialContent = "";
     }
+    this.partialContent = "";
     this.textCallback?.(this.displaySentences.join(" "));
     this.parsedSentences.length = 0;
   };
