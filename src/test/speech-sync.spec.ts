@@ -143,6 +143,24 @@ test("nothing speakable or no duration reveals the sentence at once", () => {
   assert.deepEqual(revealPlan("   ", 500), [{ atMs: 0, chars: 3 }]);
 });
 
+test("[AudioTiming] splits a gap into waiting for LLM text, for TTS and scheduling", () => {
+  const { splitGap } = require("../core/audio-timing");
+  // Previous chunk ended at 1000; the next sentence arrived at 1600, its audio at 2100, played at 2200.
+  assert.deepEqual(splitGap(1000, { queuedAt: 1600, readyAt: 2100, playStartAt: 2200 }), {
+    gap: 1200,
+    text: 600,
+    tts: 500,
+    sched: 100,
+  });
+  // Text and audio were ready long before: the whole gap is scheduling.
+  assert.deepEqual(splitGap(1000, { queuedAt: 100, readyAt: 300, playStartAt: 1050 }), {
+    gap: 50,
+    text: 0,
+    tts: 0,
+    sched: 50,
+  });
+});
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("SpokenTextReveal follows a plan, capped at the sentence, and stops on reset", async () => {

@@ -126,6 +126,10 @@ const piperHttpTTS = async (
       ...(piperHttpVoice ? { voice: piperHttpVoice } : {}),
     });
 
+    // [AudioTiming]: Piper HTTP request, SoX conversion and duration probe, in ms.
+    const requestAt = performance.now();
+    let convertAt = requestAt;
+    let probeAt = requestAt;
     const piperProcess = spawn(
       "curl",
       [
@@ -155,6 +159,7 @@ const piperHttpTTS = async (
     piperProcess.stderr?.on("data", (data) => (curlErr += data.toString()));
 
     piperProcess.on("close", async (code: number) => {
+      convertAt = performance.now();
       const [httpStatus = "", bytes = "", contentType = ""] = curlOut.trim().split(" ");
       console.log(
         `[TTS-DIAG][piper-http] POST ${piperHttpUrl} -> curl exit ${code}, HTTP ${httpStatus || "-"}, ${bytes || 0} bytes, ${contentType || "no content type"}`
@@ -219,10 +224,16 @@ const piperHttpTTS = async (
           });
         });
 
+        probeAt = performance.now();
         const duration = (await getAudioDurationInSeconds(convertedWavFile)) * 1000;
         // Clean up temp file
         // fs.unlinkSync(convertedWavFile);
         console.log(`[TTS-DIAG][piper-http] ${convertedWavFile} duration ${Math.round(duration)}ms`);
+        console.log(
+          `[AudioTiming] piper ${text.length} chars: http ${Math.round(convertAt - requestAt)}ms, ` +
+            `convert ${Math.round(probeAt - convertAt)}ms, probe ${Math.round(performance.now() - probeAt)}ms ` +
+            `for ${Math.round(duration)}ms of audio`,
+        );
 
         resolve({ filePath: convertedWavFile, duration });
       } catch (error) {

@@ -347,7 +347,18 @@ const playAudioData = (params: TTSResult): Promise<void> => {
         console.log("Playback duration:", audioDuration);
         console.log(`[TTS-DIAG][audio] sox -q ${filePath} -t alsa ${alsaOutputDevice}`);
         player.isPlaying = true;
+        const spawnAt = performance.now();
+        let startedAt: number | undefined;
         const process = spawn("sox", ["-q", filePath, "-t", "alsa", alsaOutputDevice]);
+        process.on("spawn", () => (startedAt = performance.now()));
+        process.on("close", () => {
+          const end = performance.now();
+          const ran = Math.round(end - (startedAt ?? spawnAt));
+          console.log(
+            `[AudioTiming] sox process started ${startedAt === undefined ? "?" : Math.round(startedAt - spawnAt)}ms after spawn, ` +
+              `ran ${ran}ms for ${Math.round(audioDuration)}ms of audio (+${ran - Math.round(audioDuration)}ms)`,
+          );
+        });
         let soxErr = "";
         process.stderr?.on("data", (data) => (soxErr += data.toString()));
         process.on("error", (error) => {

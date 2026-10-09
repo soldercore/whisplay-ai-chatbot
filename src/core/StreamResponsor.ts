@@ -3,7 +3,8 @@ import dotenv from "dotenv";
 import { playAudioData, stopPlaying } from "../device/audio";
 import { TTSResult } from "../type";
 import fs from "fs";
-import { RevealStep, revealPlan, speechTimingFromWav } from "./speech-timing";
+import { RevealStep, revealPlan, SpeechTiming, speechTimingFromWav } from "./speech-timing";
+import { ChunkTiming, formatChunkReport, now } from "./audio-timing";
 
 dotenv.config();
 
@@ -35,10 +36,14 @@ export class StreamResponser {
     sentenceIndex: number;
     sentence: string;
     ttsPromise: Promise<TTSResult>;
+    timing: ChunkTiming;
   }[] = [];
   private parsedSentences: string[] = [];
   private displaySentences: string[] = [];
   private isPlaying: boolean = false;
+  // Diagnostics ([AudioTiming]): monotonic start of the answer's text, chunks played.
+  private answerStartAt?: number;
+  private playedCount = 0;
   // True from the first partial() until endPartial()/stop(): the answer is still
   // being generated, so an empty audio queue is a pause, not the end of playback.
   private streamOpen: boolean = false;
@@ -48,6 +53,7 @@ export class StreamResponser {
   private activeTTSCount = 0;
   private pendingTTSQueue: {
     text: string;
+    timing?: ChunkTiming;
     resolve: (result: TTSResult) => void;
     reject: (error: unknown) => void;
   }[] = [];
@@ -112,8 +118,8 @@ export class StreamResponser {
     return lastResult;
   };
 
-  private revealPlanFor = (sentence: string, durationMs: number, result: TTSResult): RevealStep[] => {
-    let timing;
+  private measureSpeech = (result: TTSResult): SpeechTiming | undefined => {
+    let timing: SpeechTiming | undefined;
     try {
       const wav = result.filePath
         ? fs.readFileSync(result.filePath)
@@ -126,7 +132,7 @@ export class StreamResponser {
     } catch (error: any) {
       console.warn(`[SpeechSync] Could not measure the audio: ${error.message}`);
     }
-    return revealPlan(sentence, durationMs, timing);
+    return timing;
   };
 
   private hasPlayableAudio = (result: TTSResult): boolean => {
@@ -153,6 +159,7 @@ export class StreamResponser {
       return;
     }
     let currentIndex = 0;
+    let previousEndAt: number | undefined;
     const playNext = async () => {
       if (currentIndex < this.speakQueue.length) {
         this.isPlaying = true;
@@ -172,16 +179,41 @@ export class StreamResponser {
             `Playing audio ${currentIndex + 1}/${this.speakQueue.length}`
           );
           const durationMs = this.hasPlayableAudio(playParams) ? playParams.duration : 0;
+          const waiting = this.speakQueue.slice(currentIndex + 1);
           // Start playback first: measuring the audio adds no audio latency.
+          item.timing.playStartAt = now();
           const playing = playAudioData(playParams);
-          announce(durationMs, durationMs > 0 ? this.revealPlanFor(item.sentence, durationMs, playParams) : undefined);
+          const speech = durationMs > 0 ? this.measureSpeech(playParams) : undefined;
+          announce(durationMs, durationMs > 0 ? revealPlan(item.sentence, durationMs, speech) : undefined);
           await playing;
+          item.timing.playEndAt = now();
+          if (durationMs > 0) {
+            console.log(
+              formatChunkReport({
+                index: currentIndex + 1,
+                total: this.speakQueue.length,
+                chars: item.sentence.length,
+                timing: item.timing,
+                answerStartAt: this.answerStartAt ?? item.timing.queuedAt,
+                previousEndAt,
+                durationMs,
+                leadMs: speech?.speechStartMs,
+                trailMs: speech ? Math.max(0, Math.round(durationMs - speech.speechEndMs)) : undefined,
+                waiting: waiting.length,
+                waitingReady: waiting.filter((next) => next.timing.readyAt !== undefined).length,
+                ttsActive: this.activeTTSCount,
+                ttsPending: this.pendingTTSQueue.length,
+              }),
+            );
+            previousEndAt = item.timing.playEndAt;
+          }
         } catch (error) {
           console.error("Audio playback error:", error);
           // Without audio the sentence's text is shown at once.
           announce(0);
         }
         currentIndex++;
+        this.playedCount = currentIndex;
         playNext();
       } else if (this.partialContent || this.streamOpen) {
         // More text is coming (e.g. after a tool call). Finishing here would
@@ -200,15 +232,28 @@ export class StreamResponser {
         this.hasStartedTTS = false;
         this.firstTTSPromise = null;
         this.pendingTTSQueue.length = 0;
+        this.answerStartAt = undefined;
+        this.playedCount = 0;
       }
     };
     playNext();
   };
 
-  private enqueueTTS = (text: string): Promise<TTSResult> => {
+  private enqueueTTS = (text: string, timing?: ChunkTiming): Promise<TTSResult> => {
+    const ready = (task: Promise<TTSResult>): Promise<TTSResult> =>
+      timing
+        ? task.finally(() => {
+            timing.readyAt = now();
+          })
+        : task;
     if (!this.hasStartedTTS) {
       this.hasStartedTTS = true;
-      const task = this.ttsChain.then(() => this.ttsFunc(text));
+      const task = ready(
+        this.ttsChain.then(() => {
+          if (timing) timing.synthStartAt = now();
+          return this.ttsFunc(text);
+        }),
+      );
       this.ttsChain = task.then(
         () => undefined,
         () => undefined,
@@ -217,15 +262,17 @@ export class StreamResponser {
       return task;
     }
 
-    return (this.firstTTSPromise || Promise.resolve({ duration: 0 })).then(
-      () => this.enqueueLimitedTTS(text),
-      () => this.enqueueLimitedTTS(text),
+    return ready(
+      (this.firstTTSPromise || Promise.resolve({ duration: 0 })).then(
+        () => this.enqueueLimitedTTS(text, timing),
+        () => this.enqueueLimitedTTS(text, timing),
+      ),
     );
   };
 
-  private enqueueLimitedTTS = (text: string): Promise<TTSResult> => {
+  private enqueueLimitedTTS = (text: string, timing?: ChunkTiming): Promise<TTSResult> => {
     return new Promise((resolve, reject) => {
-      this.pendingTTSQueue.push({ text, resolve, reject });
+      this.pendingTTSQueue.push({ text, timing, resolve, reject });
       this.pumpTTSQueue();
     });
   };
@@ -240,6 +287,7 @@ export class StreamResponser {
         return;
       }
       this.activeTTSCount++;
+      if (item.timing) item.timing.synthStartAt = now();
       this.ttsFunc(item.text)
         .then(item.resolve, item.reject)
         .finally(() => {
@@ -251,6 +299,7 @@ export class StreamResponser {
 
   partial = (text: string): void => {
     this.streamOpen = true;
+    if (this.answerStartAt === undefined) this.answerStartAt = now();
     this.partialContent += text;
     // replace newlines with spaces
     this.partialContent = this.partialContent.replace(/\n/g, " ");
@@ -268,6 +317,7 @@ export class StreamResponser {
         sentenceIndex: number;
         sentence: string;
         ttsPromise: Promise<TTSResult>;
+        timing: ChunkTiming;
       }[] = [];
       sentences.forEach((sentence, index) => {
         const purified = purifyTextForTTS(sentence);
@@ -276,11 +326,13 @@ export class StreamResponser {
           console.warn("[TTS-DIAG] nothing left to speak after purifyTextForTTS:", JSON.stringify(sentence));
           return;
         }
-        const ttsPromise = this.enqueueTTS(purified);
+        const timing: ChunkTiming = { queuedAt: now() };
+        const ttsPromise = this.enqueueTTS(purified, timing);
         queueItems.push({
           sentenceIndex: startIndex + index,
           sentence: this.displaySentences[startIndex + index],
           ttsPromise,
+          timing,
         });
       });
       if (queueItems.length > 0) {
@@ -306,10 +358,12 @@ export class StreamResponser {
       }
       if (text) {
         const length = this.speakQueue.length;
+        const timing: ChunkTiming = { queuedAt: now() };
         this.speakQueue.push({
           sentenceIndex: this.displaySentences.length - 1,
           sentence: this.displaySentences[this.displaySentences.length - 1],
-          ttsPromise: this.enqueueTTS(text),
+          ttsPromise: this.enqueueTTS(text, timing),
+          timing,
         });
         if (length === 0 && !this.isPlaying) {
           this.playAudioInOrder();
@@ -317,6 +371,12 @@ export class StreamResponser {
       }
     }
     this.partialContent = "";
+    if (this.answerStartAt !== undefined) {
+      console.log(
+        `[AudioTiming] LLM text complete at +${((now() - this.answerStartAt) / 1000).toFixed(2)}s: ` +
+          `${this.speakQueue.length} chunks queued, ${this.playedCount} played`,
+      );
+    }
     this.textCallback?.(this.displaySentences.join(" "));
     this.parsedSentences.length = 0;
   };
@@ -344,6 +404,8 @@ export class StreamResponser {
     this.firstTTSPromise = null;
     this.activeTTSCount = 0;
     this.pendingTTSQueue.length = 0;
+    this.answerStartAt = undefined;
+    this.playedCount = 0;
     this.playEndResolve();
     stopPlaying();
   };
