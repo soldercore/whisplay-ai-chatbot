@@ -17,6 +17,8 @@ const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "whisplay-memory-spec-")
 const storePath = path.join(memoryDir, "memory.json");
 const chatRequests: ChatRequest[] = [];
 let responders: Responder[] = [];
+let slowReplyMs = 0;
+let slowReplyCancelled = false;
 
 const chunk = (message: object) => ({ model: "test", message: { role: "assistant", content: "", ...message }, done: false });
 const done = { model: "test", message: { role: "assistant", content: "" }, done: true };
@@ -33,7 +35,19 @@ const server = http.createServer((req, res) => {
     if (request.stream === false) return res.end(JSON.stringify(done)); // keep-alive request
     chatRequests.push(request);
     const responder = responders.shift() || (() => say("(no scripted reply)"));
-    for (const line of responder(request)) res.write(`${JSON.stringify(line)}\n`);
+    const lines = responder(request);
+    if (slowReplyMs > 0) {
+      // A slow answer: one chunk, then nothing until the client gives up.
+      const delay = slowReplyMs;
+      slowReplyMs = 0;
+      res.write(`${JSON.stringify(lines[0])}\n`);
+      res.on("close", () => {
+        if (!res.writableEnded) slowReplyCancelled = true;
+      });
+      setTimeout(() => res.end(), delay);
+      return;
+    }
+    for (const line of lines) res.write(`${JSON.stringify(line)}\n`);
     res.end();
   });
 });
@@ -310,8 +324,7 @@ test("an unrelated question is not offered the memory or volume tools", async ()
   assert.equal(answer, "2 plus 2 is 4.");
   assert.equal(chatRequests.length, 1);
   const tools = offered(chatRequests[0]);
-  assert.equal(tools.some((name) => /LocalMemory|Volume/.test(name)), false, `offered: ${tools}`);
-  assert.ok(tools.includes("web_search"), "web search stays available");
+  assert.equal(tools.some((name) => /LocalMemory|Volume|web_search|fetch_webpage|Image/.test(name)), false, `offered: ${tools}`);
 });
 
 test("questions about the user still get the memory tools", async () => {
@@ -352,18 +365,19 @@ test("memory and volume tools are offered only for requests that concern them", 
   }
   assert.equal(mentionsVolume("What is 2 plus 2? Answer in one sentence."), false);
   const tools = ["setVolume", "web_search", "searchLocalMemory", "someTool"].map((name) => ({ function: { name } }));
-  assert.deepEqual(toolsRelevantTo("What is 2 plus 2?", tools).map((t: any) => t.function.name), ["web_search", "someTool"]);
+  assert.deepEqual(toolsRelevantTo("What is 2 plus 2?", tools).map((t: any) => t.function.name), ["someTool"]);
+  assert.deepEqual(toolsRelevantTo("Who won the race yesterday?", tools).map((t: any) => t.function.name), ["someTool", "web_search"], "always-offered tools first");
 });
 
 test("a follow-up keeps the tools of the request it continues; a new question does not", async () => {
   const { toolsRelevantTo } = require("../config/tool-router");
   const tools = ["searchLocalMemory", "setVolume", "web_search"].map((name) => ({ function: { name } }));
   const names = (request: string, previous: string) => toolsRelevantTo(request, tools, previous).map((t: any) => t.function.name);
-  assert.deepEqual(names("What about her birthday?", "Have I told you about my sister?"), ["searchLocalMemory", "web_search"]);
-  assert.deepEqual(names("She lives in Berlin, too.", "My sister is called Anna, keep that in mind."), ["searchLocalMemory", "web_search"]);
-  assert.deepEqual(names("Anything else?", "What did we talk about last time?"), ["searchLocalMemory", "web_search"]);
-  assert.deepEqual(names("A bit more.", "Turn the volume up."), ["setVolume", "web_search"]);
-  assert.deepEqual(names("What is 2 plus 2? Answer in one sentence.", "Which color do I like?"), ["web_search"]);
+  assert.deepEqual(names("What about her birthday?", "Have I told you about my sister?"), ["web_search", "searchLocalMemory"]);
+  assert.deepEqual(names("She lives in Berlin, too.", "My sister is called Anna, keep that in mind."), ["web_search", "searchLocalMemory"]);
+  assert.deepEqual(names("Anything else?", "What did we talk about last time?"), ["web_search", "searchLocalMemory"]);
+  assert.deepEqual(names("A bit more.", "Turn the volume up."), ["web_search", "setVolume"]);
+  assert.deepEqual(names("What is 2 plus 2? Answer in one sentence.", "Which color do I like?"), []);
   assert.deepEqual(names("What about her birthday?", "What is the capital of France?"), ["web_search"]);
 
   responders = [() => say("I don't have anything about your sister.")];
@@ -371,4 +385,73 @@ test("a follow-up keeps the tools of the request it continues; a new question do
   responders = [() => say("I don't have her birthday saved.")];
   await ask("What about her birthday?");
   assert.ok(offered(chatRequests[1]).includes("searchLocalMemory"), "the follow-up can still search memory");
+});
+
+test("image tools only for image requests; no web tools for direct-answer requests", () => {
+  const { toolsRelevantTo, isDirectAnswerRequest } = require("../config/tool-router");
+  const tools = ["web_search", "fetch_webpage", "generateImage", "showPreviouslyGeneratedImage"].map((name) => ({ function: { name } }));
+  const names = (request: string) => toolsRelevantTo(request, tools).map((t: any) => t.function.name);
+  assert.deepEqual(names("Draw a cat for me."), ["web_search", "fetch_webpage", "generateImage", "showPreviouslyGeneratedImage"]);
+  assert.deepEqual(names("Show me the picture again."), ["web_search", "fetch_webpage", "generateImage", "showPreviouslyGeneratedImage"]);
+  assert.deepEqual(names("What does a cat look like?"), ["web_search", "fetch_webpage"]);
+  assert.deepEqual(names("Tell me about the Artemis moon program."), ["web_search", "fetch_webpage"]);
+  for (const text of ["What is 2 plus 2? Answer in one sentence.", "Describe a sunset in one sentence.", "How much is 12 x 7?", "Why is the sky blue? Keep it short."]) {
+    assert.equal(isDirectAnswerRequest(text), true, text);
+    assert.deepEqual(names(text), [], text);
+  }
+  for (const text of ["What is the weather in Berlin today, briefly?", "When is GTA VI releasing? Keep it short.", "What is the latest news in one sentence?"]) {
+    assert.deepEqual(names(text), ["web_search", "fetch_webpage"], `time-sensitive keeps web search: ${text}`);
+  }
+});
+
+test("a new question cancels an unfinished answer and is answered on its own", async () => {
+  slowReplyMs = 5000;
+  slowReplyCancelled = false;
+  responders = [() => say("The Artemis program is"), () => say("2 plus 2 is 4.")];
+  let first = "";
+  let firstEnded = false;
+  const firstAnswer = llm.chatWithLLMStream([{ role: "user", content: "Tell me about the Artemis program." }], (part: string) => (first += part), () => (firstEnded = true));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const started = Date.now();
+  let second = "";
+  await llm.chatWithLLMStream([{ role: "user", content: "What is 2 plus 2?" }], (part: string) => (second += part), () => {});
+  await firstAnswer;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.ok(Date.now() - started < 2000, "the new question does not wait for the old answer");
+  assert.equal(second.trim(), "2 plus 2 is 4.");
+  assert.equal(slowReplyCancelled, true, "the old request was closed, so Ollama stops generating");
+  assert.equal(firstEnded, true, "the old answer still signals its end");
+  const sent = chatRequests[1].messages.map((m) => m.content).join("\n");
+  assert.equal(sent.includes("Artemis"), false, "the unanswered question is not in the new request");
+});
+
+test("a cancelled answer leaves no trace in the history, even while its tool runs", async () => {
+  const realSearch = llmFuncMap.web_search;
+  llmFuncMap.web_search = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return "[success]Artemis search results";
+  };
+  try {
+    responders = [() => toolCall("web_search", { query: "Artemis program" }), () => say("2 plus 2 is 4."), () => say("You asked about arithmetic.")];
+    let firstEnded = false;
+    const firstAnswer = llm.chatWithLLMStream([{ role: "user", content: "Tell me about the Artemis program." }], () => {}, () => (firstEnded = true));
+    await new Promise((resolve) => setTimeout(resolve, 100)); // the search is running now
+
+    let second = "";
+    await llm.chatWithLLMStream([{ role: "user", content: "What is 2 plus 2?" }], (part: string) => (second += part), () => {});
+    await firstAnswer;
+    await new Promise((resolve) => setTimeout(resolve, 400)); // the old search finishes
+    assert.equal(second.trim(), "2 plus 2 is 4.");
+    assert.equal(firstEnded, true);
+
+    await llm.chatWithLLMStream([{ role: "user", content: "What did I just ask?" }], () => {}, () => {});
+    assert.equal(chatRequests.length, 3, "the cancelled answer made no further model request");
+    const history = chatRequests[2].messages.map((m) => m.content).join("\n");
+    assert.equal(history.includes("Artemis"), false, "neither the old question nor its search result");
+    assert.ok(history.includes("What is 2 plus 2?") && history.includes("2 plus 2 is 4."), "the answered exchange is kept");
+  } finally {
+    llmFuncMap.web_search = realSearch;
+  }
 });
