@@ -61,6 +61,8 @@ const makeWav = (seed: number, ms: number): Buffer => {
 
 type Mode = "ok" | "error500" | "html200" | "reset" | "hang" | "wavWrongType" | "fakeWav";
 let mode: Mode = "ok";
+// Extra synthesis time for the first request, like a cold Piper on a busy Pi.
+let firstSynthDelayMs = 0;
 // Piper 1.8 serves synthesis only at /synthesize and answers 404 on "/".
 let piper18 = false;
 const requests: { text: string; length_scale: number }[] = [];
@@ -108,7 +110,7 @@ const server = http.createServer((req, res) => {
         "Content-Type": mode === "wavWrongType" ? "application/octet-stream" : "audio/wav",
       });
       res.end(wav);
-    }, Math.max(20, 120 - requests.length * 15));
+    }, Math.max(20, 120 - requests.length * 15) + (requests.length === 1 ? firstSynthDelayMs : 0));
   });
 });
 server.on("connection", (socket) => {
@@ -483,4 +485,60 @@ test("a sentence whose speech fails is still shown, at its turn", async () => {
   await responder.getPlayEndPromise();
   mode = "ok";
   assert.deepEqual(starts.map((s) => [s.charStart, s.charEnd, s.durationMs]), [[0, 14, 0]], "zero duration: shown at once");
+});
+
+test("a pause in the LLM stream (e.g. a tool call) does not reveal the next sentence early", async () => {
+  mode = "ok";
+  const { SpokenTextReveal } = require("../core/spoken-text-reveal");
+  const reveal = new SpokenTextReveal(() => {}, 5);
+  let fullText = "";
+  const shownWhenParsed: string[] = [];
+  const responder = new StreamResponser(
+    piperHttpTTS,
+    (sentences: string[]) => {
+      fullText = sentences.join(" ");
+      shownWhenParsed.push(fullText.slice(0, reveal.revealed));
+    },
+    undefined,
+    (event: any) => reveal.sentenceStarted(event.charStart, event.charEnd, event.durationMs),
+  );
+  responder.partial("Let me check. ");
+  await wait(900); // the first sentence is synthesized and played while the tool runs
+  responder.partial("Paris is the capital of France. ");
+  responder.endPartial();
+  await responder.getPlayEndPromise();
+
+  assert.equal(fullText, "Let me check. Paris is the capital of France.", "the screen keeps the whole answer");
+  assert.equal(shownWhenParsed[1], "Let me check.", "only the spoken sentence is visible when the next one arrives");
+});
+
+test("text waits for the first sentence's actual playback when synthesis is slow", async () => {
+  mode = "ok";
+  firstSynthDelayMs = 2000; // the LLM is fast, the first audio takes ~2 s
+  requests.length = 0;
+  const { SpokenTextReveal } = require("../core/spoken-text-reveal");
+  const reveals: number[] = [];
+  const reveal = new SpokenTextReveal(() => reveals.push(Date.now()), 5);
+  const responder = new StreamResponser(piperHttpTTS, undefined, undefined, (event: any) =>
+    reveal.sentenceStarted(event.charStart, event.charEnd, event.durationMs),
+  );
+  const startedAt = Date.now();
+  try {
+    responder.partial("GLaDOS says hello. Testing continues now. ");
+    responder.endPartial();
+    await wait(1000);
+    assert.equal(reveal.revealed, 0, "nothing on screen while the first audio is still being made");
+    await responder.getPlayEndPromise();
+  } finally {
+    firstSynthDelayMs = 0;
+  }
+  const playStarts = soxLogLines()
+    .filter((line) => line.startsWith("PLAY"))
+    .map((line) => Number(line.split(" ")[4]))
+    .filter((at) => at >= startedAt);
+  assert.ok(playStarts.length > 0, "playback happened");
+  assert.ok(reveals.length > 0, "text was shown");
+  // The reveal is announced just before SoX starts; allow for process startup only.
+  assert.ok(reveals[0] >= playStarts[0] - 400, `first text ${playStarts[0] - reveals[0]} ms before playback started`);
+  assert.ok(reveals[0] - startedAt >= 1800, "no text during the slow synthesis");
 });

@@ -165,6 +165,10 @@ else
 fi
 
 if [ -f "dist/index.js" ] && command -v node >/dev/null 2>&1; then
+  # A git pull without "yarn build" keeps running the old compiled code.
+  if [ -n "$(find src -name '*.ts' -newer dist/index.js -print -quit 2>/dev/null)" ]; then
+    echo "WARNING: src/ is newer than dist/; the old build is running. Run 'yarn build' (or 'whisplay update')."
+  fi
   echo "Starting compiled application directly..."
   if [ -n "$card_index" ]; then
     SOUND_CARD_INDEX=$card_index node dist/index.js

@@ -3,7 +3,7 @@
 //   conversion: sox -v 0.9 <in.wav> -r 48000 -c 2 -b 16 <out.wav>
 //   playback:   sox -q <file> -t alsa <device>
 // Conversion copies the WAV unchanged; playback "plays" it by sleeping for its
-// duration and appends "PLAY <fnv1a-hash> <ms> <device>" to $FAKE_SOX_LOG.
+// duration and appends "PLAY <fnv1a-hash> <ms> <device> <start-epoch-ms>" to $FAKE_SOX_LOG.
 const fs = require("fs");
 
 const args = process.argv.slice(2);
@@ -69,7 +69,8 @@ if (isPlayback) {
   }
   const wav = readWav(file);
   const ms = durationMs(wav);
-  log(`PLAY ${fnv1a(wav)} ${ms} ${device}`);
+  // Last field: wall-clock time playback starts (ms since epoch).
+  log(`PLAY ${fnv1a(wav)} ${ms} ${device} ${Date.now()}`);
   sleep(ms * Number(process.env.FAKE_SOX_PLAY_SCALE || "1"));
   process.exit(0);
 } else {

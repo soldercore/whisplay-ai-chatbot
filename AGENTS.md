@@ -452,6 +452,8 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 ### Answer text follows the voice
 - The screen shows the answer as it is spoken, not as the LLM generates it. `StreamResponser` fires a sentence-play event (`charStart`, `charEnd`, real audio `durationMs`) when a sentence's audio starts; `src/core/spoken-text-reveal.ts` reveals that sentence linearly over its duration; `ChatFlow.composeAnswerDisplayText` shows only the revealed part (tool tags appear once the text before them is spoken). Sentence starts and ends are exact up to the audio output latency; within a sentence the pace is an even spread (Piper gives no word timings).
 - Sentences without audio (TTS or playback failed, nothing speakable) are revealed at once at their turn; when playback ends the whole answer is shown immediately (`revealAllAnswerText`). A new answer or an interruption resets the reveal.
+- While the answer is still streaming (between the first `partial()` and `endPartial()`/`stop()`), an empty audio queue is a pause (e.g. a tool call), not the end of playback: `StreamResponser` keeps its sentence positions and polls every 100 ms. Ending playback there restarted the positions and showed the next sentence before its audio.
+- `run_chatbot.sh` warns when `src/` is newer than `dist/` (a pull without `yarn build` runs the old code); the log line `[SpeechSync] Answer text is shown as it is spoken.` confirms a build with speech-synced text.
 - The display text is the spoken sentences joined by single spaces (newlines become spaces); `splitSentences` keeps a trailing space of the unfinished remainder so streamed words are not glued together.
 
 ### Modifying UI/Display

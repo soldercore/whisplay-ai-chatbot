@@ -79,6 +79,8 @@ class ChatFlow implements ChatFlowContext {
 
   constructor(options: { enableCamera?: boolean } = {}) {
     console.log(`[${getCurrentTimeTag()}] ChatBot started.`);
+    // Lets the log confirm which build runs: answer text follows audio playback.
+    console.log("[SpeechSync] Answer text is shown as it is spoken.");
     this.recordingsDir = recordingsDir;
     this.stateMachine = new FlowStateMachine(this, flowStates);
     this.streamResponser = new StreamResponser(

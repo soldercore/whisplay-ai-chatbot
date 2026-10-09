@@ -34,6 +34,9 @@ export class StreamResponser {
   private parsedSentences: string[] = [];
   private displaySentences: string[] = [];
   private isPlaying: boolean = false;
+  // True from the first partial() until endPartial()/stop(): the answer is still
+  // being generated, so an empty audio queue is a pause, not the end of playback.
+  private streamOpen: boolean = false;
   private ttsChain: Promise<void> = Promise.resolve();
   private hasStartedTTS: boolean = false;
   private firstTTSPromise: Promise<TTSResult> | null = null;
@@ -154,8 +157,10 @@ export class StreamResponser {
         }
         currentIndex++;
         playNext();
-      } else if (this.partialContent) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } else if (this.partialContent || this.streamOpen) {
+        // More text is coming (e.g. after a tool call). Finishing here would
+        // restart the sentence positions and the screen text mid-answer.
+        await new Promise((resolve) => setTimeout(resolve, this.partialContent ? 1000 : 100));
         playNext();
       } else {
         console.log(
@@ -219,6 +224,7 @@ export class StreamResponser {
   };
 
   partial = (text: string): void => {
+    this.streamOpen = true;
     this.partialContent += text;
     // replace newlines with spaces
     this.partialContent = this.partialContent.replace(/\n/g, " ");
@@ -262,6 +268,7 @@ export class StreamResponser {
   };
 
   endPartial = (): void => {
+    this.streamOpen = false;
     if (this.partialContent.trim()) {
       this.parsedSentences.push(this.partialContent);
       this.displaySentences.push(this.partialContent.trim());
@@ -299,6 +306,7 @@ export class StreamResponser {
   };
 
   stop = (): void => {
+    this.streamOpen = false;
     this.speakQueue = [];
     this.speakQueue.length = 0;
     this.partialContent = "";
