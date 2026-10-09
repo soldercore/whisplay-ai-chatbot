@@ -98,23 +98,16 @@ const messages: OllamaMessage[] = [
   },
 ];
 
+// Loads the model and keeps it loaded without evaluating a prompt: Ollama
+// answers a chat request with no messages with done_reason "load". The former
+// warmup sent the system prompt and all tools (~965 tokens), which took 65 s of
+// prompt evaluation on a Pi 5, and a first question had to wait for it.
 const keepAliveOllama = () => {
   axios
     .post(`${ollamaEndpoint}/api/chat`, {
       model: ollamaModel,
-      messages: [
-        {
-          role: "system",
-          content: systemPrompt,
-        },
-      ],
-      options: {
-        temperature: 0.7,
-        num_predict: 1,
-      },
-      think: false,
+      messages: [],
       stream: false,
-      tools: ollamaEnableTools ? llmTools : undefined,
       keep_alive: -1,
     })
     .then((response) => {
@@ -126,7 +119,7 @@ const keepAliveOllama = () => {
 };
 
 if (llmServer.trim().toLowerCase() === "ollama") {
-  // initialize request to ollama server with empty prompt, to load the model into memory
+  // Load the model into memory once at startup (load only, no prompt).
   keepAliveOllama();
 }
 

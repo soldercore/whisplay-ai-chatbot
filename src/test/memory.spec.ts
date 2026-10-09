@@ -17,6 +17,7 @@ const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "whisplay-memory-spec-")
 const storePath = path.join(memoryDir, "memory.json");
 const chatRequests: ChatRequest[] = [];
 let responders: Responder[] = [];
+const warmupRequests: { url: string; body: any }[] = [];
 let slowReplyMs = 0;
 let slowReplyCancelled = false;
 
@@ -32,7 +33,11 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     if (req.url === "/api/show") return res.end(JSON.stringify({ model_info: { "qwen3.context_length": 32768 } }));
     if (req.url === "/api/generate") return res.end(JSON.stringify({ response: "The user likes short answers." }));
-    if (request.stream === false) return res.end(JSON.stringify(done)); // keep-alive request
+    if (request.stream === false) {
+      // keep-alive (model load) request
+      warmupRequests.push({ url: req.url || "", body: request });
+      return res.end(JSON.stringify({ ...done, done_reason: "load" }));
+    }
     chatRequests.push(request);
     const responder = responders.shift() || (() => say("(no scripted reply)"));
     const lines = responder(request);
@@ -454,4 +459,12 @@ test("a cancelled answer leaves no trace in the history, even while its tool run
   } finally {
     llmFuncMap.web_search = realSearch;
   }
+});
+
+test("startup loads the model once, without evaluating a prompt", async () => {
+  await ask("What is the capital of France?");
+  assert.equal(warmupRequests.length, 1, "one warmup per process, not one per question");
+  const [warmup] = warmupRequests;
+  assert.equal(warmup.url, "/api/chat");
+  assert.deepEqual(warmup.body, { model: "test", messages: [], stream: false, keep_alive: -1 }, "load-only: no prompt, tools or generation options");
 });
