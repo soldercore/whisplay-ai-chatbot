@@ -38,6 +38,7 @@ import {
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 import { isDirectAnswerRequest, toolsRelevantTo } from "../../config/tool-router";
 import { readOllamaNDJSON } from "./ollama-ndjson";
+import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import {
   createOllamaRequestBudget, OllamaRequestBudget, OllamaResourceLimitError,
   reserveToolAttempts, checkModelToolCount, countResponseTextBytes,
@@ -824,6 +825,18 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
   const answer = { controller: new AbortController(), historyLength: messages.length, inputMessages };
   activeAnswer = answer;
   try {
+    const lastUser = [...inputMessages].reverse().find(message => message.role === "user");
+    const refusal = typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
+    if (refusal) {
+      // No generation, prefetch or tool dispatch. Retain the actual exchange so
+      // the next turn sees the refusal, rather than an unfulfilled action.
+      updateLastMessageTime();
+      messages.push(...(inputMessages as OllamaMessage[]), { role: "assistant", content: refusal });
+      fs.writeFileSync(path.join(chatHistoryDir, chatHistoryFileName), JSON.stringify(messages, null, 2));
+      partialCallback(refusal);
+      endCallback();
+      return;
+    }
     await chatWithLLMStreamInternal(
       inputMessages,
       partialCallback,

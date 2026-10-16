@@ -16,7 +16,7 @@ import {
   recordFileFormat,
   getDynamicVoiceDetectLevel,
 } from "../../device/audio";
-import { chatWithLLMStream } from "../../cloud-api/server";
+import { chatWithLLMStream, llmServer } from "../../cloud-api/server";
 import { isImMode, summaryTextWithLLM } from "../../cloud-api/llm";
 import { getSystemPromptWithKnowledge } from "../Knowledge";
 import { enableRAG } from "../../cloud-api/knowledge";
@@ -40,6 +40,7 @@ import {
 import { DEFAULT_EMOJI } from "../../utils";
 import { isMusicPlaying, getCurrentTrackTitle, stopMusicPlayback, startPendingMusicPlayback, onMusicTrackChange, onMusicPlaybackEnd } from "../../device/music-player";
 import { autoSaveExchange, prepareMemoryPrompt } from "../../config/local-memory";
+import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 
 export const flowStates: Record<FlowName, FlowStateHandler> = {
   sleep: (ctx: ChatFlowContext) => {
@@ -293,6 +294,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       RGB: "#00c8a3",
     });
     const currentAnswerId = ctx.answerId;
+    const unsupportedReminder = llmServer === "ollama" && unsupportedReminderReply(ctx.asrText) !== null;
     if (isImMode) {
       const prompt: {
         role: "system" | "user";
@@ -354,7 +356,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.thinkingSentences = [];
     Promise.all([
       [() => Promise.resolve().then(() => ""), getSystemPromptWithKnowledge]
-      [enableRAG ? 1 : 0](ctx.asrText),
+      [enableRAG && !unsupportedReminder ? 1 : 0](ctx.asrText),
       Promise.resolve().then(() => prepareMemoryPrompt(ctx.asrText)),
     ])
       .then(([res, memoryPrompt]: [string, string]) => {
@@ -473,7 +475,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     llmDonePromise.then(() => getPlayEndPromise()).then(() => {
       if (isCurrentAnswer()) ctx.revealAllAnswerText();
       if (ctx.currentFlowName === "answer") {
-        autoSaveExchange(ctx.asrText, llmResponseText, summaryTextWithLLM);
+        autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder ? undefined : summaryTextWithLLM);
         clearPendingCapturedImgForChat();
         display({ image_icon_visible: false });
         if (ctx.wakeSessionActive || ctx.endAfterAnswer) {
