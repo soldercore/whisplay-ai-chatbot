@@ -112,8 +112,8 @@ export async function collectSystemHealth(platform = process.platform): Promise<
 
 export const systemHealthTool: LLMTool = {
   execution: "abortable", type: "function", function: {
-    name: "getSystemHealth", description: "Read this device's CPU, memory, disk, temperature, uptime and service status. Null means unavailable.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
+    name: "getSystemHealth", description: "Read this device's CPU, memory, disk, temperature, uptime and service status. Call with {} only; no arguments. Null means unavailable.",
+    parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
   func: async () => "[success]" + JSON.stringify(await collectSystemHealth()),
 };

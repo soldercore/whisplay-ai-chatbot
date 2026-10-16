@@ -119,6 +119,46 @@ test("health authorization rejects disabled, unoffered and arbitrary command/pat
   assert.deepEqual(s.opened, []); assert.deepEqual(s.commands, []);
 });
 
+test("health advertises an explicit zero-argument contract without search options", () => {
+  const definition = JSON.parse(JSON.stringify(systemHealthTool)).function;
+  assert.match(definition.description, /call with \{\}/i);
+  assert.match(definition.description, /no arguments/i);
+  assert.deepEqual(definition.parameters, {
+    type: "object", properties: {}, required: [], additionalProperties: false,
+  });
+});
+
+test("the reported num_results argument and other extra fields reject before any measurement", async t => {
+  const s = sources(t);
+  for (const args of [{ num_results: 2 }, { query: "cpu" }, { limit: 2 },
+    { command: "reboot" }, { path: "/etc/shadow" }, { options: { num_results: 2 } }]) {
+    const result = await executeToolCall("getSystemHealth", args, {
+      enabled: true, allowedTools: [systemHealthTool], registeredTools: [systemHealthTool],
+      handlers: { getSystemHealth: systemHealthTool.func },
+    });
+    assert.deepEqual(result, { status: "rejected", output: "[rejected]Invalid tool arguments or unsupported schema." });
+  }
+  assert.equal(s.sampleCount(), 0);
+  assert.deepEqual(s.opened, []); assert.deepEqual(s.commands, []);
+});
+
+test("empty health arguments execute through validation and return measured data", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] }); const s = sources(t);
+  const pending = executeToolCall("getSystemHealth", {}, {
+    enabled: true, allowedTools: [systemHealthTool], registeredTools: [systemHealthTool],
+    handlers: { getSystemHealth: systemHealthTool.func },
+  });
+  await flush(); assert.equal(s.sampleCount(), 1);
+  t.mock.timers.tick(100);
+  const result = await pending;
+  assert.equal(result.status, "success");
+  assert.match(result.output, /^\[success\]/);
+  const metrics = JSON.parse(result.output.slice("[success]".length));
+  assert.equal(metrics.cpu.utilizationPercent, 50);
+  assert.equal(metrics.uptimeSeconds, 1234);
+  assert.equal(s.sampleCount(), 2); assert.equal(s.descriptors.size, 0);
+});
+
 test("health sampling cancellation clears its timer before files or processes are touched", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] }); const s = sources(t);
   const controller = new AbortController();
@@ -183,3 +223,63 @@ test("normal Ollama conversation executes registered health tool and receives it
     assert.equal(metrics.cpu.utilizationPercent, 50); assert.equal(metrics.temperatureCelsius, 65);
   } finally { Object.defineProperty(process, "platform", originalPlatform); }
 });
+
+for (const mode of ["native", "json"] as const) {
+  for (const valid of [true, false]) {
+    test(`health ${mode} conversation ${valid ? "returns measurements for {}" : "rejects the Pi num_results call"}`, async t => {
+      t.mock.timers.enable({ apis: ["setTimeout"] }); const s = sources(t);
+      Object.assign(process.env, { LLM_SERVER: "test", OLLAMA_ENABLE_TOOLS: "true", WEB_SEARCH_ENABLED: "true",
+        MEMORY_ENABLED: "false", CONTEXT_AUTO_COMPACT_ENABLED: "false" });
+      const requests: any[] = [], events: { name: string; result?: string }[] = [];
+      const args = valid ? {} : { num_results: 2 };
+      t.mock.method(axios, "post", async (_url: string, body: any) => {
+        requests.push(JSON.parse(JSON.stringify(body)));
+        const tool = requests[requests.length - 1].tools.find((item: any) => item.function.name === "getSystemHealth");
+        assert.equal(tool.function.parameters.type, "object");
+        assert.deepEqual(tool.function.parameters.properties, {});
+        assert.deepEqual(tool.function.parameters.required || [], []);
+        assert.equal(tool.function.parameters.additionalProperties, false);
+        assert.equal(tool.function.description, systemHealthTool.function.description);
+        assert.ok(requests[0].tools.some((item: any) => item.function.name === "web_search"), "keep the real competing search schema");
+        const call = { name: "getSystemHealth", arguments: args };
+        const record = requests.length > 1 ? { message: { content: "CPU utilization is 50 percent." }, done: true }
+          : mode === "native" ? { message: { tool_calls: [{ function: call }] }, done: true }
+            : { message: { content: JSON.stringify(call) }, done: true };
+        const stream = new PassThrough();
+        setImmediate(() => stream.end(JSON.stringify(record) + "\n"));
+        return { data: stream };
+      });
+      // Reload the provider/registry so this test includes both real advertised
+      // schemas, independently of the preceding test's web-disabled registry.
+      delete require.cache[require.resolve("../config/web-search")];
+      delete require.cache[require.resolve("../config/llm-tools")];
+      delete require.cache[require.resolve("../cloud-api/local/ollama-llm")];
+      const provider = require("../cloud-api/local/ollama-llm").default;
+      t.after(() => provider.cancelActiveRequest());
+      let answer = "", ends = 0;
+      const pending = provider.chatWithLLMStream([{ role: "user", content: "GLaDOS, how is your system doing?" }],
+        (text: string) => answer += text, () => ends++, undefined,
+        (name: string, result?: string) => events.push({ name, result }));
+      if (valid) {
+        for (let i = 0; i < 10 && s.sampleCount() === 0; i++) await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(s.sampleCount(), 1);
+        t.mock.timers.tick(100);
+      }
+      await pending;
+      assert.equal(ends, 1);
+      assert.deepEqual(events.map(event => event.name), ["getSystemHealth", "getSystemHealth"]);
+      if (valid) {
+        assert.equal(answer, "CPU utilization is 50 percent."); assert.equal(requests.length, 2);
+        const result = requests[1].messages.find((message: any) => message.role === "tool");
+        assert.equal(result.tool_name, "getSystemHealth");
+        assert.equal(JSON.parse(result.content.slice("[success]".length)).cpu.utilizationPercent, 50);
+        assert.equal(s.sampleCount(), 2);
+      } else {
+        assert.equal(answer, "I couldn't run the requested tool. Completion was not verified.");
+        assert.equal(requests.length, 1, "no retry, argument stripping or alternate execution");
+        assert.equal(events[1].result, "[rejected]Invalid tool arguments or unsupported schema.");
+        assert.equal(s.sampleCount(), 0); assert.deepEqual(s.opened, []); assert.deepEqual(s.commands, []);
+      }
+    });
+  }
+}
