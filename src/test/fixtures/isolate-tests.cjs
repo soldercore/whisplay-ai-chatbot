@@ -37,3 +37,14 @@ for (const [file, exports] of [
   const filename = path.join(project, file);
   require.cache[filename] = { id: filename, filename, loaded: true, exports };
 }
+
+// Existing model fixtures advertise 32k. Keep metadata discovery offline too;
+// runtime-context tests override this method with their explicit /api/ps cases.
+const axios = require("axios");
+const originalGet = axios.get;
+axios.get = function (url, ...args) {
+  if (typeof url === "string" && url.endsWith("/api/ps")) {
+    return Promise.resolve({ data: { models: [{ name: process.env.OLLAMA_MODEL || "deepseek-r1:1.5b", context_length: 32768 }] } });
+  }
+  return originalGet.call(this, url, ...args);
+};

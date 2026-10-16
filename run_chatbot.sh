@@ -151,10 +151,14 @@ if [ -n "$card_name" ]; then
   echo "ALSA output device: $ALSA_OUTPUT_DEVICE"
 fi
 
-if [ "$serve_ollama" = true ]; then
-  echo "Starting Ollama server..."
-  export OLLAMA_KEEP_ALIVE=-1 # ensure Ollama server stays alive
-  OLLAMA_HOST=0.0.0.0:11434 ollama serve &
+source "$working_dir/scripts/ollama-ownership.sh"
+trap cleanup_owned_ollama EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+llm_server="${LLM_SERVER:-$(get_env_value LLM_SERVER)}"
+if [ "$serve_ollama" = true ] || [ "$(printf '%s' "$llm_server" | tr '[:upper:]' '[:lower:]')" = "ollama" ]; then
+  ollama_endpoint="${OLLAMA_ENDPOINT:-$(get_env_value OLLAMA_ENDPOINT)}"
+  prepare_ollama "${ollama_endpoint:-http://localhost:11434}" "$serve_ollama" || exit 1
 fi
 
 # if file use_npm exists and is true, use npm
@@ -194,14 +198,7 @@ fi
 # After the service ends, perform cleanup
 echo "Cleaning up after service..."
 
-if [ "$serve_ollama" = true ]; then
-  echo "Stopping Ollama server..."
-  if command -v pkill >/dev/null 2>&1; then
-    pkill ollama
-  else
-    echo "pkill not available; please stop ollama manually if needed."
-  fi
-fi
+cleanup_owned_ollama
 
 # Record end status
 echo "===== Service ended: $(date) ====="

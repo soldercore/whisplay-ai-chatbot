@@ -29,7 +29,7 @@ import {
   consumePendingCapturedImgForChat,
   hasPendingCapturedImgForChat,
 } from "../../utils/image";
-import { compactMessagesForContextWindow } from "../context-window";
+import { discoverRuntimeContext, fitOllamaPrompt, PromptMessage } from "./ollama-context-budget";
 import { getWebSearchSystemNote } from "../../config/web-search";
 import {
   needsCurrentInformation,
@@ -70,7 +70,7 @@ const useCapturedImageInChat =
 const llmServer = process.env.LLM_SERVER || "";
 const EMPTY_ANSWER_REPLY = "I couldn't produce a usable answer.";
 
-let ollamaContextWindowCache: number | undefined;
+let advertisedContextCache: number | undefined;
 
 const findContextWindowValue = (value: unknown): number | undefined => {
   if (!value || typeof value !== "object") return undefined;
@@ -88,8 +88,8 @@ const findContextWindowValue = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const resolveOllamaContextWindow = async (signal?: AbortSignal): Promise<number | undefined> => {
-  if (ollamaContextWindowCache) return ollamaContextWindowCache;
+const resolveAdvertisedContext = async (signal?: AbortSignal): Promise<number | undefined> => {
+  if (advertisedContextCache) return advertisedContextCache;
   const deadline = operationDeadline(timeoutSetting("OLLAMA_METADATA_TIMEOUT_MS", 300_000), signal);
   let response;
   try {
@@ -97,11 +97,24 @@ const resolveOllamaContextWindow = async (signal?: AbortSignal): Promise<number 
       model: ollamaModel,
     }, { signal: deadline.signal, maxContentLength: 2 * 1024 * 1024 }), deadline.signal);
   } finally { deadline.dispose(); }
-  ollamaContextWindowCache =
+  advertisedContextCache =
     findContextWindowValue(response.data?.model_info) ||
     findContextWindowValue(response.data?.details) ||
     findContextWindowValue(response.data);
-  return ollamaContextWindowCache;
+  return advertisedContextCache;
+};
+
+const budgetRequest = async <T extends PromptMessage>(requestMessages: T[], tools: unknown, signal?: AbortSignal, activeUserIndex?: number, expectedOutput = ollamaPredictNum) => {
+  const runtime = await discoverRuntimeContext(ollamaEndpoint, ollamaModel, signal);
+  let advertised: number | undefined;
+  // Preserve the existing opt-out of optional model-metadata calls. Runtime
+  // budgeting is mandatory even when optional compaction was disabled.
+  if (process.env.CONTEXT_AUTO_COMPACT_ENABLED !== "false") {
+    try { advertised = await resolveAdvertisedContext(signal); }
+    catch { if (signal?.aborted) throw signal.reason; }
+  }
+  if (signal?.aborted) throw signal.reason;
+  return fitOllamaPrompt(requestMessages, tools, runtime, advertised, expectedOutput, activeUserIndex).messages;
 };
 
 const chatHistoryFileName = `ollama_chat_history_${moment().format(
@@ -388,7 +401,7 @@ const answerFromAvailableToolResults = async ({
   let finalThinking = "";
   let responseTextBytes = 0;
   try {
-    const requestMessages = [
+    let requestMessages = [
       ...messages.map((msg, index) =>
         withRequestSystemNote({
           role: msg.role,
@@ -403,6 +416,8 @@ const answerFromAvailableToolResults = async ({
         content: instruction,
       },
     ];
+    requestMessages = await budgetRequest(requestMessages, undefined, signal,
+      messages.map(message => message.role).lastIndexOf("user"));
     const shape = requestShape(requestMessages);
     const startedAt = Date.now();
     let firstTokenAt = 0;
@@ -509,20 +524,6 @@ const chatWithLLMStreamInternal = async (
     endCallback();
     return;
   }
-  await compactMessagesForContextWindow({
-    provider: "ollama",
-    model: ollamaModel,
-    messages,
-    tools: ollamaEnableTools ? llmTools : undefined,
-    outputReserveTokens: ollamaPredictNum,
-    contextWindowResolver: () => resolveOllamaContextWindow(toolLoopState.signal),
-    signal: toolLoopState.signal,
-    invokeFunctionCallback,
-  });
-  if (toolLoopState.signal?.aborted) {
-    endCallback();
-    return;
-  }
   let endResolve: () => void = () => {};
   const promise = new Promise<void>((resolve) => {
     endResolve = resolve;
@@ -559,7 +560,7 @@ const chatWithLLMStreamInternal = async (
       : "";
 
     const requestTools = toolsForRequest(toolLoopState);
-    const requestMessages = messages.map((msg, index) => ({
+    let requestMessages = messages.map((msg, index) => ({
       role: msg.role,
       content: withRequestSystemNote(msg, index).content,
       ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.flat() } : {}),
@@ -572,6 +573,7 @@ const chatWithLLMStreamInternal = async (
         ? { images: [capturedImageBase64] }
         : {}),
     }));
+    requestMessages = await budgetRequest(requestMessages, requestTools, toolLoopState.signal);
     const shape = requestShape(requestMessages, requestTools);
     const startedAt = Date.now();
     let firstTokenAt = 0;
@@ -981,6 +983,10 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
   const deadline = operationDeadline(summaryTimeoutMs);
   activeSummary = deadline;
   try {
+    // The transcript is mandatory input: reject rather than silently truncate
+    // it. The existing memory caller already falls back on summary failure.
+    await budgetRequest([{ role: "system", content: promptPrefix }, { role: "user", content: text }],
+      undefined, deadline.signal, undefined, 160);
     const response = await waitForOperation(axios.post(
       `${ollamaEndpoint}/api/generate`,
       {
