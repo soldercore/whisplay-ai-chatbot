@@ -1,6 +1,7 @@
 import { LLMTool, ToolReturnTag } from "../type";
 import dotenv from "dotenv";
 import { proxyFetch } from "../cloud-api/proxy-fetch";
+import { currentToolSignal, checkCancelled, operationDeadline, timeoutSetting, waitForOperation } from "../utils/operation-lifecycle";
 
 dotenv.config();
 
@@ -24,7 +25,7 @@ const maxResults = parseInt(process.env.WEB_SEARCH_MAX_RESULTS || "5", 10);
 const includeImages = process.env.WEB_SEARCH_INCLUDE_IMAGES === "true";
 const maxPageChars = parseInt(process.env.WEB_PAGE_TEXT_MAX_CHARS || "6000", 10);
 const maxPageLinks = parseInt(process.env.WEB_PAGE_LINK_MAX_RESULTS || "30", 10);
-const webToolTimeoutMs = parseInt(process.env.WEB_TOOL_TIMEOUT_MS || "30000", 10);
+const webToolTimeoutMs = timeoutSetting("WEB_TOOL_TIMEOUT_MS", 30_000);
 
 export const webSearchTools: LLMTool[] = [];
 
@@ -63,6 +64,7 @@ export const getWebSearchSystemNote = (now: Date = new Date()): string => {
 
 if (webSearchEnabled) {
   webSearchTools.push({
+    execution: "abortable",
     type: "function",
     function: {
       name: "fetch_webpage",
@@ -110,6 +112,7 @@ if (webSearchEnabled) {
   });
 
   webSearchTools.push({
+    execution: "abortable",
     type: "function",
     function: {
       name: "web_search",
@@ -172,6 +175,7 @@ if (webSearchEnabled && legacyWebSearchEnabled) {
     console.log(`[WebSearch] Enabled with provider: ${webSearchProvider}`);
     
     webSearchTools.push({
+      execution: "abortable",
       type: "function",
       function: {
         name: "webSearch",
@@ -204,6 +208,7 @@ if (webSearchEnabled && legacyWebSearchEnabled) {
 
     if (includeImages) {
       webSearchTools.push({
+        execution: "abortable",
         type: "function",
         function: {
           name: "webImageSearch",
@@ -641,22 +646,33 @@ function webHeaders() {
 async function webToolFetch(
   url: string,
   options: RequestInit = {},
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), webToolTimeoutMs);
-  const requestOptions = {
-    ...(options as any),
-    signal: controller.signal,
-  };
+): Promise<Pick<Response, "ok" | "status" | "statusText" | "url" | "text" | "json">> {
+  const parent = currentToolSignal();
+  checkCancelled(parent);
+  const deadline = operationDeadline(webToolTimeoutMs, parent);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    return await proxyFetch(url, requestOptions);
-  } catch (error: any) {
-    if (error?.name === "AbortError") {
-      throw new Error(`request timed out after ${webToolTimeoutMs}ms`);
+    const response = await waitForOperation(proxyFetch(url, { ...options, signal: deadline.signal }), deadline.signal,
+      late => { void late.body?.cancel().catch(() => {}); });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    reader = response.body?.getReader();
+    while (reader) {
+      const { done, value } = await waitForOperation(reader.read(), deadline.signal);
+      if (done) break;
+      size += value.byteLength;
+      if (size > 2 * 1024 * 1024) throw new Error("Web response exceeds 2097152 bytes");
+      chunks.push(Buffer.from(value));
     }
-    throw error;
+    checkCancelled(deadline.signal);
+    const text = Buffer.concat(chunks).toString("utf8");
+    return { ok: response.ok, status: response.status, statusText: response.statusText, url: response.url,
+      text: async () => text, json: async () => JSON.parse(text) };
   } finally {
-    clearTimeout(timeout);
+    // Keep the deadline alive until the body is consumed, not just headers.
+    deadline.controller.abort();
+    if (reader) { void reader.cancel().catch(() => {}); reader.releaseLock(); }
+    deadline.dispose();
   }
 }
 

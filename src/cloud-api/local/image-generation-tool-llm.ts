@@ -53,7 +53,7 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
     const prompt = (lastUserMessage?.content || "").trim();
 
     if (!prompt) {
-      partialCallback(fixedReply);
+      partialCallback(fixedFailureReply);
       endCallBack();
       return;
     }
@@ -77,11 +77,11 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
     });
     invokeFunctionCallback?.("generateImage", result);
 
-    if (result && result.startsWith(ToolReturnTag.Error)) {
-      partialCallback(fixedFailureReply);
-    } else {
-      partialCallback(fixedReply);
-    }
+    // The registered wrapper confirms success only with these two tags.
+    // Rejection, unverified output and unexpected values must fail closed.
+    const succeeded = typeof result === "string" &&
+      (result.startsWith(ToolReturnTag.Success) || result.startsWith(ToolReturnTag.Response));
+    partialCallback(succeeded ? fixedReply : fixedFailureReply);
     endCallBack();
   } catch (error: any) {
     console.error("[ImageToolLLM] Error:", error);

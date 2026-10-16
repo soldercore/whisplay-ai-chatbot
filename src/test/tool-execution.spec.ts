@@ -7,7 +7,7 @@ function fixture(schema: ToolParameterSchema = {
   type: "object", properties: { percent: { type: "number", minimum: 0, maximum: 100 } }, required: ["percent"],
 }) {
   const calls: unknown[] = [];
-  const tool: LLMTool = { type: "function", function: { name: "setVolume", description: "test", parameters: schema },
+  const tool: LLMTool = { execution: "bounded", type: "function", function: { name: "setVolume", description: "test", parameters: schema },
     func: async (args) => { calls.push(args); return "[success]Volume changed."; } };
   const context: ToolExecutionContext = { enabled: true, allowedTools: [tool], registeredTools: [tool],
     handlers: Object.assign(Object.create(null), { setVolume: tool.func }) };

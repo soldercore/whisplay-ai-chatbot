@@ -125,6 +125,9 @@ export type ToolParameterSchema = {
 }
 
 export interface LLMTool {
+  // Host-owned lifecycle contract, never part of model arguments. Bounded
+  // handlers finish synchronously/locally; abortable handlers obey tool signal.
+  execution?: "bounded" | "abortable";
   id?: string;
   type: "function";
   function: {

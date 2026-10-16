@@ -56,6 +56,7 @@ const imageGenerationTools: LLMTool[] = imageGenerationServer
         },
       },
       {
+        execution: "bounded",
         type: "function",
         function: {
           name: "showPreviouslyGeneratedImage",

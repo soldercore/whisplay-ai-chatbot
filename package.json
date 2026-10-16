@@ -13,7 +13,7 @@
     "configure-env": "node -r ts-node/register -r tsconfig-paths/register dist/configure-env.js",
     "upgrade-env": "node -r ts-node/register -r tsconfig-paths/register dist/upgrade-env.js",
     "postinstall": "patch-package",
-    "test": "node --require ts-node/register/transpile-only --require ./src/test/fixtures/isolate-tests.cjs --test src/test/faster-whisper-asr.spec.ts src/test/unsupported-reminder.spec.ts src/test/ollama-resources.spec.ts src/test/ollama-history.spec.ts src/test/ollama-stream.spec.ts src/test/startup-data.spec.ts src/test/tool-execution.spec.ts src/test/ollama-tool-security.spec.ts src/test/tts-pipeline.spec.ts src/test/web-search.spec.ts src/test/memory.spec.ts src/test/persona.spec.ts src/test/speech-sync.spec.ts"
+    "test": "node --require ts-node/register/transpile-only --require ./src/test/fixtures/isolate-tests.cjs --test src/test/image-tool-direct.spec.ts src/test/system-health.spec.ts src/test/process-lifecycle.spec.ts src/test/ollama-history-limits.spec.ts src/test/operation-lifecycle.spec.ts src/test/web-lifecycle.spec.ts src/test/ollama-lifecycle.spec.ts src/test/faster-whisper-asr.spec.ts src/test/unsupported-reminder.spec.ts src/test/ollama-resources.spec.ts src/test/ollama-history.spec.ts src/test/ollama-stream.spec.ts src/test/startup-data.spec.ts src/test/tool-execution.spec.ts src/test/ollama-tool-security.spec.ts src/test/tts-pipeline.spec.ts src/test/web-search.spec.ts src/test/memory.spec.ts src/test/persona.spec.ts src/test/speech-sync.spec.ts"
   },
   "author": "",
   "license": "GPL-3.0-only",

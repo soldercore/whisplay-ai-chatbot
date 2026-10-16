@@ -40,7 +40,7 @@ before(async () => {
   });
   const { pluginRegistry } = require("../plugin");
   pluginRegistry.register({ name: "security-fixture", displayName: "Security fixture", version: "1", type: "llm-tools",
-    activate: () => ({ getTools: () => [{ type: "function", function: { name: "approvedPlugin", description: "fixture",
+    activate: () => ({ getTools: () => [{ execution: "bounded", type: "function", function: { name: "approvedPlugin", description: "fixture",
       parameters: { type: "object", properties: { action: { type: "string", enum: ["read"] } }, required: ["action"] } },
       func: async (args: any) => { effects.push(args); return "[success]Plugin read completed."; } }] }) });
   const registry = require("../config/llm-tools");

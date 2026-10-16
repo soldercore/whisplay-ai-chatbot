@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 
 const soundCardName = process.env.SOUND_CARD_NAME || "";
@@ -62,9 +62,9 @@ const percentToAmixerValueMap = isUnifiedWhisplay
   : legacyWm8960PercentToAmixerValueMap;
 
 const getVolumeValueFromAmixer = (): number => {
-  const output = isUnifiedWhisplay
-    ? execSync(`amixer -c ${soundCardRef} cget name='${speakerControl}'`).toString()
-    : execSync(`amixer -c ${soundCardRef} get ${speakerControl}`).toString();
+  const output = execFileSync("amixer", ["-c", soundCardRef,
+    isUnifiedWhisplay ? "cget" : "get", isUnifiedWhisplay ? `name=${speakerControl}` : speakerControl],
+    { timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536 }).toString();
   if (isUnifiedWhisplay) {
     const unifiedMatch = output.match(/: values=(\d+)/);
     if (unifiedMatch && unifiedMatch[1]) {
@@ -120,8 +120,7 @@ export const getCurrentLogPercent = (): number => {
 
 export const setVolumeByAmixer = (logPercent: number): void => {
   const value = Math.round(logPercentToAmixerValue(logPercent));
-  const command = isUnifiedWhisplay
-    ? `amixer -c ${soundCardRef} cset name='${speakerControl}' ${value}`
-    : `amixer -c ${soundCardRef} set ${speakerControl} ${value}`;
-  execSync(command);
+  execFileSync("amixer", ["-c", soundCardRef, isUnifiedWhisplay ? "cset" : "set",
+    isUnifiedWhisplay ? `name=${speakerControl}` : speakerControl, String(value)],
+    { timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536 });
 };

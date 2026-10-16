@@ -21,6 +21,7 @@ export interface ASRProvider {
 
 /** LLM (Large Language Model) provider */
 export interface LLMProvider {
+  cancelActiveRequest?: () => void;
   chatWithLLMStream: (
     inputMessages: Message[],
     partialCallback: (partialAnswer: string) => void,

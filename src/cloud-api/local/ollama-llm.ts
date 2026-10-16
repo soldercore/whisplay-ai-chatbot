@@ -39,6 +39,8 @@ import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-
 import { isDirectAnswerRequest, toolsRelevantTo } from "../../config/tool-router";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
+import { boundOllamaHistory } from "./ollama-history-limits";
+import { operationDeadline, timeoutSetting, waitForOperation, OperationTimeoutError } from "../../utils/operation-lifecycle";
 import {
   createOllamaRequestBudget, OllamaRequestBudget, OllamaResourceLimitError,
   reserveToolAttempts, checkModelToolCount, countResponseTextBytes,
@@ -83,11 +85,15 @@ const findContextWindowValue = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const resolveOllamaContextWindow = async (): Promise<number | undefined> => {
+const resolveOllamaContextWindow = async (signal?: AbortSignal): Promise<number | undefined> => {
   if (ollamaContextWindowCache) return ollamaContextWindowCache;
-  const response = await axios.post(`${ollamaEndpoint}/api/show`, {
-    model: ollamaModel,
-  });
+  const deadline = operationDeadline(timeoutSetting("OLLAMA_METADATA_TIMEOUT_MS", 300_000), signal);
+  let response;
+  try {
+    response = await waitForOperation(axios.post(`${ollamaEndpoint}/api/show`, {
+      model: ollamaModel,
+    }, { signal: deadline.signal, maxContentLength: 2 * 1024 * 1024 }), deadline.signal);
+  } finally { deadline.dispose(); }
   ollamaContextWindowCache =
     findContextWindowValue(response.data?.model_info) ||
     findContextWindowValue(response.data?.details) ||
@@ -163,19 +169,20 @@ const logOllamaTiming = (
 // warmup sent the system prompt and all tools (~965 tokens), which took 65 s of
 // prompt evaluation on a Pi 5, and a first question had to wait for it.
 const keepAliveOllama = () => {
-  axios
+  const deadline = operationDeadline(timeoutSetting("OLLAMA_METADATA_TIMEOUT_MS", 300_000));
+  waitForOperation(axios
     .post(`${ollamaEndpoint}/api/chat`, {
       model: ollamaModel,
       messages: [],
       stream: false,
       keep_alive: -1,
-    })
+    }, { signal: deadline.signal, maxContentLength: 2 * 1024 * 1024 }), deadline.signal)
     .then((response) => {
       console.log("Ollama keep-alive response:", response.data);
     })
     .catch((err) => {
       console.error("Error initializing Ollama model:", err.message);
-    });
+    }).finally(() => deadline.dispose());
 };
 
 if (llmServer.trim().toLowerCase() === "ollama") {
@@ -192,6 +199,7 @@ const resetChatHistory = (): void => {
 };
 
 type ToolLoopState = {
+  pending?: { message?: OllamaMessage };
   round: number;
   signatures: Set<string>;
   budget: OllamaRequestBudget;
@@ -312,8 +320,9 @@ const prefetchWebSearchIfNeeded = async (
 const WEB_TOOL_NAMES = new Set(["web_search", "fetch_webpage"]);
 const toolsForRequest = (toolLoopState: ToolLoopState) => {
   if (!ollamaEnableTools) return undefined;
+  const boundedTools = llmTools.filter(tool => tool.execution === "bounded" || tool.execution === "abortable");
   if (toolLoopState.webToolsOnly) {
-    return llmTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name));
+    return boundedTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name));
   }
   // Memory and volume tools only when the request (or the request a follow-up
   // continues) concerns them; see tool-router.
@@ -321,7 +330,7 @@ const toolsForRequest = (toolLoopState: ToolLoopState) => {
     .filter((msg) => msg.role === "user")
     .reverse()
     .map((msg) => (typeof msg.content === "string" ? msg.content : ""));
-  return toolsRelevantTo(latest || "", llmTools, previous || "");
+  return toolsRelevantTo(latest || "", boundedTools, previous || "");
 };
 
 const answerFromAvailableToolResults = async ({
@@ -366,7 +375,7 @@ const answerFromAvailableToolResults = async ({
     const startedAt = Date.now();
     let firstTokenAt = 0;
     let stats: OllamaStats | undefined;
-    const response = await axios.post(
+    const response = await waitForOperation(axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
         model: ollamaModel,
@@ -386,7 +395,7 @@ const answerFromAvailableToolResults = async ({
         responseType: "stream",
         signal,
       },
-    );
+    ), signal!, response => response.data?.destroy?.());
 
     await readOllamaNDJSON(response.data, (parsedData) => {
       responseTextBytes = countResponseTextBytes(budget, responseTextBytes, parsedData);
@@ -408,7 +417,7 @@ const answerFromAvailableToolResults = async ({
       } catch (error) {
         console.error("Error processing final answer data:", error);
       }
-    }, budget);
+    }, budget, signal);
     logOllamaTiming("final-answer", stats, startedAt, firstTokenAt, shape);
 
     if (finalThinking.trim()) {
@@ -421,6 +430,7 @@ const answerFromAvailableToolResults = async ({
     });
   } catch (error: any) {
     console.error("Error generating final answer from tool results:", error.message);
+    if (error instanceof OperationTimeoutError) throw error;
     if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, signal, pendingAssistant);
   } finally {
     endResolve();
@@ -445,6 +455,7 @@ const chatWithLLMStreamInternal = async (
   }
   updateLastMessageTime();
   messages.push(...(inputMessages as OllamaMessage[]));
+  if (boundOllamaHistory(messages)) throw new OllamaResourceLimitError("conversation history exceeded its safety limit");
   if (toolLoopState.round === 0) {
     await prefetchWebSearchIfNeeded(inputMessages, toolLoopState, invokeFunctionCallback);
   }
@@ -459,7 +470,8 @@ const chatWithLLMStreamInternal = async (
     messages,
     tools: ollamaEnableTools ? llmTools : undefined,
     outputReserveTokens: ollamaPredictNum,
-    contextWindowResolver: resolveOllamaContextWindow,
+    contextWindowResolver: () => resolveOllamaContextWindow(toolLoopState.signal),
+    signal: toolLoopState.signal,
     invokeFunctionCallback,
   });
   if (toolLoopState.signal?.aborted) {
@@ -519,7 +531,7 @@ const chatWithLLMStreamInternal = async (
     const startedAt = Date.now();
     let firstTokenAt = 0;
     let stats: OllamaStats | undefined;
-    const response = await axios.post(
+    const response = await waitForOperation(axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
         model: ollamaModel,
@@ -540,7 +552,7 @@ const chatWithLLMStreamInternal = async (
         responseType: "stream",
         signal: toolLoopState.signal,
       },
-    );
+    ), toolLoopState.signal!, response => response.data?.destroy?.());
     await readOllamaNDJSON(response.data, (parsedData) => {
       responseTextBytes = countResponseTextBytes(toolLoopState.budget, responseTextBytes, parsedData);
       try {
@@ -584,7 +596,7 @@ const chatWithLLMStreamInternal = async (
         if (error instanceof OllamaResourceLimitError) throw error;
         console.error("Error processing data:", error);
       }
-    }, toolLoopState.budget).then(async () => {
+    }, toolLoopState.budget, toolLoopState.signal).then(async () => {
       console.log("Stream ended");
       logOllamaTiming(`round=${toolLoopState.round}`, stats, startedAt, firstTokenAt, shape);
       if (toolLoopState.signal?.aborted) {
@@ -629,6 +641,8 @@ const chatWithLLMStreamInternal = async (
         tool_calls: functionCallsPackages as any,
       };
       messages.push(assistantMessage);
+      if (functionCalls.length && toolLoopState.pending) toolLoopState.pending.message = assistantMessage;
+      if (boundOllamaHistory(messages)) throw new OllamaResourceLimitError("conversation history exceeded its safety limit");
 
       if (!isEmpty(functionCalls)) {
         if (toolLoopState.round >= ollamaMaxToolRounds) {
@@ -717,6 +731,7 @@ const chatWithLLMStreamInternal = async (
             tool_name: name as string,
           }),
         );
+        if (toolLoopState.pending) toolLoopState.pending.message = undefined;
 
         // Policy rejections and unknown action results are spoken by the host,
         // never rewritten into a success claim by another model round. Web
@@ -769,6 +784,7 @@ const chatWithLLMStreamInternal = async (
           partialThinkingCallback,
           invokeFunctionCallback,
           {
+            pending: toolLoopState.pending,
             round: toolLoopState.round + 1,
             signatures: toolLoopState.signatures,
             budget: toolLoopState.budget,
@@ -784,6 +800,7 @@ const chatWithLLMStreamInternal = async (
     });
   } catch (error: any) {
     console.error("Error:", error.message);
+    if (error instanceof OperationTimeoutError) { endResolve(); throw error; }
     if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, toolLoopState.signal);
     endResolve();
     endCallback();
@@ -801,6 +818,17 @@ let activeAnswer: {
   historyLength: number;
   inputMessages: Message[];
 } | null = null;
+let activeSummary: ReturnType<typeof operationDeadline> | undefined;
+
+const cancelActiveRequest = (): void => {
+  const previous = activeAnswer;
+  if (!previous) return;
+  activeAnswer = null;
+  previous.controller.abort(new Error("Ollama request cancelled"));
+  const abandoned = previous.inputMessages as unknown[];
+  const start = messages.findIndex(message => abandoned.includes(message));
+  messages.length = start >= 0 ? start : Math.min(messages.length, previous.historyLength);
+};
 
 const chatWithLLMStream: ChatWithLLMStreamFunction = async (
   inputMessages: Message[] = [],
@@ -811,20 +839,23 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
 ): Promise<void> => {
   if (activeAnswer) {
     console.warn("[Ollama] New question before the previous answer finished; cancelling the previous answer.");
-    activeAnswer.controller.abort();
-    // Drop the unanswered question and everything after it (tool calls and
-    // results) from the history. Its messages are found by identity, since a
-    // compaction may have shortened the history meanwhile.
-    const abandoned = activeAnswer.inputMessages as unknown[];
-    const start = messages.findIndex((message) => abandoned.includes(message));
-    messages.length = start >= 0 ? start : Math.min(messages.length, activeAnswer.historyLength);
+    cancelActiveRequest();
   }
+  activeSummary?.controller.abort(new Error("New user request"));
   if (shouldResetChatHistory()) {
     resetChatHistory();
   }
-  const answer = { controller: new AbortController(), historyLength: messages.length, inputMessages };
+  const deadline = operationDeadline(timeoutSetting("OLLAMA_REQUEST_TIMEOUT_MS", 7_200_000));
+  const answer = { controller: deadline.controller, historyLength: messages.length, inputMessages };
+  const pending: { message?: OllamaMessage } = {};
+  let stopReported = false;
   activeAnswer = answer;
+  const emit = (text: string) => { if (activeAnswer === answer && !deadline.signal.aborted) partialCallback(text); };
   try {
+    if (Buffer.byteLength(JSON.stringify(inputMessages), "utf8") > 256 * 1024) {
+      messages.push({ role: "user", content: "[Input omitted: exceeds 262144 UTF-8 bytes.]" });
+      throw new OllamaResourceLimitError("user input exceeds 262144 UTF-8 bytes");
+    }
     const lastUser = [...inputMessages].reverse().find(message => message.role === "user");
     const refusal = typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
     if (refusal) {
@@ -833,20 +864,56 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       updateLastMessageTime();
       messages.push(...(inputMessages as OllamaMessage[]), { role: "assistant", content: refusal });
       fs.writeFileSync(path.join(chatHistoryDir, chatHistoryFileName), JSON.stringify(messages, null, 2));
-      partialCallback(refusal);
-      endCallback();
+      emit(refusal);
       return;
     }
     await chatWithLLMStreamInternal(
       inputMessages,
-      partialCallback,
-      endCallback,
-      partialThinkingCallback,
-      invokeFunctionCallback,
-      { round: 0, signatures: new Set<string>(), signal: answer.controller.signal, budget: createOllamaRequestBudget() },
+      emit,
+      () => {}, // The public boundary ends the response exactly once, after cleanup.
+      text => { if (activeAnswer === answer && !deadline.signal.aborted) partialThinkingCallback?.(text); },
+      (name, result) => { if (activeAnswer === answer && !deadline.signal.aborted) invokeFunctionCallback?.(name, result); },
+      { round: 0, signatures: new Set<string>(), signal: deadline.signal, budget: createOllamaRequestBudget(), pending },
     );
+  } catch (error) {
+    if (activeAnswer === answer) {
+      if (error instanceof OllamaResourceLimitError) {
+        reportResourceFailure(error, partialCallback);
+        stopReported = true;
+        return;
+      }
+      const timedOut = error instanceof OperationTimeoutError || deadline.signal.reason instanceof OperationTimeoutError;
+      const reply = timedOut ? "The request timed out. Completion was not verified."
+        : "The request failed. Completion was not verified.";
+      if (pending.message) {
+        const index = messages.indexOf(pending.message);
+        if (index >= 0) messages.splice(index, 1);
+      }
+      messages.push({ role: "assistant", content: reply });
+      stopReported = true;
+      partialCallback(reply);
+    }
   } finally {
-    if (activeAnswer === answer) activeAnswer = null;
+    try {
+      if (activeAnswer === answer && deadline.signal.reason instanceof OperationTimeoutError
+        && !stopReported) {
+        if (pending.message) {
+          const index = messages.indexOf(pending.message);
+          if (index >= 0) messages.splice(index, 1);
+        }
+        const reply = "The request timed out. Completion was not verified.";
+        messages.push({ role: "assistant", content: reply });
+        partialCallback(reply);
+      }
+      if (activeAnswer === answer) {
+        boundOllamaHistory(messages);
+        fs.writeFileSync(path.join(chatHistoryDir, chatHistoryFileName), JSON.stringify(messages, null, 2));
+      }
+    } finally {
+      deadline.dispose();
+      if (activeAnswer === answer) activeAnswer = null;
+      endCallback();
+    }
   }
 };
 
@@ -857,28 +924,37 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
 
   // Bounded so a slow memory summary cannot occupy the model indefinitely.
   const startedAt = Date.now();
-  const response = await axios.post(
-    `${ollamaEndpoint}/api/generate`,
-    {
-      model: ollamaModel,
-      prompt: prompt,
-      stream: false,
-      think: false,
-      options: { num_predict: 160 },
-    },
-    { timeout: 60000 },
-  );
-  // The summary runs after the answer and occupies the model meanwhile.
-  logOllamaTiming("memory-summary", response.data, startedAt, 0);
+  activeSummary?.controller.abort(new Error("New summary"));
+  const summaryTimeoutMs = timeoutSetting("OLLAMA_SUMMARY_TIMEOUT_MS", 300_000);
+  const deadline = operationDeadline(summaryTimeoutMs);
+  activeSummary = deadline;
+  try {
+    const response = await waitForOperation(axios.post(
+      `${ollamaEndpoint}/api/generate`,
+      {
+        model: ollamaModel,
+        prompt: prompt,
+        stream: false,
+        think: false,
+        options: { num_predict: 160 },
+      },
+      { timeout: summaryTimeoutMs, signal: deadline.signal, maxContentLength: 2 * 1024 * 1024 },
+    ), deadline.signal);
+    // The summary runs after the answer and occupies the model meanwhile.
+    logOllamaTiming("memory-summary", response.data, startedAt, 0);
 
-  if (response.data && response.data.response) {
-    const summary = response.data.response;
-    console.log("Ollama summary:", summary);
-    return summary;
-  } else {
-    console.log("No summary returned from Ollama.");
-    return "";
+    if (response.data && response.data.response) {
+      const summary = response.data.response;
+      console.log("Ollama summary:", summary);
+      return summary;
+    } else {
+      console.log("No summary returned from Ollama.");
+      return "";
+    }
+  } finally {
+    deadline.dispose();
+    if (activeSummary === deadline) activeSummary = undefined;
   }
 }
 
-export default { chatWithLLMStream, resetChatHistory, summaryTextWithLLM };
+export default { chatWithLLMStream, resetChatHistory, summaryTextWithLLM, cancelActiveRequest };

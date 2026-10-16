@@ -161,9 +161,8 @@ test("[AudioTiming] splits a gap into waiting for LLM text, for TTS and scheduli
   });
 });
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-test("SpokenTextReveal follows a plan, capped at the sentence, and stops on reset", async () => {
+test("SpokenTextReveal follows a plan, capped at the sentence, and stops on reset", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
   const reveal = new SpokenTextReveal(() => {}, 5);
   reveal.sentenceStarted(10, 30, 300, [
     { atMs: 0, chars: 6 },
@@ -171,21 +170,39 @@ test("SpokenTextReveal follows a plan, capped at the sentence, and stops on rese
     { atMs: 120, chars: 40 }, // beyond the sentence: capped
   ]);
   assert.equal(reveal.revealed, 16, "the first word at once");
-  await wait(30);
+  t.mock.timers.tick(30);
   assert.equal(reveal.revealed, 16, "the second word is not shown early");
-  await wait(60);
+  t.mock.timers.tick(60);
   assert.equal(reveal.revealed, 22);
-  await wait(60);
+  t.mock.timers.tick(60);
   assert.equal(reveal.revealed, 30, "capped at the sentence end");
 
   reveal.reset();
   reveal.sentenceStarted(0, 20, 300, [{ atMs: 0, chars: 5 }, { atMs: 40, chars: 20 }]);
   reveal.reset();
-  await wait(80);
+  t.mock.timers.tick(80);
   assert.equal(reveal.revealed, 0, "an interrupted answer reveals nothing more");
 
   reveal.sentenceStarted(0, 20, 300, [{ atMs: 0, chars: 5 }, { atMs: 200, chars: 20 }]);
   reveal.revealAll();
   assert.equal(reveal.revealed, Number.MAX_SAFE_INTEGER, "playback end shows everything");
   reveal.reset();
+});
+
+test("delayed scheduling catches up to elapsed speech and linear reveal stops on reset", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
+  const reveal = new SpokenTextReveal(() => {}, 10);
+  reveal.sentenceStarted(0, 30, 300, [{ atMs: 0, chars: 6 }, { atMs: 60, chars: 12 }, { atMs: 120, chars: 30 }]);
+  // A busy event loop can resume after several word deadlines. This is correct
+  // production behavior, and explains the old wall-clock test's observed 30.
+  t.mock.timers.setTime(1160);
+  t.mock.timers.tick(0);
+  assert.equal(reveal.revealed, 30);
+  reveal.reset();
+  reveal.sentenceStarted(0, 20, 200);
+  t.mock.timers.tick(100);
+  assert.equal(reveal.revealed, 10);
+  reveal.reset();
+  t.mock.timers.tick(300);
+  assert.equal(reveal.revealed, 0);
 });

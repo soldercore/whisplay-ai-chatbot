@@ -46,6 +46,7 @@ const RELEVANT_WHEN: [string, (text: string) => boolean][] = [
   ["decreaseVolume", mentionsVolume],
   ["generateImage", mentionsImage],
   ["showPreviouslyGeneratedImage", mentionsImage],
+  ["getSystemHealth", (text: string) => /\b(system (health|status|load)|your (system|status|health)|cpu|memory usage|swap|disk (usage|space)|temperature|uptime|service status)\b/i.test(text)],
 ];
 const RULES = new Map(RELEVANT_WHEN);
 const GATED_ORDER = new Map(RELEVANT_WHEN.map(([name], index) => [name, index]));

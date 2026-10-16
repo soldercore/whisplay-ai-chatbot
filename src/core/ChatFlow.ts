@@ -5,7 +5,7 @@ import {
 } from "./../utils/index";
 import { display } from "../device/display";
 import { recognizeAudio, ttsProcessor } from "../cloud-api/server";
-import { isImMode } from "../cloud-api/llm";
+import { isImMode, cancelLLMRequest } from "../cloud-api/llm";
 import { DEFAULT_EMOJI, extractEmojis } from "../utils";
 import { StreamResponser } from "./StreamResponsor";
 import { SpokenTextReveal } from "./spoken-text-reveal";
@@ -241,6 +241,7 @@ class ChatFlow implements ChatFlowContext {
   };
 
   transitionTo = (flowName: FlowName): void => {
+    if (this.currentFlowName === "answer" && flowName !== "answer") cancelLLMRequest();
     if (flowName !== "music" && isMusicPlaying()) {
       stopMusicPlayback();
     }

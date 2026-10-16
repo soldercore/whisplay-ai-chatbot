@@ -67,6 +67,7 @@ export function registerLLMPlugins(): void {
     activate: () => {
       const mod = require("../../cloud-api/local/ollama-llm").default;
       return {
+        cancelActiveRequest: mod.cancelActiveRequest,
         chatWithLLMStream: mod.chatWithLLMStream,
         resetChatHistory: mod.resetChatHistory,
         summaryTextWithLLM: mod.summaryTextWithLLM,

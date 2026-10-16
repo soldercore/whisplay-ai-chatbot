@@ -152,6 +152,18 @@ test("guarded replacement cancels an unfinished answer and retains only the trut
   assert.deepEqual(effects, []);
 });
 
+test("a new memory command is independent of an unfinished model request and cancels it", async () => {
+  const ready = new Promise<void>(resolve => { firstChunkDelivered = resolve; });
+  holdNextResponse = true;
+  const abandoned = ask("Tell me about Portal.");
+  await ready;
+  const saved = await ask("Remember that my favorite animal is a penguin.");
+  assert.match(saved.answer, /favorite animal is a penguin/);
+  assert.equal(saved.ends, 1);
+  assert.deepEqual(await abandoned, { answer: "", ends: 1, events: [] });
+  assert.equal(requests.length, 1, "deterministic memory must not generate another model answer");
+});
+
 for (const ragEnabled of [false, true]) test(`recognized text uses existing TTS/display without RAG or summary generation (RAG=${ragEnabled})`, async () => {
   const { StreamResponser } = require("../core/StreamResponsor");
   const synthesized: string[] = [], displayed: string[] = [], played: string[] = [];

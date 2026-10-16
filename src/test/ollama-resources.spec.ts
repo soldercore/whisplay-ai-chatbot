@@ -48,7 +48,7 @@ before(() => {
     OLLAMA_MODEL: "test", OLLAMA_ENABLE_TOOLS: "true", WEB_SEARCH_ENABLED: "true",
     MEMORY_ENABLED: "false", WAKE_WORD_ENABLED: "false", CONTEXT_AUTO_COMPACT_ENABLED: "false" });
   require("../plugin").pluginRegistry.register({ name: "budget-fixture", displayName: "Budget fixture",
-    version: "1", type: "llm-tools", activate: () => ({ getTools: () => [{ type: "function",
+    version: "1", type: "llm-tools", activate: () => ({ getTools: () => [{ execution: "bounded", type: "function",
       function: { name: "budgetProbe", description: "Fixture", parameters: { type: "object",
         properties: { label: { type: "string" } }, required: ["label"] } },
       func: async ({ label }: { label: string }) => { effects.push(label); return `[success]${label}`; },

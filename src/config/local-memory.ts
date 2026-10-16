@@ -822,6 +822,7 @@ if (memoryEnabled) {
   }
   localMemoryTools.push(
     {
+      execution: "bounded",
       type: "function",
       function: {
         name: "searchLocalMemory",
@@ -845,6 +846,7 @@ if (memoryEnabled) {
       },
     },
     {
+      execution: "bounded",
       type: "function",
       function: {
         name: "storeLocalMemory",

@@ -1,4 +1,7 @@
 import type { LLMTool } from "../type";
+import { currentToolSignal, operationDeadline, timeoutSetting, waitForOperation, withToolSignal, checkCancelled } from "../utils/operation-lifecycle";
+
+let activeTools = 0;
 
 export type ToolExecutionResult = {
   status: "success" | "rejected" | "error" | "unverified";
@@ -110,6 +113,9 @@ export async function executeToolCall(
   const allowed = context.allowedTools.filter((tool) => tool.function.name === name);
   if (allowed.length !== 1) return reject("The tool is not allowed for this request.");
   const tool = registered[0];
+  if (!["bounded", "abortable"].includes(tool.execution || "")) {
+    return reject("This tool has no bounded cancellation contract and is unavailable for agent execution.");
+  }
   let validated: Record<string, unknown>;
   try {
     validated = copyArguments(args);
@@ -120,16 +126,29 @@ export async function executeToolCall(
     return reject("Invalid tool arguments.");
   }
   if (context.signal?.aborted) return reject("The request was cancelled.");
+  const inherited = currentToolSignal();
+  if (!inherited && activeTools >= 4) return reject("Tool concurrency limit reached; try again after current work stops.");
+  const deadline = inherited ? null : operationDeadline(timeoutSetting("TOOL_EXECUTION_TIMEOUT_MS", 120_000), context.signal);
+  const signal = inherited || deadline!.signal;
+  if (!inherited) activeTools++;
   try {
-    const output: unknown = await context.handlers[name](validated);
+    const output: unknown = await withToolSignal(signal, () => waitForOperation(Promise.resolve().then(() => {
+      checkCancelled(signal);
+      return context.handlers[name](validated);
+    }), signal));
     if (context.signal?.aborted) return { status: "unverified", output: "[unverified]The request was cancelled after the tool started; completion is unknown." };
     if (typeof output !== "string" || !output.trim()) return { status: "unverified", output: "[unverified]The tool returned no usable result; completion is unknown." };
+    if (Buffer.byteLength(output, "utf8") > 65536) return { status: "unverified", output: "[unverified]Tool result exceeded 65536 UTF-8 bytes; completion was not verified." };
     if (output.startsWith("[rejected]")) return { status: "rejected", output };
     if (output.startsWith("[error]")) return { status: "error", output };
     if (output.startsWith("[success]") || output.startsWith("[response]")) return { status: "success", output };
     return { status: "unverified", output: output.startsWith("[unverified]") ? output : `[unverified]${output}` };
   } catch {
     // An exception may occur after a side effect. Never claim nothing happened.
+    if (signal.aborted) return { status: "unverified", output: "[unverified]The tool was cancelled or timed out after starting; completion is unknown." };
     return { status: "error", output: "[error]The tool failed during execution; completion was not verified." };
+  } finally {
+    deadline?.dispose();
+    if (!inherited) activeTools--;
   }
 }

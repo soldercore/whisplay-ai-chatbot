@@ -3,6 +3,7 @@ import { Message, OllamaMessage } from "../type";
 type ChatMessage = Message | OllamaMessage;
 
 type ContextWindowOptions = {
+  signal?: AbortSignal;
   provider: string;
   model: string;
   messages: ChatMessage[];
@@ -222,6 +223,7 @@ const compactMessagesForContextWindowUnsafe = async (
     model,
     options.contextWindowResolver,
   );
+  if (options.signal?.aborted) return;
   const outputReserveTokens =
     options.outputReserveTokens || DEFAULT_OUTPUT_RESERVE_TOKENS;
   const toolTokens = tools ? estimateTokens(tools) : 0;

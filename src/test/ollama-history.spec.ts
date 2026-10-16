@@ -40,7 +40,7 @@ before(async () => {
     CONTEXT_AUTO_COMPACT_ENABLED: "false", ENABLE_THINKING: "false", WAKE_WORD_ENABLED: "false" });
   const { pluginRegistry } = require("../plugin");
   pluginRegistry.register({ name: "history-fixture", displayName: "History fixture", type: "llm-tools", version: "1",
-    activate: () => ({ getTools: () => ["historyAlpha", "historyBeta"].map(name => ({ type: "function",
+    activate: () => ({ getTools: () => ["historyAlpha", "historyBeta"].map(name => ({ execution: "bounded", type: "function",
       function: { name, description: "Test fixture", parameters: { type: "object", properties: {
         label: { type: "string" }, details: { type: "object", properties: {
           count: { type: "integer" }, enabled: { type: "boolean" }, tags: { type: "array", items: { type: "string" } },

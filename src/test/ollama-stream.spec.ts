@@ -35,7 +35,7 @@ before(() => {
     MEMORY_ENABLED: "false", WEB_SEARCH_ENABLED: "false", ENABLE_THINKING: "true",
     CONTEXT_AUTO_COMPACT_ENABLED: "false", OLLAMA_MODEL: "test", WAKE_WORD_ENABLED: "false" });
   require("../plugin").pluginRegistry.register({ name: "transport-fixture", displayName: "Transport fixture",
-    version: "1", type: "llm-tools", activate: () => ({ getTools: () => [{ type: "function",
+    version: "1", type: "llm-tools", activate: () => ({ getTools: () => [{ execution: "bounded", type: "function",
       function: { name: "transportProbe", description: "Test fixture", parameters: { type: "object",
         properties: { label: { type: "string" } }, required: ["label"] } },
       func: async ({ label }: { label: string }) => { effects.push(label); return "[success]Stored."; },

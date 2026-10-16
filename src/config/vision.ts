@@ -31,6 +31,7 @@ const visionTools: LLMTool[] = [];
 
 if (enableCamera) {
   visionTools.push({
+    execution: "bounded",
     type: "function",
     function: {
       name: "showCapturedImage",

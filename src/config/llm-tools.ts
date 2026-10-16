@@ -10,6 +10,7 @@ import { addHarnessCommandTools } from "./harness-command";
 import { pluginRegistry } from "../plugin";
 import { BLOCKED_TOOL_NAMES, executeToolCall } from "./tool-execution";
 import type { ToolExecutionResult } from "./tool-execution";
+import { systemHealthTool } from "./system-health";
 
 // ── Collect tools from all llm-tools plugins ────────────────
 const pluginTools: LLMTool[] = [];
@@ -19,6 +20,7 @@ const wakeWordEnabled =
 
 if (wakeWordEnabled) {
   pluginTools.push({
+    execution: "bounded",
     type: "function",
     function: {
       name: "endConversation",
@@ -52,6 +54,7 @@ addWebSearchTools(pluginTools);
 addLocalMemoryTools(pluginTools);
 addMemPalaceTools(pluginTools);
 addHarnessCommandTools(pluginTools);
+pluginTools.push(systemHealthTool);
 
 // ── Exported aggregated tool lists ──────────────────────────
 // Activation/registration is application-owned. External plugins remain trusted
@@ -63,14 +66,14 @@ const toolsEnabled = (): boolean => (process.env.LLM_SERVER || "").toLowerCase()
 
 export const llmTools: LLMTool[] = registeredTools.map((tool) => {
   rawHandlers[tool.function.name] = tool.func;
-  return {
+  return Object.defineProperty({
     ...tool,
     function: cloneDeep(tool.function),
     func: async (args) => (await executeToolCall(tool.function.name, args, {
       enabled: toolsEnabled(), allowedTools: registeredTools, registeredTools,
       handlers: rawHandlers,
     })).output,
-  };
+  }, "execution", { value: tool.execution, enumerable: false });
 });
 
 export const llmToolsForGemini: LLMTool[] =

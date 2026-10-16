@@ -1,7 +1,9 @@
 import { LLMTool, ToolReturnTag } from "../type";
 import dotenv from "dotenv";
-import { execFile, spawn } from "child_process";
+import { spawn } from "child_process";
 import moment from "moment";
+import { currentToolSignal, checkCancelled } from "../utils/operation-lifecycle";
+import { StringDecoder } from "node:string_decoder";
 
 dotenv.config();
 
@@ -17,6 +19,64 @@ const mempalaceAutoSave =
   process.env.MEMPALACE_AUTO_SAVE !== "false" && mempalaceEnabled;
 
 export const mempalaceTools: LLMTool[] = [];
+let activeProcesses = 0;
+
+// Only the fixed, host-owned MemPalace CLI/scripts below call this helper.
+// No shell and no model-selected executable or Python source.
+function runPythonCommand(args: string[], input = ""): Promise<string> {
+  const signal = currentToolSignal();
+  checkCancelled(signal);
+  if (activeProcesses >= 2) return Promise.reject(new Error("MemPalace process limit reached"));
+  activeProcesses++;
+  return new Promise((resolve, reject) => {
+    let proc: ReturnType<typeof spawn>;
+    try { proc = spawn(mempalacePythonPath, args, {
+      stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32",
+    }); } catch (error) { activeProcesses--; reject(error); return; }
+    let stdout = "", stderr = "", bytes = 0;
+    const stdoutDecoder = new StringDecoder("utf8"), stderrDecoder = new StringDecoder("utf8");
+    let failure: Error | undefined, finished = false;
+    const stop = (error: Error) => {
+      if (failure || finished) return;
+      failure = error;
+      // Linux child + descendants share this newly created process group.
+      if (process.platform !== "win32" && proc.pid) {
+        try { process.kill(-proc.pid, "SIGKILL"); return; } catch {}
+      }
+      proc.kill("SIGKILL");
+    };
+    const abort = () => stop(new Error("MemPalace operation cancelled"));
+    const timer = setTimeout(() => stop(new Error("MemPalace operation timed out")), 30_000);
+    const complete = (error?: Error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      proc.stdout?.off("data", out); proc.stderr?.off("data", err);
+      proc.stdin?.off("error", stdinError);
+      proc.off("error", processError); proc.off("close", close);
+      activeProcesses--;
+      if (failure || error) reject(failure || error); else resolve(stdout + stdoutDecoder.end());
+    };
+    const collect = (data: Buffer, isError: boolean) => {
+      if (failure) return;
+      bytes += data.length;
+      if (bytes > 512 * 1024) { stop(new Error("MemPalace output limit exceeded")); return; }
+      if (isError) stderr += stderrDecoder.write(data); else stdout += stdoutDecoder.write(data);
+    };
+    const out = (data: Buffer) => collect(data, false), err = (data: Buffer) => collect(data, true);
+    const stdinError = (error: Error) => stop(error);
+    const processError = (error: Error) => complete(error);
+    const close = (code: number | null) => complete(code === 0 ? undefined : new Error(stderr || `MemPalace exit code ${code}`));
+    proc.stdout?.on("data", out); proc.stderr?.on("data", err);
+    proc.stdin?.on("error", stdinError); proc.once("error", processError); proc.once("close", close);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    if (!failure) proc.stdin?.end(input);
+  });
+}
+
+
 
 /**
  * Run a mempalace CLI command and return stdout.
@@ -26,20 +86,7 @@ function runMempalace(args: string[]): Promise<string> {
   if (mempalacePalacePath) {
     fullArgs.push("--palace", mempalacePalacePath);
   }
-  return new Promise((resolve, reject) => {
-    execFile(
-      mempalacePythonPath,
-      fullArgs,
-      { timeout: 30_000, maxBuffer: 1024 * 512 },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(stderr || error.message));
-        } else {
-          resolve(stdout);
-        }
-      },
-    );
-  });
+  return runPythonCommand(fullArgs);
 }
 
 if (mempalaceEnabled) {
@@ -47,6 +94,7 @@ if (mempalaceEnabled) {
 
   // ── Search memories ───────────────────────────────────────
   mempalaceTools.push({
+    execution: "abortable",
     type: "function",
     function: {
       name: "mempalaceSearch",
@@ -100,6 +148,7 @@ if (mempalaceEnabled) {
 
   // ── Store a memory ────────────────────────────────────────
   mempalaceTools.push({
+    execution: "abortable",
     type: "function",
     function: {
       name: "mempalaceStore",
@@ -152,6 +201,7 @@ if (mempalaceEnabled) {
 
   // ── Wake-up context ───────────────────────────────────────
   mempalaceTools.push({
+    execution: "abortable",
     type: "function",
     function: {
       name: "mempalaceWakeUp",
@@ -191,6 +241,7 @@ if (mempalaceEnabled) {
 
   // ── Palace status ─────────────────────────────────────────
   mempalaceTools.push({
+    execution: "abortable",
     type: "function",
     function: {
       name: "mempalaceStatus",
@@ -214,21 +265,7 @@ if (mempalaceEnabled) {
  * Run a Python script via stdin — avoids shell injection from user content.
  */
 function runPythonScript(script: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(mempalacePythonPath, ["-c", script], {
-      timeout: 30_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(stderr || `exit code ${code}`));
-      else resolve(stdout);
-    });
-    proc.on("error", reject);
-  });
+  return runPythonCommand(["-c", script]);
 }
 
 /**
@@ -263,23 +300,7 @@ col.add(ids=[doc_id], documents=[data["content"]], metadatas=[meta])
 print(f"Stored in {data['wing']}/{data['hall']}/{data['room']} (id={doc_id})")
 `.trim();
 
-  return new Promise((resolve, reject) => {
-    const proc = spawn(mempalacePythonPath, ["-c", script], {
-      timeout: 30_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(stderr || `exit code ${code}`));
-      else resolve(stdout.trim());
-    });
-    proc.on("error", reject);
-    proc.stdin.write(payload);
-    proc.stdin.end();
-  });
+  return runPythonCommand(["-c", script], payload).then(output => output.trim());
 }
 
 /**

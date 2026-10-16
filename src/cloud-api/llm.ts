@@ -8,15 +8,17 @@ import {
 } from "./interface";
 import { pluginRegistry, LLMProvider } from "../plugin";
 import { handleMemoryCommand } from "../config/local-memory";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 dotenv.config();
 
 let _chatWithLLMStream: ChatWithLLMStreamFunction = noop as any;
+let cancelLLMRequest: () => void = noop;
 let resetChatHistory: ResetChatHistoryFunction = noop as any;
 let summaryTextWithLLM: SummaryTextWithLLMFunction = async (text, _) => text;
 
 const MAX_FUNCTION_CALL_DEPTH = 5;
-let functionCallDepth = 0;
+const requestDepth = new AsyncLocalStorage<number>();
 
 const chatWithLLMStream: ChatWithLLMStreamFunction = async (
   inputMessages,
@@ -25,8 +27,10 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
   partialThinkingCallback?,
   invokeFunctionCallback?,
 ) => {
+  const functionCallDepth = requestDepth.getStore() || 0;
   const isTopLevel = functionCallDepth === 0;
   if (isTopLevel) {
+    cancelLLMRequest();
     // Explicit memory commands are answered from the local store without an
     // LLM round trip; the reply is spoken and displayed like any answer.
     const lastUser = [...inputMessages].reverse().find((message) => message.role === "user");
@@ -39,26 +43,18 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       return;
     }
   }
-  functionCallDepth++;
-  if (functionCallDepth > MAX_FUNCTION_CALL_DEPTH) {
+  if (functionCallDepth >= MAX_FUNCTION_CALL_DEPTH) {
     console.warn(`[LLM] Function call depth exceeded ${MAX_FUNCTION_CALL_DEPTH}, stopping.`);
-    functionCallDepth = 0;
     endCallBack();
     return;
   }
-  try {
-    return await _chatWithLLMStream(
+  return requestDepth.run(functionCallDepth + 1, () => _chatWithLLMStream(
       inputMessages,
       partialCallback,
       endCallBack,
       partialThinkingCallback,
       invokeFunctionCallback,
-    );
-  } finally {
-    if (isTopLevel) {
-      functionCallDepth = 0;
-    }
-  }
+  ));
 };
 
 const llmServer: LLMServer = (
@@ -71,6 +67,7 @@ console.log(`Current LLM Server: ${llmServer}`);
 try {
   const llmProvider = pluginRegistry.activatePluginSync<"llm">("llm", llmServer);
   _chatWithLLMStream = llmProvider.chatWithLLMStream;
+  cancelLLMRequest = llmProvider.cancelActiveRequest || noop;
   resetChatHistory = llmProvider.resetChatHistory;
   if (llmProvider.summaryTextWithLLM) {
     summaryTextWithLLM = llmProvider.summaryTextWithLLM;
@@ -81,4 +78,4 @@ try {
 
 const isImMode = llmServer === LLMServer.whisplayim;
 
-export { chatWithLLMStream, resetChatHistory, summaryTextWithLLM, isImMode };
+export { chatWithLLMStream, resetChatHistory, summaryTextWithLLM, isImMode, cancelLLMRequest };

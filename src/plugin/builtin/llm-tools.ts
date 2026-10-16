@@ -17,6 +17,7 @@ export function registerLLMToolsPlugins(): void {
       return {
         getTools: (): LLMTool[] => [
           {
+            execution: "bounded",
             type: "function",
             function: {
               name: "setVolume",
@@ -45,6 +46,7 @@ export function registerLLMToolsPlugins(): void {
             },
           },
           {
+            execution: "bounded",
             type: "function",
             function: {
               name: "increaseVolume",
@@ -68,6 +70,7 @@ export function registerLLMToolsPlugins(): void {
             },
           },
           {
+            execution: "bounded",
             type: "function",
             function: {
               name: "decreaseVolume",
