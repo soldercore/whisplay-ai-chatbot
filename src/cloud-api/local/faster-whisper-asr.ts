@@ -10,6 +10,7 @@ dotenv.config();
 const fasterWhisperPort = process.env.FASTER_WHISPER_PORT || "8803";
 const fasterWhisperHost = process.env.FASTER_WHISPER_HOST || "localhost";
 const fasterWhisperLanguage = process.env.FASTER_WHISPER_LANGUAGE || "en";
+const fasterWhisperInitialPrompt = process.env.FASTER_WHISPER_INITIAL_PROMPT?.trim();
 const fasterWhisperRequestType =
   process.env.FASTER_WHISPER_REQUEST_TYPE || "filePath";
 
@@ -42,8 +43,9 @@ interface FasterWhisperResponse {
 export const recognizeAudio = async (
   audioFilePath: string
 ): Promise<string> => {
-  const body: { filePath?: string; base64?: string; language?: string } = {};
+  const body: { filePath?: string; base64?: string; language?: string; initial_prompt?: string } = {};
   body.language = fasterWhisperLanguage;
+  if (fasterWhisperInitialPrompt) body.initial_prompt = fasterWhisperInitialPrompt;
   if (fasterWhisperRequestType === "filePath") {
     body.filePath = audioFilePath;
   } else if (fasterWhisperRequestType === "base64") {

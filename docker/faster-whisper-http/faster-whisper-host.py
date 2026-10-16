@@ -62,6 +62,9 @@ def recognize():
   file_path = data.get("filePath")
   b64_audio = data.get("base64")
   language = data.get("language")
+  initial_prompt = data.get("initial_prompt")
+  if initial_prompt is not None and not isinstance(initial_prompt, str):
+    return jsonify({"error": "initial_prompt must be a string"}), 400
 
   if not file_path and not b64_audio:
     return jsonify({
@@ -84,7 +87,8 @@ def recognize():
     segments, info = model.transcribe(
       audio_path,
       language=language,
-      vad_filter=True
+      vad_filter=True,
+      initial_prompt=initial_prompt
     )
 
     text = "".join(seg.text for seg in segments).strip()
