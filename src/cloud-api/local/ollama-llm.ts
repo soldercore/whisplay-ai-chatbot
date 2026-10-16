@@ -41,6 +41,7 @@ import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { boundOllamaHistory } from "./ollama-history-limits";
 import { operationDeadline, timeoutSetting, waitForOperation, OperationTimeoutError } from "../../utils/operation-lifecycle";
+import { purifyTextForTTS } from "../../utils";
 import {
   createOllamaRequestBudget, OllamaRequestBudget, OllamaResourceLimitError,
   reserveToolAttempts, checkModelToolCount, countResponseTextBytes,
@@ -66,6 +67,7 @@ const useCapturedImageInChat =
   "true";
 
 const llmServer = process.env.LLM_SERVER || "";
+const EMPTY_ANSWER_REPLY = "I couldn't produce a usable answer.";
 
 let ollamaContextWindowCache: number | undefined;
 
@@ -424,6 +426,10 @@ const answerFromAvailableToolResults = async ({
       console.log(`[Ollama] Final no-tools thinking length: ${finalThinking.length}`);
     }
     if (signal?.aborted) return;
+    if (!purifyTextForTTS(finalAnswer)) {
+      finalAnswer = EMPTY_ANSWER_REPLY;
+      partialCallback(finalAnswer);
+    }
     messages.push({
       role: "assistant",
       content: finalAnswer,
@@ -794,6 +800,12 @@ const chatWithLLMStreamInternal = async (
         );
         return;
       } else {
+        // Only a terminal round needs an answer. Earlier thinking/tool proposals
+        // cannot substitute for it, and empty completion must never be silent.
+        if (!purifyTextForTTS(partialAnswer)) {
+          assistantMessage.content = EMPTY_ANSWER_REPLY;
+          partialCallback(EMPTY_ANSWER_REPLY);
+        }
         endResolve();
         endCallback();
       }
