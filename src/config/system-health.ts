@@ -117,3 +117,26 @@ export const systemHealthTool: LLMTool = {
   },
   func: async () => "[success]" + JSON.stringify(await collectSystemHealth()),
 };
+
+// A success tag alone does not establish usable measurements. In particular,
+// another available metric cannot stand in for a requested missing sensor.
+export function hasSystemHealthMeasurements(output: string, question: string): boolean {
+  try {
+    const report = JSON.parse(output.replace(/^\[(success|response)\]/, ""));
+    if (!report || typeof report !== "object" || Array.isArray(report)) return false;
+    const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+    const requested: boolean[] = [];
+    if (/\btemperature\b/i.test(question)) requested.push(number(report.temperatureCelsius));
+    if (/\b(cpu|processor)\s+(usage|utili[sz]ation|load)\b/i.test(question)) requested.push(number(report.cpu?.utilizationPercent));
+    if (/\b(ram|memory)\b/i.test(question)) {
+      requested.push(number(/\b(using|used|usage)\b/i.test(question) ? report.memory?.usedBytes : report.memory?.totalBytes));
+    }
+    if (/\b(disk|storage)\b/i.test(question)) requested.push(number(report.disk?.availableBytes));
+    if (/\bswap\b/i.test(question)) requested.push(number(report.memory?.swapTotalBytes) && number(report.memory?.swapFreeBytes));
+    if (/\buptime\b/i.test(question)) requested.push(number(report.uptimeSeconds));
+    if (/\bservices?\b/i.test(question)) requested.push(report.services?.available === true && Array.isArray(report.services.units) && report.services.units.length > 0);
+    if (requested.length) return requested.every(Boolean);
+    return [report.cpu?.utilizationPercent, report.memory?.totalBytes, report.memory?.usedBytes,
+      report.disk?.availableBytes, report.temperatureCelsius].some(number);
+  } catch { return false; }
+}

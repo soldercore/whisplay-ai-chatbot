@@ -23,6 +23,17 @@ const MENTIONS_IMAGE =
 
 export const mentionsImage = (text: string): boolean => MENTIONS_IMAGE.test(text || "");
 
+// Offering a tool is broader than requiring it. Only explicit requests for
+// current local measurements are routed before the model; concepts stay chat.
+export const needsSystemHealth = (text: string): boolean => {
+  if (/\b(explain|define|definition|joke|story|pretend|imagine)\b|\bhow (do|does|can|should|would)\b/i.test(text)) return false;
+  const subject = /\b(system|device|cpu|processor|ram|memory|swap|disk|storage|temperature|uptime|services?)\b/i.test(text);
+  const measurement = /\b(health|status|doing|running|usage|using|utili[sz]ation|load|temperature|swap|space|uptime)\b/i.test(text);
+  const local = /\b(your|you|this system|this device|the system|the cpu|the disk|left|remaining|available|free|currently|current|right now|system health|system status|uptime|service status)\b/i.test(text)
+    || /\b(check|report|show|measure|read)\b/i.test(text);
+  return subject && measurement && local && /\b(how|what|check|report|show|measure|read|get|tell|is|are)\b/i.test(text);
+};
+
 // The user asks for a short answer from what the model knows: an answer-format
 // instruction or plain arithmetic. Time-sensitive questions still get web search.
 // The web tools stay offered for these (removing them changes the tool list,
@@ -46,7 +57,7 @@ const RELEVANT_WHEN: [string, (text: string) => boolean][] = [
   ["decreaseVolume", mentionsVolume],
   ["generateImage", mentionsImage],
   ["showPreviouslyGeneratedImage", mentionsImage],
-  ["getSystemHealth", (text: string) => /\b(system (health|status|load)|your (system|status|health)|cpu|memory usage|swap|disk (usage|space)|temperature|uptime|service status)\b/i.test(text)],
+  ["getSystemHealth", (text: string) => needsSystemHealth(text) || /\b(system (health|status|load)|your (system|status|health)|cpu|memory usage|swap|disk (usage|space)|temperature|uptime|service status)\b/i.test(text)],
 ];
 const RULES = new Map(RELEVANT_WHEN);
 const GATED_ORDER = new Map(RELEVANT_WHEN.map(([name], index) => [name, index]));

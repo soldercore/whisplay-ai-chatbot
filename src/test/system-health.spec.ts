@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import axios from "axios";
-import { collectSystemHealth, systemHealthTool } from "../config/system-health";
+import { collectSystemHealth, hasSystemHealthMeasurements, systemHealthTool } from "../config/system-health";
 import { executeToolCall } from "../config/tool-execution";
 import { withToolSignal } from "../utils/operation-lifecycle";
-import { toolsRelevantTo } from "../config/tool-router";
+import { needsSystemHealth, toolsRelevantTo } from "../config/tool-router";
 
 const os = require("node:os"), fs = require("node:fs"), cp = require("node:child_process");
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -174,6 +174,44 @@ test("health is offered for the target request and not unrelated conversation", 
   assert.deepEqual(toolsRelevantTo("Tell me a joke.", [systemHealthTool]), []);
 });
 
+test("mandatory health intent distinguishes local measurements from greetings and concepts", () => {
+  for (const question of ["How is your system doing?", "What's your CPU temperature?", "How much RAM are you using?",
+    "How much memory are you using?", "How much disk space is left?", "Check your system status today.",
+    "What is your CPU usage right now?", "What is your uptime?", "Show service status."]) {
+    assert.equal(needsSystemHealth(question), true, question);
+    assert.deepEqual(toolsRelevantTo(question, [systemHealthTool]), [systemHealthTool], question);
+  }
+  for (const question of ["How are you doing?", "What is RAM?", "Explain CPU temperature in general.",
+    "How does CPU temperature affect performance?", "Tell me a story about a computer system."]) {
+    assert.equal(needsSystemHealth(question), false, question);
+  }
+});
+
+test("health usability requires measured values for each specifically requested metric", () => {
+  const output = (report: unknown) => "[success]" + JSON.stringify(report);
+  const fallback = { temperatureCelsius: 65, memory: { usedBytes: 768000 }, disk: { availableBytes: 1433600 } };
+  for (const report of [null, [], {}, { cpu: { utilizationPercent: null } }, { memory: { usedBytes: "768000" } }]) {
+    assert.equal(hasSystemHealthMeasurements(output(report), "How is your system doing?"), false);
+  }
+  assert.equal(hasSystemHealthMeasurements("[success]broken JSON", "How is your system doing?"), false);
+  assert.equal(hasSystemHealthMeasurements(output(fallback), "How is your system doing?"), true);
+  for (const [question, report] of [
+    ["What's your CPU temperature?", { ...fallback, temperatureCelsius: null }],
+    ["How much RAM are you using?", { ...fallback, memory: { totalBytes: 1024000, usedBytes: null } }],
+    ["How much disk space is left?", { ...fallback, disk: { totalBytes: 4096000, availableBytes: null } }],
+    ["What is your CPU usage?", fallback],
+    ["What is your uptime?", { ...fallback, uptimeSeconds: null }],
+    ["Show service status.", { ...fallback, services: { available: false, units: [] } }],
+    ["Show your uptime and service status.", { ...fallback, uptimeSeconds: 1234, services: { available: false } }],
+  ] as [string, object][]) {
+    assert.equal(hasSystemHealthMeasurements(output(report), question), false, question);
+  }
+  assert.equal(hasSystemHealthMeasurements(output({ temperatureCelsius: 0 }), "What's your CPU temperature?"), true);
+  assert.equal(hasSystemHealthMeasurements(output({ memory: { usedBytes: 0 } }), "How much RAM are you using?"), true);
+  assert.equal(hasSystemHealthMeasurements(output({ disk: { availableBytes: 0 } }), "How much disk space is left?"), true);
+  assert.equal(hasSystemHealthMeasurements(output({ uptimeSeconds: 1234 }), "What is your uptime?"), true);
+});
+
 test("health deadline aborts an active status process without retry or fabricated status", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] }); sources(t);
   let attempts = 0, aborted = 0;
@@ -197,8 +235,7 @@ test("normal Ollama conversation executes registered health tool and receives it
   t.mock.method(axios, "post", async (_url: string, body: any) => {
     requests.push(body);
     const stream = new PassThrough();
-    const record = requests.length === 1 ? { message: { tool_calls: [{ function: { name: "getSystemHealth", arguments: {} } }] }, done: true }
-      : { message: { content: "CPU utilization is 50 percent and temperature is 65 Celsius." }, done: true };
+    const record = { message: { content: "CPU utilization is 50 percent and temperature is 65 Celsius." }, done: true };
     setImmediate(() => stream.end(JSON.stringify(record) + "\n"));
     return { data: stream };
   });
@@ -215,9 +252,9 @@ test("normal Ollama conversation executes registered health tool and receives it
     assert.equal(s.sampleCount(), 1, "advance time only after actual tool sampling starts");
     t.mock.timers.tick(100); await pending;
     assert.equal(answer, "CPU utilization is 50 percent and temperature is 65 Celsius."); assert.equal(ends, 1);
-    assert.equal(requests.length, 2);
-    assert.ok(requests[0].tools.some((tool: any) => tool.function.name === "getSystemHealth"));
-    const result = requests[1].messages.find((message: any) => message.role === "tool");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].tools, undefined, "measurements are already present; do not request another execution");
+    const result = requests[0].messages.find((message: any) => message.role === "tool");
     assert.equal(result.tool_name, "getSystemHealth");
     const metrics = JSON.parse(result.content.slice("[success]".length));
     assert.equal(metrics.cpu.utilizationPercent, 50); assert.equal(metrics.temperatureCelsius, 65);
@@ -257,7 +294,9 @@ for (const mode of ["native", "json"] as const) {
       const provider = require("../cloud-api/local/ollama-llm").default;
       t.after(() => provider.cancelActiveRequest());
       let answer = "", ends = 0;
-      const pending = provider.chatWithLLMStream([{ role: "user", content: "GLaDOS, how is your system doing?" }],
+      // A conceptual question still offers the health tool but does not mandate
+      // sampling. Keep testing the model's native/JSON argument validation here.
+      const pending = provider.chatWithLLMStream([{ role: "user", content: "Explain CPU temperature in general." }],
         (text: string) => answer += text, () => ends++, undefined,
         (name: string, result?: string) => events.push({ name, result }));
       if (valid) {

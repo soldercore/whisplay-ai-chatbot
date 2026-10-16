@@ -36,7 +36,8 @@ import {
   searchTypeFor,
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
-import { isDirectAnswerRequest, toolsRelevantTo } from "../../config/tool-router";
+import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../../config/tool-router";
+import { hasSystemHealthMeasurements } from "../../config/system-health";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { boundOllamaHistory } from "./ollama-history-limits";
@@ -201,6 +202,7 @@ const resetChatHistory = (): void => {
 };
 
 type ToolLoopState = {
+  healthPrefetched?: boolean;
   pending?: { message?: OllamaMessage };
   round: number;
   signatures: Set<string>;
@@ -319,9 +321,37 @@ const prefetchWebSearchIfNeeded = async (
   toolLoopState.webToolsOnly = true;
 };
 
+// Reuse the existing prefetch/dispatch path: a local-state request cannot be
+// answered before its owning capability has returned usable measurements.
+const prefetchSystemHealth = async (
+  question: string, state: ToolLoopState, partialCallback: (text: string) => void,
+  invokeFunctionCallback?: (name: string, result?: string) => void,
+): Promise<boolean> => {
+  const allowedTools = toolsForRequest(state) || [];
+  reserveToolAttempts(state.budget, 1, false);
+  invokeFunctionCallback?.("getSystemHealth");
+  const execution = await executeLLMTool("getSystemHealth", {}, {
+    enabled: ollamaEnableTools, allowedTools, signal: state.signal,
+  });
+  invokeFunctionCallback?.("getSystemHealth", execution.output);
+  if (state.signal?.aborted) return false;
+  const call = { function: { index: 0, name: "getSystemHealth", arguments: {} } };
+  messages.push({ role: "assistant", content: "", tool_calls: [[call]] },
+    { role: "tool", content: execution.output, tool_name: "getSystemHealth" });
+  state.signatures.add(toolCallSignature(call));
+  if (execution.status !== "success" || !hasSystemHealthMeasurements(execution.output, question)) {
+    const reply = "I couldn't retrieve my system health.";
+    messages.push({ role: "assistant", content: reply });
+    partialCallback(reply);
+    return false;
+  }
+  state.healthPrefetched = true;
+  return true;
+};
+
 const WEB_TOOL_NAMES = new Set(["web_search", "fetch_webpage"]);
 const toolsForRequest = (toolLoopState: ToolLoopState) => {
-  if (!ollamaEnableTools) return undefined;
+  if (!ollamaEnableTools || toolLoopState.healthPrefetched) return undefined;
   const boundedTools = llmTools.filter(tool => tool.execution === "bounded" || tool.execution === "abortable");
   if (toolLoopState.webToolsOnly) {
     return boundedTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name));
@@ -463,7 +493,16 @@ const chatWithLLMStreamInternal = async (
   messages.push(...(inputMessages as OllamaMessage[]));
   if (boundOllamaHistory(messages)) throw new OllamaResourceLimitError("conversation history exceeded its safety limit");
   if (toolLoopState.round === 0) {
-    await prefetchWebSearchIfNeeded(inputMessages, toolLoopState, invokeFunctionCallback);
+    const latestUser = [...inputMessages].reverse().find(message => message.role === "user");
+    const question = typeof latestUser?.content === "string" ? latestUser.content : "";
+    if (needsSystemHealth(question)) {
+      if (!await prefetchSystemHealth(question, toolLoopState, partialCallback, invokeFunctionCallback)) {
+        endCallback();
+        return;
+      }
+    } else {
+      await prefetchWebSearchIfNeeded(inputMessages, toolLoopState, invokeFunctionCallback);
+    }
   }
   // A cancelled answer must not compact the history the newer question uses.
   if (toolLoopState.signal?.aborted) {
@@ -790,6 +829,7 @@ const chatWithLLMStreamInternal = async (
           partialThinkingCallback,
           invokeFunctionCallback,
           {
+            healthPrefetched: toolLoopState.healthPrefetched,
             pending: toolLoopState.pending,
             round: toolLoopState.round + 1,
             signatures: toolLoopState.signatures,
