@@ -56,7 +56,7 @@ function serviceStatus(signal: AbortSignal): Promise<object> {
 }
 
 // Optional platform argument is for host tests, not exposed in the tool schema.
-export async function collectSystemHealth(platform = process.platform): Promise<object> {
+export async function collectSystemHealth(platform = process.platform) {
   const deadline = operationDeadline(timeoutSetting("SYSTEM_HEALTH_TIMEOUT_MS", 10_000), currentToolSignal());
   try {
     checkCancelled(deadline.signal);
@@ -110,12 +110,36 @@ export async function collectSystemHealth(platform = process.platform): Promise<
   } finally { deadline.dispose(); }
 }
 
+// Keep raw OS measurements internal. The model receives converted quantities,
+// never a byte count that it could relabel as MB or GB.
+function modelHealthReport(report: Awaited<ReturnType<typeof collectSystemHealth>>) {
+  const quantity = (value: number | null, unit: string) => value === null ? null : { value, unit };
+  const size = (bytes: number | null, memory = false) => {
+    if (bytes === null) return null;
+    const megabytes = memory && bytes < 1024 ** 3;
+    return quantity(Number((bytes / (megabytes ? 1_000_000 : 1024 ** 3)).toFixed(3)), megabytes ? "MB" : "GiB");
+  };
+  return {
+    sampledAt: report.sampledAt, platform: report.platform,
+    cpu: { utilization: quantity(report.cpu.utilizationPercent, "%"),
+      sampleWindowMs: report.cpu.sampleWindowMs, loadAverage: report.cpu.loadAverage },
+    memory: { total: size(report.memory.totalBytes, true), available: size(report.memory.availableBytes, true),
+      free: size(report.memory.freeBytes, true), used: size(report.memory.usedBytes, true),
+      swapTotal: size(report.memory.swapTotalBytes, true), swapFree: size(report.memory.swapFreeBytes, true) },
+    disk: report.disk === null ? null : { scope: report.disk.scope, total: size(report.disk.totalBytes),
+      free: size(report.disk.freeBytes), available: size(report.disk.availableBytes), used: size(report.disk.usedBytes) },
+    temperature: quantity(report.temperatureCelsius, "°C"), uptimeSeconds: report.uptimeSeconds, services: report.services,
+    healthAssessment: "not_assessed",
+    note: "Report measurements using their supplied units. No health thresholds were evaluated: do not infer warm, healthy, unhealthy or running smoothly from numeric measurements. Null metrics are unavailable; service status does not prove backend health.",
+  };
+}
+
 export const systemHealthTool: LLMTool = {
   execution: "abortable", type: "function", function: {
     name: "getSystemHealth", description: "Read this device's CPU, memory, disk, temperature, uptime and service status. Call with {} only; no arguments. Null means unavailable.",
     parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
-  func: async () => "[success]" + JSON.stringify(await collectSystemHealth()),
+  func: async () => "[success]" + JSON.stringify(modelHealthReport(await collectSystemHealth())),
 };
 
 // A success tag alone does not establish usable measurements. In particular,
@@ -125,18 +149,20 @@ export function hasSystemHealthMeasurements(output: string, question: string): b
     const report = JSON.parse(output.replace(/^\[(success|response)\]/, ""));
     if (!report || typeof report !== "object" || Array.isArray(report)) return false;
     const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+    const quantity = (value: any, units: string[]) => !!value && units.includes(value.unit) && number(value.value);
+    const size = (value: unknown) => quantity(value, ["MB", "GiB"]);
     const requested: boolean[] = [];
-    if (/\btemperature\b/i.test(question)) requested.push(number(report.temperatureCelsius));
-    if (/\b(cpu|processor)\s+(usage|utili[sz]ation|load)\b/i.test(question)) requested.push(number(report.cpu?.utilizationPercent));
+    if (/\btemperature\b/i.test(question)) requested.push(quantity(report.temperature, ["°C"]));
+    if (/\b(cpu|processor)\s+(usage|utili[sz]ation|load)\b/i.test(question)) requested.push(quantity(report.cpu?.utilization, ["%"]));
     if (/\b(ram|memory)\b/i.test(question)) {
-      requested.push(number(/\b(using|used|usage)\b/i.test(question) ? report.memory?.usedBytes : report.memory?.totalBytes));
+      requested.push(size(/\b(using|used|usage)\b/i.test(question) ? report.memory?.used : report.memory?.total));
     }
-    if (/\b(disk|storage)\b/i.test(question)) requested.push(number(report.disk?.availableBytes));
-    if (/\bswap\b/i.test(question)) requested.push(number(report.memory?.swapTotalBytes) && number(report.memory?.swapFreeBytes));
+    if (/\b(disk|storage)\b/i.test(question)) requested.push(quantity(report.disk?.available, ["GiB"]));
+    if (/\bswap\b/i.test(question)) requested.push(size(report.memory?.swapTotal) && size(report.memory?.swapFree));
     if (/\buptime\b/i.test(question)) requested.push(number(report.uptimeSeconds));
     if (/\bservices?\b/i.test(question)) requested.push(report.services?.available === true && Array.isArray(report.services.units) && report.services.units.length > 0);
     if (requested.length) return requested.every(Boolean);
-    return [report.cpu?.utilizationPercent, report.memory?.totalBytes, report.memory?.usedBytes,
-      report.disk?.availableBytes, report.temperatureCelsius].some(number);
+    return quantity(report.cpu?.utilization, ["%"]) || size(report.memory?.total) || size(report.memory?.used)
+      || quantity(report.disk?.available, ["GiB"]) || quantity(report.temperature, ["°C"]);
   } catch { return false; }
 }

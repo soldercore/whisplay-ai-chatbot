@@ -154,9 +154,78 @@ test("empty health arguments execute through validation and return measured data
   assert.equal(result.status, "success");
   assert.match(result.output, /^\[success\]/);
   const metrics = JSON.parse(result.output.slice("[success]".length));
-  assert.equal(metrics.cpu.utilizationPercent, 50);
+  assert.deepEqual(metrics.cpu.utilization, { value: 50, unit: "%" });
+  assert.deepEqual(metrics.disk.available, { value: 0.001, unit: "GiB" });
   assert.equal(metrics.uptimeSeconds, 1234);
   assert.equal(s.sampleCount(), 2); assert.equal(s.descriptors.size, 0);
+});
+
+async function modelReport(t: any, configure: (s: ReturnType<typeof sources>) => void = () => {}) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const s = sources(t); configure(s);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  t.after(() => Object.defineProperty(process, "platform", platform));
+  const pending = systemHealthTool.func({});
+  await flush(); t.mock.timers.tick(100);
+  const output = await pending;
+  assert.match(output, /^\[success\]/);
+  return JSON.parse(output.slice("[success]".length));
+}
+
+test("health converts the reported Pi RAM bytes to GiB before model exposure", async t => {
+  const report = await modelReport(t, s => {
+    // 16 GiB total minus available = exactly 5926408192 bytes used.
+    s.files["/proc/meminfo"] = "MemTotal: 16777216 kB\nMemAvailable: 10989708 kB\nMemFree: 100 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
+  });
+  assert.deepEqual(report.memory.used, { value: 5.519, unit: "GiB" });
+  assert.deepEqual(report.memory.total, { value: 16, unit: "GiB" });
+  assert.deepEqual(report.memory.swapTotal, { value: 0, unit: "MB" });
+  assert.equal(JSON.stringify(report).includes("5926408192"), false);
+  assert.equal(/Bytes/.test(JSON.stringify(report)), false);
+  assert.equal(hasSystemHealthMeasurements("[success]" + JSON.stringify(report), "How much RAM are you using?"), true);
+});
+
+test("health converts small RAM to decimal MB and disk to binary GiB", async t => {
+  const report = await modelReport(t, () => {
+    t.mock.method(fs, "statfsSync", () => ({ bsize: 4096n, blocks: 33554432n, bfree: 16777216n, bavail: 12582912n }));
+  });
+  assert.deepEqual(report.memory.used, { value: 0.768, unit: "MB" });
+  assert.deepEqual(report.disk.total, { value: 128, unit: "GiB" });
+  assert.deepEqual(report.disk.free, { value: 64, unit: "GiB" });
+  assert.deepEqual(report.disk.available, { value: 48, unit: "GiB" });
+  assert.deepEqual(report.disk.used, { value: 64, unit: "GiB" });
+});
+
+test("health keeps explicit Celsius and percent without manufacturing a health assessment", async t => {
+  const report = await modelReport(t);
+  assert.deepEqual(report.temperature, { value: 65, unit: "°C" });
+  assert.deepEqual(report.cpu.utilization, { value: 50, unit: "%" });
+  assert.equal(report.healthAssessment, "not_assessed");
+  assert.match(report.note, /No health thresholds were evaluated/);
+  assert.match(report.note, /do not infer warm, healthy, unhealthy or running smoothly/);
+  assert.equal(report.temperature.status, undefined);
+  assert.equal(report.cpu.status, undefined);
+});
+
+test("unavailable health quantities stay null after normalization", async t => {
+  const report = await modelReport(t, () => {
+    t.mock.method(fs, "openSync", () => { throw new Error("unavailable"); });
+    t.mock.method(fs, "statfsSync", () => { throw new Error("unavailable"); });
+    t.mock.method(os, "cpus", () => []);
+  });
+  assert.equal(report.temperature, null); assert.equal(report.cpu.utilization, null);
+  assert.equal(report.memory.used, null); assert.equal(report.disk, null);
+  assert.equal(hasSystemHealthMeasurements("[success]" + JSON.stringify(report), "How much RAM are you using?"), false);
+});
+
+test("health measurement validation rejects missing or mismatched units and raw bytes", () => {
+  for (const used of [5926408192, { value: 5.519 }, { value: 5926408192, unit: "bytes" },
+    { value: "5.519", unit: "GiB" }, { value: null, unit: "GiB" }]) {
+    assert.equal(hasSystemHealthMeasurements("[success]" + JSON.stringify({ memory: { used } }), "How much RAM are you using?"), false);
+  }
+  assert.equal(hasSystemHealthMeasurements('[success]{"temperature":{"value":65,"unit":"%"}}', "What's your CPU temperature?"), false);
+  assert.equal(hasSystemHealthMeasurements('[success]{"cpu":{"utilization":{"value":50,"unit":"°C"}}}', "What is your CPU usage?"), false);
 });
 
 test("health sampling cancellation clears its timer before files or processes are touched", async t => {
@@ -189,16 +258,17 @@ test("mandatory health intent distinguishes local measurements from greetings an
 
 test("health usability requires measured values for each specifically requested metric", () => {
   const output = (report: unknown) => "[success]" + JSON.stringify(report);
-  const fallback = { temperatureCelsius: 65, memory: { usedBytes: 768000 }, disk: { availableBytes: 1433600 } };
-  for (const report of [null, [], {}, { cpu: { utilizationPercent: null } }, { memory: { usedBytes: "768000" } }]) {
+  const fallback = { temperature: { value: 65, unit: "°C" }, memory: { used: { value: 0.768, unit: "MB" } },
+    disk: { available: { value: 0.001, unit: "GiB" } } };
+  for (const report of [null, [], {}, { cpu: { utilization: null } }, { memory: { used: { value: "0.768", unit: "MB" } } }]) {
     assert.equal(hasSystemHealthMeasurements(output(report), "How is your system doing?"), false);
   }
   assert.equal(hasSystemHealthMeasurements("[success]broken JSON", "How is your system doing?"), false);
   assert.equal(hasSystemHealthMeasurements(output(fallback), "How is your system doing?"), true);
   for (const [question, report] of [
-    ["What's your CPU temperature?", { ...fallback, temperatureCelsius: null }],
-    ["How much RAM are you using?", { ...fallback, memory: { totalBytes: 1024000, usedBytes: null } }],
-    ["How much disk space is left?", { ...fallback, disk: { totalBytes: 4096000, availableBytes: null } }],
+    ["What's your CPU temperature?", { ...fallback, temperature: null }],
+    ["How much RAM are you using?", { ...fallback, memory: { total: { value: 1.024, unit: "MB" }, used: null } }],
+    ["How much disk space is left?", { ...fallback, disk: { total: { value: 0.004, unit: "GiB" }, available: null } }],
     ["What is your CPU usage?", fallback],
     ["What is your uptime?", { ...fallback, uptimeSeconds: null }],
     ["Show service status.", { ...fallback, services: { available: false, units: [] } }],
@@ -206,9 +276,9 @@ test("health usability requires measured values for each specifically requested 
   ] as [string, object][]) {
     assert.equal(hasSystemHealthMeasurements(output(report), question), false, question);
   }
-  assert.equal(hasSystemHealthMeasurements(output({ temperatureCelsius: 0 }), "What's your CPU temperature?"), true);
-  assert.equal(hasSystemHealthMeasurements(output({ memory: { usedBytes: 0 } }), "How much RAM are you using?"), true);
-  assert.equal(hasSystemHealthMeasurements(output({ disk: { availableBytes: 0 } }), "How much disk space is left?"), true);
+  assert.equal(hasSystemHealthMeasurements(output({ temperature: { value: 0, unit: "°C" } }), "What's your CPU temperature?"), true);
+  assert.equal(hasSystemHealthMeasurements(output({ memory: { used: { value: 0, unit: "MB" } } }), "How much RAM are you using?"), true);
+  assert.equal(hasSystemHealthMeasurements(output({ disk: { available: { value: 0, unit: "GiB" } } }), "How much disk space is left?"), true);
   assert.equal(hasSystemHealthMeasurements(output({ uptimeSeconds: 1234 }), "What is your uptime?"), true);
 });
 
@@ -257,7 +327,8 @@ test("normal Ollama conversation executes registered health tool and receives it
     const result = requests[0].messages.find((message: any) => message.role === "tool");
     assert.equal(result.tool_name, "getSystemHealth");
     const metrics = JSON.parse(result.content.slice("[success]".length));
-    assert.equal(metrics.cpu.utilizationPercent, 50); assert.equal(metrics.temperatureCelsius, 65);
+    assert.deepEqual(metrics.cpu.utilization, { value: 50, unit: "%" });
+    assert.deepEqual(metrics.temperature, { value: 65, unit: "°C" });
   } finally { Object.defineProperty(process, "platform", originalPlatform); }
 });
 
@@ -311,7 +382,7 @@ for (const mode of ["native", "json"] as const) {
         assert.equal(answer, "CPU utilization is 50 percent."); assert.equal(requests.length, 2);
         const result = requests[1].messages.find((message: any) => message.role === "tool");
         assert.equal(result.tool_name, "getSystemHealth");
-        assert.equal(JSON.parse(result.content.slice("[success]".length)).cpu.utilizationPercent, 50);
+        assert.deepEqual(JSON.parse(result.content.slice("[success]".length)).cpu.utilization, { value: 50, unit: "%" });
         assert.equal(s.sampleCount(), 2);
       } else {
         assert.equal(answer, "I couldn't run the requested tool. Completion was not verified.");

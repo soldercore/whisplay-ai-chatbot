@@ -8,7 +8,7 @@ import ts from "typescript";
 import axios from "axios";
 
 const FAILURE = "I couldn't produce a usable answer.";
-const ANSWER = "CPU temperature is 65 Celsius. RAM usage is 768000 bytes.";
+const ANSWER = "CPU temperature is 65 Celsius. RAM usage is 0.768 MB.";
 const PRIVATE_THINKING = "Internal reasoning is not an answer.";
 const requests: any[] = [];
 let plans: { records: any[]; cancel?: boolean }[] = [];
@@ -23,7 +23,7 @@ const compiled = new Map<string, string>();
 const healthCall = () => ({ message: { tool_calls: [{ function: { name: "getSystemHealth", arguments: {} } }] }, done: true });
 const probeCall = (label: string) => ({ message: { tool_calls: [{ function: { name: "postToolProbe", arguments: { label } } }] }, done: true });
 const visible = () => [{ message: { content: "CPU temperature is 65 Celsius. " } },
-  { message: { content: "RAM usage is 768000 bytes." }, done: true }];
+  { message: { content: "RAM usage is 0.768 MB." }, done: true }];
 
 before(() => {
   assert.match(require("../utils/dir").dataDir, /\.test-artifacts/);
@@ -198,7 +198,8 @@ test("scenario A: measured health results reach round 1 and visible text reaches
   const tool = requests[1].messages.find((message: any) => message.role === "tool");
   assert.equal(tool.tool_name, "getSystemHealth"); assert.match(tool.content, /^\[success\]/);
   const metrics = JSON.parse(tool.content.slice("[success]".length));
-  assert.equal(metrics.temperatureCelsius, 65); assert.equal(metrics.memory.usedBytes, 768000);
+  assert.deepEqual(metrics.temperature, { value: 65, unit: "°C" });
+  assert.deepEqual(metrics.memory.used, { value: 0.768, unit: "MB" });
   assert.equal(result.events[1].result, tool.content); assert.deepEqual(result.errors, []);
 });
 
@@ -281,8 +282,9 @@ for (const question of ["How is your system doing?", "What's your CPU temperatur
     const tool = requests[0].messages.find((message: any) => message.role === "tool");
     assert.equal(tool.tool_name, "getSystemHealth"); assert.match(tool.content, /^\[success\]/);
     const metrics = JSON.parse(tool.content.slice("[success]".length));
-    assert.equal(metrics.temperatureCelsius, 65); assert.equal(metrics.memory.usedBytes, 768000);
-    assert.equal(metrics.disk.availableBytes, 1433600);
+    assert.deepEqual(metrics.temperature, { value: 65, unit: "°C" });
+    assert.deepEqual(metrics.memory.used, { value: 0.768, unit: "MB" });
+    assert.deepEqual(metrics.disk.available, { value: 0.001, unit: "GiB" });
     assertDelivered(result, ANSWER);
   });
 }
@@ -299,7 +301,7 @@ for (const [label, healthOutput] of [
   ["exception", new Error("Fixture health failure")], ["error", "[error]Unavailable"],
   ["rejected", "[rejected]Unavailable"], ["unverified", "[unverified]Unknown result"],
   ["invalid JSON", "[success]Not JSON"], ["empty report", "[success]{}"],
-  ["no measurements", '[success]{"cpu":{"utilizationPercent":null},"memory":{"usedBytes":null},"disk":null,"temperatureCelsius":null}'],
+  ["no measurements", '[success]{"cpu":{"utilization":null},"memory":{"used":null},"disk":null,"temperature":null}'],
 ] as [string, string | Error][]) {
   test(`required health fails closed before generation on ${label}`, async t => {
     const result = await run(t, [], { question: "How is your system doing?", healthOutput });
@@ -320,7 +322,7 @@ for (const options of [{ enabled: false }, { omitHealth: true }]) {
 
 test("a missing requested temperature cannot be replaced with other available metrics", async t => {
   const result = await run(t, [], { question: "What's your CPU temperature?",
-    healthOutput: '[success]{"temperatureCelsius":null,"memory":{"usedBytes":768000}}' });
+    healthOutput: '[success]{"temperature":null,"memory":{"used":{"value":0.768,"unit":"MB"}}}' });
   assertDelivered(result, "I couldn't retrieve my system health.");
   assert.equal(result.healthCalls, 1); assert.equal(requests.length, 0);
 });
