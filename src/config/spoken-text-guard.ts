@@ -8,30 +8,29 @@
 export const FALLBACK_REPLY = "Sorry, I didn't catch that. Could you say it again?";
 
 export type ToolCallFromText = {
-  function: { index: number; name: string; arguments: Record<string, any> };
+  function: { index: number; name: string; arguments: unknown };
 };
 
 /** True when an answer starting this way must not be spoken before it is complete. */
 export const startsWithMarkup = (text: string): boolean => /^[{[<`]/.test(text.trimStart());
 
-const parseArguments = (value: unknown): Record<string, any> => {
-  if (value && typeof value === "object") return value as Record<string, any>;
+const parseArguments = (value: unknown): unknown => {
+  if (value === undefined) return {};
   if (typeof value === "string") {
     try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === "object" ? parsed : {};
+      return JSON.parse(value);
     } catch {
-      return {};
+      return value; // Preserve malformed input so the executor rejects it.
     }
   }
-  return {};
+  return value;
 };
 
 export const interpretHeldAnswer = (
   text: string,
   toolNames: Set<string>,
-): { toolCall?: ToolCallFromText; spoken: string } => {
-  const body = text.trim().replace(/^(?:\[(?:success|error|response)\]\s*)+/i, "");
+): { toolCall?: ToolCallFromText; spoken: string; deniedToolAttempts?: number } => {
+  const body = text.trim().replace(/^(?:\[(?:success|error|response|rejected|unverified)\]\s*)+/i, "");
   const tagged = body.match(/<(tool_call|tool)>\s*([\s\S]*?)\s*(?:<\/\1>|$)/i);
   const candidate = (tagged ? tagged[2] : body)
     .replace(/^```(?:json)?\s*/i, "")
@@ -43,10 +42,21 @@ export const interpretHeldAnswer = (
       const parsed = JSON.parse(candidate);
       const call = Array.isArray(parsed) ? parsed[0] : parsed;
       const name = call?.name ?? call?.function?.name;
+      // Fallback supports one call. Never silently execute just the first
+      // member of a multi-call batch; report all its attempts for accounting.
+      if (Array.isArray(parsed) && parsed.length > 1
+        && parsed.some(item => typeof (item?.name ?? item?.function?.name) === "string")) {
+        return { spoken: FALLBACK_REPLY, deniedToolAttempts: parsed.length };
+      }
       if (typeof name === "string" && toolNames.has(name)) {
-        const args = call.arguments ?? call.parameters ?? call.function?.arguments;
+        // Explicit null is invalid input, not a missing no-argument object.
+        const args = Object.prototype.hasOwnProperty.call(call, "arguments") ? call.arguments
+          : Object.prototype.hasOwnProperty.call(call, "parameters") ? call.parameters
+          : call.function?.arguments;
         return { toolCall: { function: { index: 0, name, arguments: parseArguments(args) } }, spoken: "" };
       }
+      // Accounting only: this grants no tool call or execution permission.
+      if (typeof name === "string") return { spoken: FALLBACK_REPLY, deniedToolAttempts: 1 };
     } catch {
       // Unparseable JSON-like text is not spoken either.
     }
@@ -55,7 +65,7 @@ export const interpretHeldAnswer = (
 
   const spoken = body
     .replace(/<\/?(?:response|answer|tool_call|tool_response|tool)>/gi, "")
-    .replace(/\[(?:success|error|response)\]/gi, "")
+    .replace(/\[(?:success|error|response|rejected|unverified)\]/gi, "")
     .trim();
   return { spoken: spoken || FALLBACK_REPLY };
 };

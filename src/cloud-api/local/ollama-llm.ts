@@ -7,7 +7,8 @@ import {
   systemPrompt,
   updateLastMessageTime,
 } from "../../config/llm-config";
-import { llmTools, llmFuncMap } from "../../config/llm-tools";
+import { llmTools, executeLLMTool } from "../../config/llm-tools";
+import type { ToolExecutionResult } from "../../config/tool-execution";
 import dotenv from "dotenv";
 import {
   LLMTool,
@@ -36,6 +37,11 @@ import {
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 import { isDirectAnswerRequest, toolsRelevantTo } from "../../config/tool-router";
+import { readOllamaNDJSON } from "./ollama-ndjson";
+import {
+  createOllamaRequestBudget, OllamaRequestBudget, OllamaResourceLimitError,
+  reserveToolAttempts, checkModelToolCount, countResponseTextBytes,
+} from "./ollama-resource-limits";
 
 dotenv.config();
 
@@ -187,6 +193,7 @@ const resetChatHistory = (): void => {
 type ToolLoopState = {
   round: number;
   signatures: Set<string>;
+  budget: OllamaRequestBudget;
   // Set after a routed web search: the next request offers only the read-only
   // web tools, so the model cannot follow up with an unrelated tool that has
   // side effects (e.g. setVolume). Removing tools entirely makes qwen3 echo the
@@ -194,6 +201,24 @@ type ToolLoopState = {
   webToolsOnly?: boolean;
   // Aborted when a newer question supersedes this answer (see chatWithLLMStream).
   signal?: AbortSignal;
+};
+
+const reportResourceFailure = (
+  error: OllamaResourceLimitError,
+  partialCallback: (text: string) => void,
+  signal?: AbortSignal,
+  pendingAssistant?: OllamaMessage,
+): void => {
+  if (signal?.aborted) return;
+  // A final no-tools request may follow an unexecuted duplicate/max-round
+  // proposal. On resource failure remove only that proposal, never old results.
+  if (pendingAssistant) {
+    const index = messages.indexOf(pendingAssistant);
+    if (index >= 0) messages.splice(index, 1);
+  }
+  const reply = `Resource limit exceeded: ${error.message}. Tool execution stopped for this request. Completion was not verified.`;
+  messages.push({ role: "assistant", content: reply });
+  partialCallback(reply);
 };
 
 const stableStringify = (value: unknown): string => {
@@ -211,19 +236,22 @@ const stableStringify = (value: unknown): string => {
 
 // Text arguments are compared without case and punctuation, so "What is 2 plus 2"
 // and "what is 2 plus 2?" count as the same call.
-const normalizeArguments = (value: unknown): unknown => {
+const normalizeArguments = (value: unknown, preserveUrls = false): unknown => {
   if (typeof value === "string") return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  if (Array.isArray(value)) return value.map(normalizeArguments);
+  if (Array.isArray(value)) return value.map((item) => normalizeArguments(item));
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, normalizeArguments(item)]),
+      // URL paths and queries are case/punctuation sensitive. Keep the exact
+      // supplied URL; distinct pages must not collapse into the same signature.
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key,
+        preserveUrls && (key === "url" || key === "current_url") ? item : normalizeArguments(item)]),
     );
   }
   return value;
 };
 
 const toolCallSignature = (call: OllamaFunctionCall): string =>
-  `${call.function?.name || ""}:${stableStringify(normalizeArguments(call.function?.arguments || {}))}`;
+  `${call.function?.name || ""}:${stableStringify(normalizeArguments(call.function?.arguments || {}, call.function?.name === "fetch_webpage"))}`;
 
 const previousToolResultFor = (toolName: string): string => {
   const previous = [...messages]
@@ -254,19 +282,20 @@ const prefetchWebSearchIfNeeded = async (
   toolLoopState: ToolLoopState,
   invokeFunctionCallback?: (functionName: string, result?: string) => void,
 ): Promise<void> => {
-  const search = llmFuncMap.web_search;
-  if (!ollamaEnableTools || !search) return;
+  const allowedTools = toolsForRequest(toolLoopState) || [];
+  if (!ollamaEnableTools || !allowedTools.some((tool) => tool.function.name === "web_search")) return;
   const lastUser = [...inputMessages].reverse().find((msg) => msg.role === "user");
   const question = typeof lastUser?.content === "string" ? lastUser.content.trim() : "";
   if (!question || !needsCurrentInformation(question)) return;
 
   const args = { query: question, search_type: searchTypeFor(question) };
+  reserveToolAttempts(toolLoopState.budget, 1, false);
   console.log(`[WebSearch] Time-sensitive question, searching first: ${JSON.stringify(args)}`);
   invokeFunctionCallback?.("web_search");
-  const result = await search(args).catch((err: Error) => {
-    console.error("Error executing function web_search:", err);
-    return `${ToolReturnTag.Error}Error executing function web_search: ${err.message}`;
+  const execution = await executeLLMTool("web_search", args, {
+    enabled: ollamaEnableTools, allowedTools, signal: toolLoopState.signal,
   });
+  const result = execution.output;
   invokeFunctionCallback?.("web_search", result);
   if (toolLoopState.signal?.aborted) return;
 
@@ -301,6 +330,8 @@ const answerFromAvailableToolResults = async ({
   endCallback,
   partialThinkingCallback,
   signal,
+  budget,
+  pendingAssistant,
 }: {
   instruction: string;
   partialCallback: (partialAnswer: string) => void;
@@ -308,13 +339,22 @@ const answerFromAvailableToolResults = async ({
   endCallback: () => void;
   partialThinkingCallback?: (partialThinking: string) => void;
   signal?: AbortSignal;
+  budget: OllamaRequestBudget;
+  pendingAssistant: OllamaMessage;
 }): Promise<void> => {
   let finalAnswer = "";
   let finalThinking = "";
+  let responseTextBytes = 0;
   try {
     const requestMessages = [
       ...messages.map((msg, index) =>
-        withRequestSystemNote({ role: msg.role, content: msg.content }, index),
+        withRequestSystemNote({
+          role: msg.role,
+          content: msg.content,
+          ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.flat() } : {}),
+          ...(msg.tool_name !== undefined ? { tool_name: msg.tool_name } : {}),
+          ...(msg.tool_call_id !== undefined ? { tool_call_id: msg.tool_call_id } : {}),
+        }, index),
       ),
       {
         role: "user",
@@ -347,41 +387,27 @@ const answerFromAvailableToolResults = async ({
       },
     );
 
-    await new Promise<void>((resolve) => {
-      response.data.on("data", (chunk: Buffer) => {
-        const dataLines = chunk
-          .toString()
-          .split("\n")
-          .filter((line) => line.trim() !== "");
-
-        for (const line of dataLines) {
-          try {
-            const parsedData = JSON.parse(line);
-            if (!firstTokenAt && (parsedData.message?.content || parsedData.message?.thinking)) {
-              firstTokenAt = Date.now();
-            }
-            if (parsedData.done) stats = parsedData;
-            if (parsedData.message?.content) {
-              const content = parsedData.message.content;
-              partialCallback(content);
-              finalAnswer += content;
-            }
-            if (parsedData.message?.thinking) {
-              const thinking = parsedData.message.thinking;
-              partialThinkingCallback?.(thinking);
-              finalThinking += thinking;
-            }
-          } catch (error) {
-            console.error("Error parsing final answer data:", error, line);
-          }
+    await readOllamaNDJSON(response.data, (parsedData) => {
+      responseTextBytes = countResponseTextBytes(budget, responseTextBytes, parsedData);
+      try {
+        if (!firstTokenAt && (parsedData.message?.content || parsedData.message?.thinking)) {
+          firstTokenAt = Date.now();
         }
-      });
-      response.data.on("end", resolve);
-      response.data.on("error", (error: Error) => {
-        console.error("Error streaming final answer:", error.message);
-        resolve();
-      });
-    });
+        if (parsedData.done) stats = parsedData;
+        if (parsedData.message?.content) {
+          const content = parsedData.message.content;
+          partialCallback(content);
+          finalAnswer += content;
+        }
+        if (parsedData.message?.thinking) {
+          const thinking = parsedData.message.thinking;
+          partialThinkingCallback?.(thinking);
+          finalThinking += thinking;
+        }
+      } catch (error) {
+        console.error("Error processing final answer data:", error);
+      }
+    }, budget);
     logOllamaTiming("final-answer", stats, startedAt, firstTokenAt, shape);
 
     if (finalThinking.trim()) {
@@ -394,6 +420,7 @@ const answerFromAvailableToolResults = async ({
     });
   } catch (error: any) {
     console.error("Error generating final answer from tool results:", error.message);
+    if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, signal, pendingAssistant);
   } finally {
     endResolve();
     endCallback();
@@ -406,7 +433,7 @@ const chatWithLLMStreamInternal = async (
   endCallback: () => void,
   partialThinkingCallback?: (partialThinking: string) => void,
   invokeFunctionCallback?: (functionName: string, result?: string) => void,
-  toolLoopState: ToolLoopState = { round: 0, signatures: new Set<string>() },
+  toolLoopState: ToolLoopState = { round: 0, signatures: new Set<string>(), budget: createOllamaRequestBudget() },
 ): Promise<void> => {
   if (toolLoopState.signal?.aborted) {
     endCallback();
@@ -450,6 +477,8 @@ const chatWithLLMStreamInternal = async (
   });
   let partialAnswer = "";
   let partialThinking = "";
+  let responseTextBytes = 0;
+  let modelToolCalls = 0;
   // An answer that starts with JSON or markup is held back from speech until
   // it is complete (see spoken-text-guard); everything else streams as before.
   let contentMode: "undecided" | "stream" | "hold" = "undecided";
@@ -475,6 +504,9 @@ const chatWithLLMStreamInternal = async (
     const requestMessages = messages.map((msg, index) => ({
       role: msg.role,
       content: withRequestSystemNote(msg, index).content,
+      ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.flat() } : {}),
+      ...(msg.tool_name !== undefined ? { tool_name: msg.tool_name } : {}),
+      ...(msg.tool_call_id !== undefined ? { tool_call_id: msg.tool_call_id } : {}),
       ...(capturedImageBase64 &&
       msg.role === "user" &&
       lastUserMessageIndex !== undefined &&
@@ -508,65 +540,50 @@ const chatWithLLMStreamInternal = async (
         signal: toolLoopState.signal,
       },
     );
-    let streamClosed = false;
-    // A cancelled request ends the stream with an error instead of "end".
-    response.data.on("error", (error: Error) => {
-      if (streamClosed) return;
-      streamClosed = true;
-      console.warn(`[Ollama] Stream stopped: ${error.message}`);
-      endResolve();
-      endCallback();
-    });
-
-    response.data.on("data", (chunk: Buffer) => {
-      const data = chunk.toString();
-      const dataLines = data.split("\n");
-      const filteredLines = dataLines.filter((line) => line.trim() !== "");
-
-      for (const line of filteredLines) {
-        try {
-          const parsedData = JSON.parse(line);
-          if (
-            !firstTokenAt &&
-            (parsedData.message?.content || parsedData.message?.thinking || parsedData.message?.tool_calls)
-          ) {
-            firstTokenAt = Date.now();
-          }
-          if (parsedData.done) stats = parsedData;
-
-          // Handle content from Ollama
-          if (parsedData.message?.content) {
-            const content = parsedData.message.content;
-            partialAnswer += content;
-            if (contentMode === "stream") {
-              partialCallback(content);
-            } else if (contentMode === "undecided" && partialAnswer.trim()) {
-              contentMode = startsWithMarkup(partialAnswer) ? "hold" : "stream";
-              if (contentMode === "stream") partialCallback(partialAnswer);
-            }
-          }
-
-          // Handle thinking from Ollama
-          if (parsedData.message?.thinking) {
-            const thinking = parsedData.message.thinking;
-            partialThinkingCallback?.(thinking);
-            partialThinking += thinking;
-          }
-
-          // Handle tool calls from Ollama
-          if (parsedData.message?.tool_calls) {
-            // tool_calls format: [[{"function":{"index":0,"name":"setVolume","arguments":{"percent":50}}}]]
-            functionCallsPackages.push(parsedData.message.tool_calls);
-          }
-        } catch (error) {
-          console.error("Error parsing data:", error, line);
+    await readOllamaNDJSON(response.data, (parsedData) => {
+      responseTextBytes = countResponseTextBytes(toolLoopState.budget, responseTextBytes, parsedData);
+      try {
+        if (
+          !firstTokenAt &&
+          (parsedData.message?.content || parsedData.message?.thinking || parsedData.message?.tool_calls)
+        ) {
+          firstTokenAt = Date.now();
         }
-      }
-    });
+        if (parsedData.done) stats = parsedData;
 
-    response.data.on("end", async () => {
-      if (streamClosed) return;
-      streamClosed = true;
+        // Handle content from Ollama
+        if (parsedData.message?.content) {
+          const content = parsedData.message.content;
+          partialAnswer += content;
+          if (contentMode === "stream") {
+            partialCallback(content);
+          } else if (contentMode === "undecided" && partialAnswer.trim()) {
+            contentMode = startsWithMarkup(partialAnswer) ? "hold" : "stream";
+            if (contentMode === "stream") partialCallback(partialAnswer);
+          }
+        }
+
+        // Handle thinking from Ollama
+        if (parsedData.message?.thinking) {
+          const thinking = parsedData.message.thinking;
+          partialThinkingCallback?.(thinking);
+          partialThinking += thinking;
+        }
+
+        // Handle tool calls from Ollama
+        if (parsedData.message?.tool_calls) {
+          // tool_calls format: [[{"function":{"index":0,"name":"setVolume","arguments":{"percent":50}}}]]
+          const incoming = Array.isArray(parsedData.message.tool_calls)
+            ? parsedData.message.tool_calls : [parsedData.message.tool_calls];
+          modelToolCalls += incoming.length;
+          checkModelToolCount(toolLoopState.budget, modelToolCalls);
+          functionCallsPackages.push(incoming);
+        }
+      } catch (error) {
+        if (error instanceof OllamaResourceLimitError) throw error;
+        console.error("Error processing data:", error);
+      }
+    }, toolLoopState.budget).then(async () => {
       console.log("Stream ended");
       logOllamaTiming(`round=${toolLoopState.round}`, stats, startedAt, firstTokenAt, shape);
       if (toolLoopState.signal?.aborted) {
@@ -576,8 +593,11 @@ const chatWithLLMStreamInternal = async (
       }
       if (contentMode === "hold") {
         // A tool call written as text runs only if that tool was offered.
-        const offered = requestTools ? requestTools.map((tool) => tool.function.name) : Object.keys(llmFuncMap);
+        const offered = (requestTools || []).map((tool) => tool.function.name);
         const held = interpretHeldAnswer(partialAnswer, new Set(offered));
+        if (held.deniedToolAttempts && functionCallsPackages.length === 0) {
+          reserveToolAttempts(toolLoopState.budget, held.deniedToolAttempts);
+        }
         if (held.toolCall && functionCallsPackages.length === 0) {
           console.warn(`[LLM] Tool call arrived as text; running ${held.toolCall.function.name} instead of speaking it.`);
           functionCallsPackages.push([held.toolCall]);
@@ -590,18 +610,24 @@ const chatWithLLMStreamInternal = async (
       const functionCalls = functionCallsPackages.flat().map((call, index) => ({
         id: `call_${Date.now()}_${Math.random()}_${index}`,
         type: "function",
-        function: call.function,
+        function: {
+          index,
+          name: typeof call?.function?.name === "string" ? call.function.name : "",
+          arguments: call?.function?.arguments,
+        },
       }));
       console.log(
         "functionCallsPackages: ",
         JSON.stringify(functionCallsPackages),
       );
       console.log("functionCalls: ", JSON.stringify(functionCalls));
-      messages.push({
+      if (functionCalls.length) reserveToolAttempts(toolLoopState.budget, functionCalls.length);
+      const assistantMessage: OllamaMessage = {
         role: "assistant",
         content: partialAnswer,
         tool_calls: functionCallsPackages as any,
-      });
+      };
+      messages.push(assistantMessage);
 
       if (!isEmpty(functionCalls)) {
         if (toolLoopState.round >= ollamaMaxToolRounds) {
@@ -614,6 +640,8 @@ const chatWithLLMStreamInternal = async (
             endCallback,
             partialThinkingCallback,
             signal: toolLoopState.signal,
+            budget: toolLoopState.budget,
+            pendingAssistant: assistantMessage,
           });
           return;
         }
@@ -640,6 +668,8 @@ const chatWithLLMStreamInternal = async (
             endCallback,
             partialThinkingCallback,
             signal: toolLoopState.signal,
+            budget: toolLoopState.budget,
+            pendingAssistant: assistantMessage,
           });
           return;
         }
@@ -650,36 +680,26 @@ const chatWithLLMStreamInternal = async (
 
         const latestUser = [...messages].reverse().find((msg) => msg.role === "user");
         const directAnswer = isDirectAnswerRequest(typeof latestUser?.content === "string" ? latestUser.content : "");
+        const executions: ToolExecutionResult[] = [];
         const results = await Promise.all(
           functionCalls.map(async (call: OllamaFunctionCall) => {
             const {
               function: { arguments: args, name },
             } = call;
-            const func = llmFuncMap[name! as string];
             if (directAnswer && WEB_TOOL_NAMES.has(name as string)) {
               // A direct-answer request ("in one sentence", arithmetic) needs no search;
               // a short result costs far less to read than real search results.
               console.warn(`[ToolLoop] ${name} not run for a direct-answer request.`);
               return [name, `${ToolReturnTag.Error}Not needed. Answer this question directly from your own knowledge.`];
             }
-            if (func) {
-              invokeFunctionCallback?.(name! as string);
-              return [
-                name,
-                await func(args)
-                  .then((res) => {
-                    invokeFunctionCallback?.(name! as string, res);
-                    return res;
-                  })
-                  .catch((err) => {
-                    console.error(`Error executing function ${name}:`, err);
-                    return `Error executing function ${name}: ${err.message}`;
-                  }),
-              ];
-            } else {
-              console.error(`Function ${name} not found`);
-              return [name, `Function ${name} not found`];
-            }
+            invokeFunctionCallback?.(name);
+            const execution = await executeLLMTool(name, args, {
+              enabled: ollamaEnableTools, allowedTools: requestTools || [],
+              signal: toolLoopState.signal,
+            });
+            executions.push(execution);
+            invokeFunctionCallback?.(name, execution.output);
+            return [name, execution.output];
           }),
         );
 
@@ -696,6 +716,22 @@ const chatWithLLMStreamInternal = async (
             tool_name: name as string,
           }),
         );
+
+        // Policy rejections and unknown action results are spoken by the host,
+        // never rewritten into a success claim by another model round. Web
+        // failures keep the existing factual-search response path.
+        if (executions.some((result) => result.status === "rejected")
+          || executions.some((result) => result.status !== "success")
+            && functionCalls.some((call) => !WEB_TOOL_NAMES.has(call.function.name))) {
+          const reply = executions.some((result) => result.status === "rejected")
+            ? "I couldn't run the requested tool. Completion was not verified."
+            : "The tool did not confirm completion. The result is unverified.";
+          messages.push(...newMessages, { role: "assistant", content: reply });
+          partialCallback(reply);
+          endResolve();
+          endCallback();
+          return;
+        }
 
         // Directly extract and return the tool result if available
         const describeMessage = newMessages.find((msg) =>
@@ -734,6 +770,8 @@ const chatWithLLMStreamInternal = async (
           {
             round: toolLoopState.round + 1,
             signatures: toolLoopState.signatures,
+            budget: toolLoopState.budget,
+            webToolsOnly: toolLoopState.webToolsOnly,
             signal: toolLoopState.signal,
           },
         );
@@ -745,6 +783,7 @@ const chatWithLLMStreamInternal = async (
     });
   } catch (error: any) {
     console.error("Error:", error.message);
+    if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, toolLoopState.signal);
     endResolve();
     endCallback();
   }
@@ -791,7 +830,7 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       endCallback,
       partialThinkingCallback,
       invokeFunctionCallback,
-      { round: 0, signatures: new Set<string>(), signal: answer.controller.signal },
+      { round: 0, signatures: new Set<string>(), signal: answer.controller.signal, budget: createOllamaRequestBudget() },
     );
   } finally {
     if (activeAnswer === answer) activeAnswer = null;

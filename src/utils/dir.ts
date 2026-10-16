@@ -4,9 +4,6 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const cleanDataFolderOnStart =
-  process.env.CLEAN_DATA_FOLDER_ON_START === "true";
-
 function ensureDirExists(dirPath: string): void {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -14,13 +11,10 @@ function ensureDirExists(dirPath: string): void {
 }
 
 export const dataDir = path.join(__dirname, "../..", "data");
-function cleanupDataDir(): void {
-  fs.rmSync(dataDir, { recursive: true, force: true });
-  console.log(`cleaned up directory: ${dataDir}`);
-}
-
-if (cleanDataFolderOnStart) {
-  cleanupDataDir();
+if (process.env.CLEAN_DATA_FOLDER_ON_START === "true") {
+  console.warn(
+    "[Startup] CLEAN_DATA_FOLDER_ON_START is ignored; automatic data deletion is disabled.",
+  );
 }
 
 ensureDirExists(dataDir);

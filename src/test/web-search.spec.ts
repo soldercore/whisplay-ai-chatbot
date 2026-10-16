@@ -13,6 +13,7 @@ type ChatRequest = { messages: { role: string; content: string }[]; tools?: { fu
 type Responder = (request: ChatRequest) => object[];
 
 const chatRequests: ChatRequest[] = [];
+const pageRequests: string[] = [];
 let responders: Responder[] = [];
 
 const chunk = (message: object) => ({ model: "test", message: { role: "assistant", content: "", ...message }, done: false });
@@ -31,6 +32,12 @@ const groundedModel: Responder = (request) => {
 };
 
 const server = http.createServer((req, res) => {
+  if (req.method === "GET") {
+    pageRequests.push(req.url!);
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<html><title>Documentation</title><body>Page ${req.url}</body></html>`);
+    return;
+  }
   let body = "";
   req.on("data", (data) => (body += data));
   req.on("end", () => {
@@ -65,6 +72,9 @@ const GTA_RESULTS =
   "Answer the user's question using only these search results.";
 
 before(async () => {
+  assert.match(require("../utils/dir").dataDir, /\.test-artifacts/);
+  // These tests fetch fixture pages only through the loopback server.
+  for (const key of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) delete process.env[key];
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   Object.assign(process.env, {
     OLLAMA_ENDPOINT: `http://127.0.0.1:${(server.address() as any).port}`,
@@ -87,12 +97,13 @@ before(async () => {
   realWebSearch = llmFuncMap.web_search;
   llmFuncMap.setVolume = async (args: any) => {
     volumeCalls.push(args);
-    return `Volume set to ${args.percent}%`;
+    return `[success]Volume set to ${args.percent}%`;
   };
 });
 
 beforeEach(() => {
   chatRequests.length = 0;
+  pageRequests.length = 0;
   searches.length = 0;
   volumeCalls.length = 0;
   responders = [];
@@ -112,15 +123,16 @@ after(() => {
 
 const ask = async (question: string) => {
   let answer = "";
+  let ends = 0;
   const toolEvents: string[] = [];
   await ollama.chatWithLLMStream(
     [{ role: "user", content: question }],
     (part: string) => (answer += part),
-    () => {},
+    () => ends++,
     () => {},
     (name: string, result?: string) => toolEvents.push(result === undefined ? name : `${name}:done`),
   );
-  return { answer: answer.trim(), toolEvents };
+  return { answer: answer.trim(), toolEvents, ends };
 };
 
 const toolNames = (request: ChatRequest) => (request.tools || []).map((tool) => tool.function.name).sort();
@@ -261,6 +273,59 @@ test("a repeated identical search is not executed again", async () => {
   assert.equal(chatRequests[1].tools, undefined, "the final answer request offers no tools");
 });
 
+for (const mode of ["native", "JSON fallback"] as const) {
+  const fetchCall = (args: object) => mode === "native"
+    ? callTool("fetch_webpage", args)
+    : say(JSON.stringify({ name: "fetch_webpage", arguments: args }));
+
+  test(`distinct webpage URLs remain distinct across rounds (${mode})`, async () => {
+    for (const field of ["url", "current_url"]) {
+      for (const paths of [["/guide-a", "/guide/a"], ["/Guide", "/guide"], ["/doc?q=a-b", "/doc?q=a/b"]]) {
+        ollama.resetChatHistory();
+        chatRequests.length = 0;
+        pageRequests.length = 0;
+        const base = `http://127.0.0.1:${(server.address() as any).port}`;
+        responders = [() => fetchCall({ [field]: base + paths[0] }),
+          () => fetchCall({ [field]: base + paths[1] }), () => say("Both pages checked.")];
+        const result = await ask("Compare these documentation pages.");
+        assert.deepEqual(pageRequests, paths, `${field}: ${paths.join(" vs ")}`);
+        assert.equal(result.answer, "Both pages checked.");
+        assert.equal(result.ends, 1);
+        assert.deepEqual(result.toolEvents, ["fetch_webpage", "fetch_webpage:done", "fetch_webpage", "fetch_webpage:done"]);
+        assert.equal(chatRequests.length, 3);
+        assert.ok(toolNames(chatRequests[2]).includes("fetch_webpage"), "no false duplicate forced a no-tools answer");
+        assert.deepEqual(chatRequests[2].messages.filter(m => m.role === "tool").map(m => m.content.split("\n")[0]),
+          paths.map(p => `[success]URL: ${base}${p}`));
+      }
+    }
+  });
+
+  test(`an identical webpage call is still suppressed across rounds (${mode})`, async () => {
+    const url = `http://127.0.0.1:${(server.address() as any).port}/same`;
+    responders = [() => fetchCall({ url, max_chars: 500 }), () => fetchCall({ max_chars: 500, url }),
+      () => say("Already checked.")];
+    const result = await ask("Read this documentation page.");
+    assert.deepEqual(pageRequests, ["/same"]);
+    assert.deepEqual(result.toolEvents, ["fetch_webpage", "fetch_webpage:done"]);
+    assert.equal(result.answer, "Already checked.");
+    assert.equal(result.ends, 1);
+    assert.equal(chatRequests.length, 3);
+    assert.equal(chatRequests[2].tools, undefined, "actual duplicate takes the existing no-tools path");
+  });
+}
+
+test("identical webpage calls in independent requests do not share suppression state", async () => {
+  const url = `http://127.0.0.1:${(server.address() as any).port}/again`;
+  responders = [() => callTool("fetch_webpage", { url }), () => say("First checked."),
+    () => say(JSON.stringify({ name: "fetch_webpage", arguments: { url } })), () => say("Second checked.")];
+  assert.equal((await ask("Read this documentation page.")).answer, "First checked.");
+  // Keep the same provider and its conversation history for the next request.
+  assert.equal((await ask("Read that documentation page again.")).answer, "Second checked.");
+  assert.deepEqual(pageRequests, ["/again", "/again"]);
+  assert.equal(chatRequests.length, 4);
+  assert.ok(toolNames(chatRequests[3]).includes("fetch_webpage"));
+});
+
 test("other tools keep working (setVolume)", async () => {
   responders = [() => callTool("setVolume", { percent: 50 }), () => say("Done, the volume is 50 percent.")];
   const { answer } = await ask("Set the volume to 50 percent.");
@@ -268,6 +333,6 @@ test("other tools keep working (setVolume)", async () => {
   assert.deepEqual(volumeCalls, [{ percent: 50 }]);
   assert.deepEqual(searches, []);
   assert.equal(toolNames(chatRequests[0]).length, 5);
-  assert.equal(chatRequests[1].messages.find((m) => m.role === "tool")?.content, "Volume set to 50%");
+  assert.equal(chatRequests[1].messages.find((m) => m.role === "tool")?.content, "[success]Volume set to 50%");
   assert.equal(answer, "Done, the volume is 50 percent.");
 });

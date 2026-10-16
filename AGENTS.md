@@ -199,7 +199,7 @@ whisplay index-knowledge
 
 ### Key Conventions
 1. **Environment variables**: All configuration via `.env` file, accessed through `process.env`
-2. **Audio files**: Stored in `data/recordings/`, auto-cleaned on startup if configured
+2. **Audio files**: Stored in `data/recordings/`, preserved on startup. The legacy `CLEAN_DATA_FOLDER_ON_START=true` only logs a warning.
 3. **Plugin development**: Always read config from `ctx.env`, never `process.env` directly
 4. **Error handling**: Use try-catch with meaningful error messages; hardware errors should be non-fatal where possible
 5. **Logging**: Use `console.log/time/timeEnd` for debugging; Python side uses print with prefixes like `[Server]`, `[Camera]`
@@ -318,6 +318,8 @@ State transitions are triggered by button events, wake word detection, or comple
 - Currently minimal test coverage: `npm test` runs `src/test/tts-pipeline.spec.ts` (Piper HTTP TTS + playback, using a fake Piper server, real curl and `src/test/fixtures/fake-sox.js`) , `src/test/web-search.spec.ts` (Ollama tool calls and automatic web search, using a fake Ollama server) `src/test/memory.spec.ts` (local memory commands, persistence, file safety, spoken-JSON guard) and `src/test/persona.spec.ts` (persona selection, system prompt composition, persona memory replies) and `src/test/speech-sync.spec.ts` (speech measured from WAV samples, word reveal plan, plan following)
 
 ### Local Memory
+- Tool execution (phase 1): `src/config/tool-execution.ts` is the shared validation/dispatch boundary. `llm-tools.ts` wraps registered handlers for all providers; Ollama additionally passes the exact per-round offered list, enable flag and cancellation signal for native calls, text JSON and automatic search. Missing permission, unknown/duplicate names, invalid JSON arguments or unsupported schema constraints reject before handler invocation. `runCommand`, `checkCommand`, `stopCommand` are reserved/blocked; the shell runner has been removed. Harness flags can only enable read-only skill tools. See `docs/tool-execution-phase1.md` for schema compatibility, result semantics and remaining risks.
+- `npm test` preloads `src/test/fixtures/isolate-tests.cjs`, redirects data/temp paths under `.test-artifacts/`, and disables external plugin loading. Security suites are `tool-execution.spec.ts` and `ollama-tool-security.spec.ts`. `startup-data.spec.ts` separately executes the actual directory initializer in an isolated VM with disposable filesystem roots and stubbed dotenv, covering preservation, missing directories, invalid paths, interruption and directory links. Do not run application-importing tests against production data.
 - `MEMORY_ENABLED=true` stores facts and conversation summaries in `data/memory/memory.json` (override with `MEMORY_DIR`).
 - `src/config/memory-commands.ts` recognises explicit commands ("remember that ...", "what is my ...", "actually, my ... is ...", "forget my ..."); `handleMemoryCommand` in `local-memory.ts` answers them from the store, and `src/cloud-api/llm.ts` speaks that reply without calling the LLM. Recalls with no saved match and updates of unknown facts still go to the model.
 - Secrets (passwords, PINs, card numbers ...) are never stored; exchanges with secrets or long numbers are not auto-saved. Forgetting also scrubs matching saved conversations.
@@ -483,12 +485,14 @@ WEB_SEARCH_INCLUDE_IMAGES=false
 
 | Directory | Purpose | Cleanup |
 |-----------|---------|---------|
-| `data/recordings/` | Audio recordings | Auto-clean on start if configured |
+| `data/memory/` | Local memory store and recovery files (or `MEMORY_DIR`) | Preserved on startup |
+| `data/chat_history/` | Saved LLM conversation history | Preserved on startup |
+| `data/recordings/` | Audio recordings | Preserved on startup |
 | `data/images/` | Generated images | Manual cleanup |
-| `data/knowledge/` | RAG document storage | Manual cleanup |
+| `knowledge/` | RAG source document storage | Manual cleanup |
 | `data/db/` | Qdrant vector database | Manual cleanup |
 
-Set `CLEAN_DATA_FOLDER_ON_START=true` in `.env` to clear recordings on startup.
+Phase 1.5 removes recursive startup deletion from `src/utils/dir.ts`. `CLEAN_DATA_FOLDER_ON_START=true` is deprecated and only logs a warning; neither true nor false deletes files. Existing directory paths and creation of missing directories are unchanged. Memory, conversations, recordings, plugin data and unknown files are preserved by this initializer. Temporary-file cleanup within individual requests is unchanged. See `docs/startup-data-cleanup-phase15-review.md`; no stored data is reset or migrated.
 
 ---
 

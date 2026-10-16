@@ -8,6 +8,8 @@ import { addLocalMemoryTools } from "./local-memory";
 import { addMemPalaceTools } from "./mempalace";
 import { addHarnessCommandTools } from "./harness-command";
 import { pluginRegistry } from "../plugin";
+import { BLOCKED_TOOL_NAMES, executeToolCall } from "./tool-execution";
+import type { ToolExecutionResult } from "./tool-execution";
 
 // ── Collect tools from all llm-tools plugins ────────────────
 const pluginTools: LLMTool[] = [];
@@ -52,11 +54,28 @@ addMemPalaceTools(pluginTools);
 addHarnessCommandTools(pluginTools);
 
 // ── Exported aggregated tool lists ──────────────────────────
-export const llmTools: LLMTool[] = [...pluginTools];
+// Activation/registration is application-owned. External plugins remain trusted
+// code, but cannot restore reserved shell tools through the model registry.
+const registeredTools = pluginTools.filter((tool) => !BLOCKED_TOOL_NAMES.has(tool.function.name));
+const rawHandlers: Record<string, (params: any) => Promise<string>> = Object.create(null);
+const toolsEnabled = (): boolean => (process.env.LLM_SERVER || "").toLowerCase() !== "ollama"
+  || process.env.OLLAMA_ENABLE_TOOLS === "true";
+
+export const llmTools: LLMTool[] = registeredTools.map((tool) => {
+  rawHandlers[tool.function.name] = tool.func;
+  return {
+    ...tool,
+    function: cloneDeep(tool.function),
+    func: async (args) => (await executeToolCall(tool.function.name, args, {
+      enabled: toolsEnabled(), allowedTools: registeredTools, registeredTools,
+      handlers: rawHandlers,
+    })).output,
+  };
+});
 
 export const llmToolsForGemini: LLMTool[] =
   (process.env.LLM_SERVER || "").toLowerCase() === "gemini"
-    ? pluginTools.map((tool) => {
+    ? llmTools.map((tool) => {
         const newTool = cloneDeep(tool);
         if (newTool.function && newTool.function.parameters) {
           newTool.function.parameters = transformToGeminiType(
@@ -72,5 +91,15 @@ export const llmFuncMap = llmTools.reduce(
     acc[tool.function.name] = tool.func;
     return acc;
   },
-  {} as Record<string, (params: any) => Promise<string>>,
+  Object.create(null) as Record<string, (params: any) => Promise<string>>,
 );
+
+// Ollama must additionally authorize against the exact list sent for this
+// model round. The same executor covers native calls, text fallback and prefetch.
+export const executeLLMTool = (
+  name: unknown, args: unknown,
+  context: { enabled: boolean; allowedTools: readonly LLMTool[]; signal?: AbortSignal },
+): Promise<ToolExecutionResult> => executeToolCall(name, args, {
+  ...context, enabled: context.enabled && toolsEnabled(),
+  registeredTools: llmTools, handlers: llmFuncMap,
+});

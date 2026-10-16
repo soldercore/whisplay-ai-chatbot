@@ -10,6 +10,7 @@ export interface OllamaMessage {
   content: string
   tool_calls?: OllamaFunctionCall[][];
   tool_name?: string;
+  tool_call_id?: string;
 }
 
 export enum ASRServer {
@@ -96,15 +97,32 @@ export interface FunctionCall {
 
 // {"function":{"index":0,"name":"setVolume","arguments":{"percent":50}}}
 export interface OllamaFunctionCall {
+  id?: string;
   function: {
     index: number;
     name: string;
-    arguments: Record<string, any>;
+    arguments: unknown;
   };
 }
 
 
 export type LLMFunc = (params: any) => Promise<string>
+
+export type ToolParameterSchema = {
+  type?: string;
+  description?: string;
+  properties?: Record<string, ToolParameterSchema>;
+  required?: string[];
+  items?: ToolParameterSchema;
+  enum?: (string | number | boolean | null)[];
+  additionalProperties?: boolean;
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  minItems?: number;
+  maxItems?: number;
+}
 
 export interface LLMTool {
   id?: string;
@@ -112,32 +130,7 @@ export interface LLMTool {
   function: {
     name: string
     description: string
-    parameters: {
-      type?: string
-      properties?: {
-        [key: string]: {
-          type: string
-          description: string
-          enum?: string[]
-          items?: {
-            type: string
-            description?: string
-            properties?: {
-              [key: string]: {
-                type: string
-                description: string
-              }
-            }
-            required?: string[]
-          }
-        }
-      }
-      items?: {
-        type: string
-        description: string
-      }
-      required?: string[]
-    }
+    parameters: ToolParameterSchema
   }
   func: LLMFunc
 }
