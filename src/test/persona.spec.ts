@@ -7,6 +7,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
+import { Readable } from "node:stream";
 import { memoryReply, personaName, personaPrompt } from "../config/persona";
 
 const ORIGINAL_PROMPT =
@@ -152,4 +153,135 @@ test("with GLaDOS, memory commands store and recall exactly the same facts", () 
   } finally {
     process.env.ASSISTANT_PERSONA = "default";
   }
+});
+
+// The few-shot candidate remains evaluation-only until real Qwen A/B evidence
+// justifies replacing the production persona. These tests verify fixtures and
+// isolation, never subjective characterization.
+const comparison = require("../../scripts/persona-comparison.cjs");
+
+test("evaluation candidate is compact, original and never activated by persona selection", () => {
+  assert.equal(comparison.production, personaPrompt({ ASSISTANT_PERSONA: "glados" }));
+  assert.notEqual(comparison.candidate, comparison.production);
+  assert.equal(comparison.fixture.examples.length, 4);
+  assert.ok(comparison.candidate.length <= 1800);
+  const questions = comparison.fixture.scenarios.flatMap((scenario: any) => scenario.turns);
+  for (const example of comparison.fixture.examples) {
+    assert.equal(questions.includes(example.user), false, "examples are not answers keyed to evaluation questions");
+    assert.doesNotMatch(example.assistant, /\d|°/, "no example sensor values to copy");
+  }
+  assert.match(comparison.candidate, /Accuracy and safety take precedence/);
+  assert.match(comparison.candidate, /do not quote or reuse/);
+  assert.match(comparison.candidate, /Give complete detail when requested/);
+});
+
+test("A/B messages share suffix/context and preserve supplied temperature without executing a tool", () => {
+  const scenario = comparison.fixture.scenarios.find((s: any) => s.id === "temperature");
+  const history = [{ role: "user", content: scenario.turns[0] }];
+  const value = { value: 47.125, unit: "°C" };
+  const a = comparison.buildMessages("A", scenario, history, " speech rules", " date note", value);
+  const b = comparison.buildMessages("B", scenario, history, " speech rules", " date note", value);
+  assert.deepEqual(a.slice(1), b.slice(1));
+  assert.ok(a[0].content.endsWith(" speech rules date note")); assert.ok(b[0].content.endsWith(" speech rules date note"));
+  assert.deepEqual(JSON.parse(a.at(-1).content.slice("[success]".length)).cpu.temperature, value);
+  assert.equal(history.length, 1);
+  const missing = comparison.buildMessages("B", scenario, history, "", "", null);
+  assert.equal(JSON.parse(missing.at(-1).content.slice("[success]".length)).cpu.temperature, null);
+});
+
+test("comparison requires the exact loaded model/context and preserves production generation options", () => {
+  const generation = comparison.settings({ ENABLE_THINKING: "true", OLLAMA_PREDICT_NUM: "300" });
+  assert.deepEqual(generation, { model: "qwen3.5:2b-q4_K_M", think: true, stream: true,
+    options: { temperature: 0.7, num_predict: 300 }, keep_alive: -1 });
+  assert.throws(() => comparison.settings({ OLLAMA_MODEL: "another-model" }), /differs/);
+  assert.throws(() => comparison.assertRuntime({ models: [] }), /already be loaded/);
+  assert.throws(() => comparison.assertRuntime({ models: [{ name: generation.model, context_length: 40960 }] }), /4096/);
+  assert.doesNotThrow(() => comparison.assertRuntime({ models: [{ name: generation.model, context_length: 4096 }] }));
+  assert.equal("num_predict" in comparison.settings({}).options, false);
+});
+
+test("all comparison scenarios fit 4096 without trimming and request no tools or context change", () => {
+  const generation = comparison.settings({});
+  for (const scenario of comparison.fixture.scenarios) for (const variant of ["A", "B"]) {
+    const history = [{ role: "user", content: scenario.turns[0] }];
+    const messages = comparison.buildMessages(variant, scenario, history, SPEECH_PROMPT);
+    const request = comparison.requestFor(messages, generation);
+    assert.deepEqual(request.messages, messages);
+    assert.equal("tools" in request, false); assert.equal("num_ctx" in request.options, false);
+  }
+  const huge = [{ role: "system", content: comparison.candidate }, { role: "user", content: "x".repeat(20000) }];
+  assert.throws(() => comparison.requestFor(huge, generation), /context budget|cannot fit/);
+});
+
+test("comparison repeats paired inputs with independent histories, real generated followups and unfilled human scores", async () => {
+  const records: any[] = [];
+  await comparison.compare({ generation: comparison.settings({}), suffix: SPEECH_PROMPT, webNote: " fixed date",
+    temperature: null, repetitions: 3, emit: (r: any) => records.push(r),
+    generateAnswer: async (request: any) => ({ content: request.messages[0].content.startsWith(comparison.production) ? "A answer." : "B answer." }) });
+  assert.equal(records.length, 78); // 13 turns x 2 variants x 3 replicates.
+  assert.equal(records[0].variant, "A");
+  assert.equal(records.find(r => r.repeat === 2).variant, "B");
+  for (const record of records) {
+    assert.ok(Object.values(record.scores).every(score => score === null));
+    const scenario = comparison.fixture.scenarios.find((s: any) => s.id === record.scenario);
+    const seedCount = scenario.prior?.length || 0;
+    if (seedCount) assert.deepEqual(record.request.messages.slice(1, 1 + seedCount), scenario.prior);
+    const priorAnswers = record.request.messages.slice(1 + seedCount).filter((m: any) => m.role === "assistant" && m.content);
+    assert.ok(priorAnswers.every((m: any) => m.content === `${record.variant} answer.`));
+    assert.equal(priorAnswers.length, record.turn - 1);
+  }
+});
+
+test("comparison stops on generation failure rather than fabricating an answer or retrying", async () => {
+  let attempts = 0; const emitted: any[] = [];
+  await assert.rejects(comparison.compare({ generation: comparison.settings({}), repetitions: 1,
+    generateAnswer: async () => { attempts++; throw Error("transport failure"); }, emit: (r: any) => emitted.push(r) }), /transport failure/);
+  assert.equal(attempts, 1); assert.deepEqual(emitted, []);
+});
+
+test("comparison generation adapter preserves streamed text, statistics and cancellation signal", async () => {
+  const axios = require("axios"), originalPost = axios.post;
+  const controller = new AbortController();
+  const request = { model: "fixture" }; let calls = 0;
+  axios.post = async (url: string, body: unknown, options: any) => {
+    calls++; assert.equal(url, "http://127.0.0.1:11434/api/chat"); assert.equal(body, request);
+    assert.equal(options.signal, controller.signal); assert.equal(options.maxRedirects, 0);
+    assert.equal(options.proxy, false); assert.equal(options.responseType, "stream");
+    return { data: Readable.from([Buffer.from('{"message":{"content":"A measured "}}\n'),
+      Buffer.from('{"message":{"content":"answer."},"done":true,"done_reason":"stop","eval_count":3}\n')]) };
+  };
+  try {
+    const answer = await comparison.generate(request, controller.signal);
+    assert.equal(answer.content, "A measured answer."); assert.equal(answer.eval_count, 3);
+    assert.equal(answer.completion, "stop"); assert.equal(calls, 1);
+  } finally { axios.post = originalPost; }
+});
+
+test("comparison generation adapter rejects unverified completion and tool proposals without dispatch", async () => {
+  const axios = require("axios"), originalPost = axios.post;
+  try {
+    for (const line of [
+      '{"message":{"content":"partial"}}\n',
+      '{"message":{"content":""},"done":true}\n',
+      '{"message":{"content":"partial"},"done":true,"done_reason":"length"}\n',
+      '{"message":{"tool_calls":[{"function":{"name":"setVolume","arguments":{"percent":5}}}]},"done":true}\n',
+    ]) {
+      axios.post = async () => ({ data: Readable.from([Buffer.from(line)]) });
+      await assert.rejects(comparison.generate({}, new AbortController().signal), /done=true|Unusable/);
+    }
+  } finally { axios.post = originalPost; }
+});
+
+test("comparison CLI dry-run emits a single JSON plan with the actual shared speech/date notes", () => {
+  const output = execFileSync(process.execPath, ["--require", "ts-node/register/transpile-only", "scripts/persona-comparison.cjs", "--plan"], {
+    cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 10000,
+    env: { ...process.env, ASSISTANT_PERSONA: "default", OLLAMA_MODEL: comparison.fixture.model,
+      OLLAMA_ENABLE_TOOLS: "true", WEB_SEARCH_ENABLED: "true", WAKE_WORD_ENABLED: "true" },
+  });
+  const plan = JSON.parse(output);
+  assert.equal(plan.kind, "plan");
+  assert.equal(plan.prompts.A.slice(comparison.production.length), plan.prompts.B.slice(comparison.candidate.length));
+  assert.match(plan.prompts.B, /Format your replies for spoken text-to-speech/);
+  assert.match(plan.prompts.B, /Today is/); assert.match(plan.prompts.B, /endConversation/);
+  assert.equal(plan.scenarios.length, 10);
 });
