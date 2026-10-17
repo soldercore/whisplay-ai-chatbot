@@ -8,7 +8,8 @@ const { promptMessageTokens, fitOllamaPrompt } = require("../src/cloud-api/local
 const { readOllamaNDJSON } = require("../src/cloud-api/local/ollama-ndjson");
 
 const candidate = [fixture.candidateInstructions, fixture.exampleInstruction,
-  ...fixture.examples.map(example => `User: ${example.user}\nAssistant: ${example.assistant}`)].join("\n");
+  ...fixture.examples.map(example => `User: ${example.user}\nAssistant: ${example.assistant}`),
+  "End of fictional tone examples.\n"].join("\n\n");
 const production = personaPrompt({ ASSISTANT_PERSONA: "glados" });
 const quiet = work => { const log = console.log; console.log = () => {}; try { return work(); } finally { console.log = log; } };
 

@@ -281,6 +281,10 @@ test("comparison CLI dry-run emits a single JSON plan with the actual shared spe
   const plan = JSON.parse(output);
   assert.equal(plan.kind, "plan");
   assert.equal(plan.prompts.A.slice(comparison.production.length), plan.prompts.B.slice(comparison.candidate.length));
+  for (const example of comparison.fixture.examples) {
+    assert.ok(plan.prompts.B.includes(`User: ${example.user}\nAssistant: ${example.assistant}\n\n`));
+  }
+  assert.ok(plan.prompts.B.includes("End of fictional tone examples.\n" + SPEECH_PROMPT));
   assert.match(plan.prompts.B, /Format your replies for spoken text-to-speech/);
   assert.match(plan.prompts.B, /Today is/); assert.match(plan.prompts.B, /endConversation/);
   assert.equal(plan.scenarios.length, 10);
