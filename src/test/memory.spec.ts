@@ -279,6 +279,43 @@ test("facts reach the model about the user, in the third person, after a memory 
 
 // ---- Ollama path: tool calls, spoken JSON, web search ------------------------
 
+test("unrelated greetings do not receive durable facts; relevant requests still do", async () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that my favorite color is amber.");
+  memory.handleMemoryCommand("Remember that my dog's name is Ada.");
+  const before = fs.readFileSync(storePath, "utf8");
+  assert.equal(memory.prepareMemoryPrompt("How are you doing today?"), "");
+  assert.equal(memory.prepareMemoryPrompt("What is two plus two?"), "");
+  const prompt = memory.prepareMemoryPrompt("What color should I use for this design?");
+  assert.match(prompt, /favorite color is amber/);
+  assert.doesNotMatch(prompt, /Ada/);
+  assert.match(prompt, /Current instructions take precedence/);
+  assert.equal(memory.prepareMemoryPrompt("How are you doing today?"), "");
+  assert.match(memory.handleMemoryCommand("What is my dog's name?").text, /Ada/);
+  assert.equal(fs.readFileSync(storePath, "utf8"), before, "retrieval never changes the store");
+});
+
+test("an ambiguous mention is preserved without being promoted to a favorite", () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that I mentioned the color amber during a test.");
+  assert.equal(memory.handleMemoryCommand("What's my favorite color?"), null);
+  const prompt = memory.prepareMemoryPrompt("What color did I mention earlier?");
+  assert.match(prompt, /mentioned the color amber during a test/);
+  assert.doesNotMatch(prompt, /favorite color is/);
+  assert.match(prompt, /not necessarily a lasting favorite/);
+});
+
+test("a greeting reaches Ollama without fresh unrelated memory after restart", async () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that my favorite instrument is cello.");
+  const output = inNewProcess(`const m = require('./src/config/local-memory'); console.log('PROMPT=' + JSON.stringify(m.prepareMemoryPrompt('How are you doing today?'))); console.log(m.handleMemoryCommand('What is my favorite instrument?').text);`);
+  assert.match(output, /PROMPT=""/);
+  assert.match(output, /cello/);
+  responders = [() => say("Operational.")];
+  await ask("How are you doing today?");
+  assert.doesNotMatch(JSON.stringify(chatRequests[0].messages), /cello/);
+});
+
 test("a tool call written as JSON text is run, not spoken", async () => {
   await ask("Remember that my favorite color is blue.");
   responders = [

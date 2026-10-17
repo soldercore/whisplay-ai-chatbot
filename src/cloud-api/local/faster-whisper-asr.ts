@@ -1,8 +1,5 @@
 import axios from "axios";
 import dotenv from "dotenv";
-import { resolve } from "path";
-import { ASRServer } from "../../type";
-import { spawn } from "child_process";
 import { readFileSync } from "fs";
 
 dotenv.config();
@@ -14,26 +11,7 @@ const fasterWhisperInitialPrompt = process.env.FASTER_WHISPER_INITIAL_PROMPT?.tr
 const fasterWhisperRequestType =
   process.env.FASTER_WHISPER_REQUEST_TYPE || "filePath";
 
-let pyProcess: any = null;
-const asrServer = process.env.ASR_SERVER || "";
-
-if (
-  asrServer.trim().toLowerCase() === ASRServer.fasterwhisper &&
-  ["localhost", "0.0.0.0", "127.0.0.1"].includes(fasterWhisperHost)
-) {
-  pyProcess = spawn(
-    "python3",
-    [
-      resolve(__dirname, "../../../python/speech-service/faster-whisper-host.py"),
-      "--port",
-      fasterWhisperPort,
-    ],
-    {
-      detached: true,
-      stdio: "inherit",
-    }
-  );
-}
+// Server startup/ownership is handled before providers load in index.ts.
 
 interface FasterWhisperResponse {
   filePath: string;
@@ -76,24 +54,3 @@ export const recognizeAudio = async (
       return "";
     })
 };
-
-function cleanup() {
-  if (pyProcess && !pyProcess.killed) {
-    console.log("Killing python server...");
-    process.kill(-pyProcess.pid, "SIGTERM");
-  }
-}
-
-process.on("SIGINT", cleanup); // Ctrl+C
-process.on("SIGTERM", cleanup); // systemctl / docker stop
-process.on("exit", cleanup);
-process.on("uncaughtException", (err) => {
-  console.error(err);
-  cleanup();
-  process.exit(1);
-});
-process.on("unhandledRejection", (err) => {
-  console.error(err);
-  cleanup();
-  process.exit(1);
-});

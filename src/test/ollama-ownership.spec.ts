@@ -127,7 +127,7 @@ test("launcher wires environment, owned cleanup and signal traps without pattern
   const ownership = fs.readFileSync(script, "utf8");
   assert.match(launcher, /source "\$working_dir\/scripts\/ollama-ownership.sh"/);
   assert.match(launcher, /trap cleanup_owned_ollama EXIT/);
-  assert.match(launcher, /trap 'exit 143' TERM/);
+  assert.match(launcher, /trap 'stop_chatbot; exit 143' TERM/);
   assert.match(launcher, /prepare_ollama .*\|\| exit 1/);
   assert.doesNotMatch(launcher + ownership, /\b(pkill|pidof)\b/);
 });

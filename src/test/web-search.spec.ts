@@ -214,6 +214,53 @@ test("the small-talk guard preserves all other tool eligibility, ordering and fo
 
 // ---- Search results ----------------------------------------------------------
 
+test("intent priority preserves explicit/mixed searches and excludes local personal/creative requests", () => {
+  for (const question of ["I feel tired today.", "I am feeling exhausted tonight.",
+    "Tell me a bedtime story tonight.", "Please write a short poem tomorrow."]) {
+    assert.equal(needsCurrentInformation(question), false, question);
+  }
+  for (const question of ["Search the web for the capital of Norway. Answer in one sentence.",
+    "Could you please search online for DNS? Keep it short.",
+    "I feel tired today. What is the weather in Oslo?",
+    "I feel tired today and what happened in Oslo",
+    "Tell me a story tonight and check the football scores",
+    "Tell me a story about the latest news.", "What is the weather in Oslo today?"]) {
+    assert.equal(needsCurrentInformation(question), true, question);
+    assert.equal(require("../config/tool-router").isDirectAnswerRequest(question), false, question);
+  }
+  for (const question of ["Do not search the web. Explain DNS in one sentence.",
+    "Why do people search the web?"]) {
+    assert.equal(require("../config/web-search-router").hasExplicitWebSearch(question), false, question);
+  }
+});
+
+for (const question of ["I feel tired today.", "Tell me a bedtime story tonight."]) {
+  test(`local intent has no prefetch: ${question}`, async () => {
+    responders = [() => say("A local response.")];
+    const result = await ask(question);
+    assert.equal(result.answer, "A local response.");
+    assert.deepEqual(searches, []); assert.deepEqual(result.toolEvents, []);
+    assert.equal(toolNames(chatRequests[0]).includes("web_search"), false);
+  });
+  for (const mode of ["native", "json"]) test(`local intent denies proposed search (${mode}): ${question}`, async () => {
+    responders = [() => mode === "native" ? callTool("web_search", { query: question })
+      : say(JSON.stringify({ name: "web_search", arguments: { query: question } }))];
+    await ask(question);
+    assert.deepEqual(searches, [], "handler execution, not UI placeholders, is the assertion");
+    assert.equal(chatRequests.length, 1);
+  });
+}
+
+test("explicit search with a short-answer hint executes once before generation", async () => {
+  const question = "Search the web for the capital of Norway. Answer in one sentence.";
+  responders = [() => say("Oslo is the capital of Norway.")];
+  const result = await ask(question);
+  assert.deepEqual(searches, [{ query: question, search_type: "web" }]);
+  assert.deepEqual(result.toolEvents, ["web_search", "web_search:done"]);
+  assert.equal(result.answer, "Oslo is the capital of Norway.");
+  assert.ok(chatRequests[0].messages.some(message => message.role === "tool"));
+});
+
 test("DuckDuckGo results keep their snippets", () => {
   const html = fs.readFileSync(path.join(__dirname, "fixtures", "duckduckgo-results.html"), "utf8");
   assert.deepEqual(parseDuckDuckGoHtml(html, 5), [

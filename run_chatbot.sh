@@ -1,5 +1,6 @@
 #!/bin/bash
 # Set working directory and environment
+cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")" || exit 1
 os_name=$(uname -s 2>/dev/null || echo "unknown")
 is_linux=false
 is_darwin=false
@@ -10,15 +11,18 @@ case "$os_name" in
   MINGW*|MSYS*|CYGWIN*) is_windows=true ;;
 esac
 
+if [ "$is_linux" = true ]; then
+  source "./scripts/app-lock.sh"
+  acquire_app_lock || exit $?
+fi
+
 if [ "$is_linux" = true ] &&
    [ "${WHISPLAY_ALLOW_LEGACY_CHATBOT_SERVICE:-false}" != "true" ] &&
    grep -q 'chatbot\.service' /proc/self/cgroup 2>/dev/null &&
    { systemctl is-active --quiet whisplay-daemon.service 2>/dev/null || [ -S /tmp/whisplay-daemon.sock ]; }; then
   echo "whisplay-daemon is active; legacy chatbot.service mode is disabled to avoid duplicate ASR/TTS ports."
   echo "Use the Whisplay daemon launcher, or run: whisplay service restart"
-  while true; do
-    sleep 3600
-  done
+  exit 1
 fi
 
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -153,19 +157,37 @@ fi
 
 source "$working_dir/scripts/ollama-ownership.sh"
 trap cleanup_owned_ollama EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+chatbot_pid=""
+chatbot_running() {
+  local child
+  while read -r child; do
+    [ -n "$chatbot_pid" ] && [ "$child" = "$chatbot_pid" ] && return 0
+  done < <(jobs -pr)
+  return 1
+}
+stop_chatbot() {
+  # Only the live job this launcher started. Node performs bounded owned-child
+  # cleanup before exiting; the lock remains held throughout that cleanup.
+  local attempt
+  if chatbot_running; then
+    kill -TERM "$chatbot_pid" 2>/dev/null || true
+    for attempt in {1..40}; do
+      chatbot_running || break
+      sleep 0.25
+    done
+    if chatbot_running; then
+      echo '[Lifecycle] Node did not exit within 10 seconds; terminating owned Node job' >&2
+      kill -KILL "$chatbot_pid" 2>/dev/null || true
+    fi
+    wait "$chatbot_pid" 2>/dev/null || true
+  fi
+}
+trap 'stop_chatbot; exit 130' INT
+trap 'stop_chatbot; exit 143' TERM
 llm_server="${LLM_SERVER:-$(get_env_value LLM_SERVER)}"
 if [ "$serve_ollama" = true ] || [ "$(printf '%s' "$llm_server" | tr '[:upper:]' '[:lower:]')" = "ollama" ]; then
   ollama_endpoint="${OLLAMA_ENDPOINT:-$(get_env_value OLLAMA_ENDPOINT)}"
   prepare_ollama "${ollama_endpoint:-http://localhost:11434}" "$serve_ollama" || exit 1
-fi
-
-# if file use_npm exists and is true, use npm
-if [ -f "use_npm" ]; then
-  use_npm=true
-else
-  use_npm=false
 fi
 
 if [ -f "dist/index.js" ] && command -v node >/dev/null 2>&1; then
@@ -175,25 +197,18 @@ if [ -f "dist/index.js" ] && command -v node >/dev/null 2>&1; then
   fi
   echo "Starting compiled application directly..."
   if [ -n "$card_index" ]; then
-    SOUND_CARD_INDEX=$card_index node dist/index.js
+    SOUND_CARD_INDEX=$card_index node dist/index.js &
   else
-    node dist/index.js
-  fi
-elif [ "$use_npm" = true ]; then
-  echo "Using npm to start the application..."
-  if [ -n "$card_index" ]; then
-    SOUND_CARD_INDEX=$card_index npm start
-  else
-    npm start
+    node dist/index.js &
   fi
 else
-  echo "Using yarn to start the application..."
-  if [ -n "$card_index" ]; then
-    SOUND_CARD_INDEX=$card_index yarn start
-  else
-    yarn start
-  fi
+  echo "Compiled application or Node.js missing. Compile with yarn build or npm run build first." >&2
+  exit 1
 fi
+chatbot_pid=$!
+wait "$chatbot_pid"
+chatbot_status=$?
+chatbot_pid=""
 
 # After the service ends, perform cleanup
 echo "Cleaning up after service..."
@@ -202,3 +217,4 @@ cleanup_owned_ollama
 
 # Record end status
 echo "===== Service ended: $(date) ====="
+exit "$chatbot_status"

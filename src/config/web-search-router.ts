@@ -25,6 +25,15 @@ const OFFICE_HOLDER =
   /\bwho(?: is|'s| are)(?: the)? (president|prime minister|chancellor|ceo|king|queen|pope|leader|mayor|governor)\b/i;
 const YEAR = /\b(20\d\d)\b/g;
 
+// Direct requests outrank answer-format hints. Match request clauses, not a
+// mention of searching (or "do not search") inside ordinary conversation.
+export const hasExplicitWebSearch = (text: string): boolean =>
+  /(?:^|[.!?;]\s*|\band\s+)(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:search (?:the (?:web|internet)|online)|look (?:it |this |that )?up online|look up .+? (?:online|on the web)|google\s+\S)/i.test(text.trim());
+
+const PERSONAL_CONVERSATION = /^(?:i feel|i'm feeling|i am feeling)\s+[\p{L}' -]+[.!?]*$/iu;
+const CREATIVE_REQUEST = /^(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:tell me|write(?: me)?|make up|invent)\s+(?:(?:a|an|another|short|bedtime|funny)\s+)*(?:story|poem|joke)\b[^.!?;]*[.!?]*$/i;
+const ADDITIONAL_REQUEST = /\b(?:and|but|also)\s+(?:what|who|when|where|how|why|can|could|would|tell|find|check|look|search|show|give)\b/i;
+
 const CASUAL_QUESTION = new RegExp(
   "^(?:how are you(?: doing| feeling)?|how have you been|how(?:'s| is) it going|" +
   "how(?:'s| is| has) your day(?: going| been)?|what(?:'s| is) up(?: with you)?|" +
@@ -38,6 +47,13 @@ const CASUAL_QUESTION = new RegExp(
 // eligible for search. This rule also bounds model-selected search permission.
 export const isCasualConversation = (question: string): boolean => {
   let text = `${question || ""}`.replace(/’/g, "'").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "").trim();
+  if (hasExplicitWebSearch(text)) return false;
+  // Only whole personal/creative requests qualify. Mixed/live-data requests
+  // retain search; recency alone does not turn a feeling or story into research.
+  if (!LIVE_DATA.test(text) && !RELEASE_OR_RESULT.test(text) && !OFFICE_HOLDER.test(text)
+    && !ADDITIONAL_REQUEST.test(text)
+    && !/\b(latest|newest|news|research|studies|current|forecast)\b/i.test(text)
+    && (PERSONAL_CONVERSATION.test(text) || CREATIVE_REQUEST.test(text))) return true;
   const greeting = /^(?:hi|hey|hello|good morning|good afternoon|good evening|good night|bye|goodbye)(?:[, ]+glados)?$/i;
   if (greeting.test(text)) return true;
   text = text.replace(/^(?:hi|hey|hello|good morning|good afternoon|good evening)[,!. ]+/i, "")
@@ -50,6 +66,7 @@ export const needsCurrentInformation = (
   now: Date = new Date(),
 ): boolean => {
   const text = `${question || ""}`.trim();
+  if (hasExplicitWebSearch(text)) return true;
   if (!text || DATE_ONLY.test(text) || isCasualConversation(text)) return false;
   if (RECENCY.test(text)) return true;
   if (CURRENT.test(text) && !PHYSICS_CURRENT.test(text)) return true;

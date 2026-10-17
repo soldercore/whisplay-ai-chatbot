@@ -1,4 +1,5 @@
 import { exec } from "child_process";
+import { spawnOwned, stopOwnedChild, onAppShutdown, shutdownApplication, appSignal } from "../utils/app-lifecycle";
 import { existsSync } from "fs";
 import { resolve } from "path";
 import { Socket } from "net";
@@ -116,10 +117,9 @@ export class WhisplayDisplay {
     }
 
     if (this.deviceEnabled) {
-      this.startPythonProcess();
-      this.isReady = new Promise<void>((resolve) => {
-        this.connectWithRetry(15, resolve);
-      });
+      this.isReady = this.startPythonProcess()
+        .then(() => this.connectWithRetry(15, () => {}))
+        .catch(error => { console.error("[Lifecycle] Display startup failed:", error); shutdownApplication(1); });
     } else {
       this.isReady = Promise.resolve();
     }
@@ -167,51 +167,37 @@ export class WhisplayDisplay {
     }
   }
 
-  startPythonProcess(): void {
-    if (!this.deviceEnabled) {
-      return;
-    }
-    const command = `cd ${resolve(
-      __dirname,
-      "../../python",
-    )} && python3 chatbot-ui.py`;
-    console.log("Starting Python process...");
-    this.pythonProcess = exec(command, (error, stdout, stderr) => {
-      if (error) {
-        console.error("Error starting Python process:", error);
-        return;
-      }
-      console.log("Python process stdout:", stdout);
-      console.error("Python process stderr:", stderr);
+  startPythonProcess(): Promise<void> {
+    // No shell child: track the actual Python PID and connect only after our
+    // own child confirms its bind, never to another process on the same port.
+    const child = spawnOwned("python3", ["-u", "chatbot-ui.py"], {
+      cwd: resolve(__dirname, "../../python"), stdio: ["ignore", "pipe", "pipe"],
     });
-    this.pythonProcess.stdout.on("data", (data: any) =>
-      console.log(data.toString()),
-    );
-    this.pythonProcess.stderr.on("data", (data: any) =>
-      console.error(data.toString()),
-    );
+    this.pythonProcess = child;
+    return new Promise((resolveReady, reject) => {
+      let ready = false, line = "";
+      const timer = setTimeout(() => reject(new Error("Display readiness timed out")), 60_000);
+      child.stdout!.on("data", (data: Buffer) => {
+        console.log(data.toString());
+        if (ready) return;
+        line = (line + data.toString()).slice(-4096);
+        if (line.includes("[Socket] Listening on")) {
+          ready = true; clearTimeout(timer); resolveReady();
+        }
+      });
+      child.stderr!.on("data", (data: Buffer) => console.error(data.toString()));
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("exit", () => {
+        clearTimeout(timer);
+        if (!ready) reject(new Error("Display child exited before readiness"));
+        else if (!appSignal.aborted) shutdownApplication(1);
+      });
+    });
   }
 
   killPythonProcess(): void {
-    if (!this.deviceEnabled) {
-      return;
-    }
-    if (this.pythonProcess) {
-      console.log("Killing Python process...", this.pythonProcess.pid);
-      try {
-        this.pythonProcess.kill();
-      } catch (error) {
-        console.warn("Failed to terminate Python process:", error);
-      }
-      try {
-        process.kill(this.pythonProcess.pid, "SIGKILL");
-      } catch (error: any) {
-        if (error?.code !== "ESRCH") {
-          console.warn("Failed to force-kill Python process:", error);
-        }
-      }
-      this.pythonProcess = null;
-    }
+    this.client?.destroy();
+    if (this.pythonProcess) void stopOwnedChild(this.pythonProcess);
   }
 
   async connectWithRetry(
@@ -224,12 +210,13 @@ export class WhisplayDisplay {
     }
     await new Promise((resolve, reject) => {
       const attemptConnection = (attempt: number) => {
+        if (appSignal.aborted) { reject(new Error("Display startup cancelled")); return; }
         this.connect()
           .then(() => {
             resolve(true);
           })
           .catch((err) => {
-            if (attempt < retries) {
+            if (attempt < retries && !appSignal.aborted) {
               console.log(`Connection attempt ${attempt} failed, retrying...`);
               setTimeout(() => attemptConnection(attempt + 1), 5000);
             } else {
@@ -251,7 +238,10 @@ export class WhisplayDisplay {
         this.client.destroy();
       }
       this.client = new Socket();
+      const socket = this.client;
+      socket.setTimeout(5000, () => socket.destroy(new Error("Display connection timed out")));
       this.client.connect(12345, "0.0.0.0", () => {
+        socket.setTimeout(0);
         console.log("Connected to local display socket");
         this.receiveBuffer = "";
         this.sendToDisplay(JSON.stringify(this.currentStatus));
@@ -286,8 +276,7 @@ export class WhisplayDisplay {
             }
             if (json.event === "app_exit_requested") {
               console.log("[WhisplayApp] Exit requested by daemon");
-              cleanup();
-              process.exit(0);
+              shutdownApplication();
             }
           } catch {
             // ignore invalid non-json lines
@@ -295,10 +284,7 @@ export class WhisplayDisplay {
         }
       });
       this.client.on("error", (err: any) => {
-        // 如果是ECONNREFUSED
-        if (err.code === "ECONNREFUSED") {
-          reject(err);
-        }
+        reject(err);
       });
     });
   }
@@ -578,36 +564,11 @@ export const onTextInput =
 export const isButtonDown =
   displayInstance.isButtonDown.bind(displayInstance);
 
-function cleanup() {
-  console.log("Cleaning up display process before exit...");
+onAppShutdown(() => {
   displayInstance.killPythonProcess();
   displayInstance.stopWebDisplay();
-}
-
-// kill the Python process on exit signals
-process.on("exit", cleanup);
-["SIGINT", "SIGTERM"].forEach((signal) => {
-  process.on(signal, () => {
-    console.log(`Received ${signal}, exiting...`);
-    cleanup();
-    process.exit(0);
-  });
 });
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught Exception:", err);
-  cleanup();
-  process.exit(1);
-});
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason);
-  cleanup();
-  process.exit(1);
-});
-process.on("keyboardInterrupt", () => {
-  console.log("Keyboard Interrupt received, killing Python process...");
-  cleanup();
-  process.exit(0);
-});
+process.on("keyboardInterrupt", () => shutdownApplication());
 
 function parseBoolEnv(key: string, defaultValue: boolean): boolean {
   const raw = process.env[key];

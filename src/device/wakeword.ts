@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
-import { spawn, ChildProcess } from "child_process";
+import { ChildProcess } from "child_process";
+import { spawnOwned as spawn } from "../utils/app-lifecycle";
 import { resolve } from "path";
 import dotenv from "dotenv";
 dotenv.config();

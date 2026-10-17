@@ -154,22 +154,40 @@ _service_ctl_daemon_app() {
   case "$action" in
     start)
       _bold "Starting ${app_id} via whisplay-daemon..."
-      _daemon_request app.launch "{\"app_id\":\"${app_id}\"}" >/dev/null
+      _daemon_request app.launch "{\"app_id\":\"${app_id}\"}" >/dev/null || return 1
       _green "✅ ${app_id} launch requested."
       ;;
     stop)
       _bold "Stopping ${app_id} via whisplay-daemon..."
-      _daemon_request app.exit.request "{\"app_id\":\"${app_id}\"}" >/dev/null
+      _daemon_request app.exit.request "{\"app_id\":\"${app_id}\"}" >/dev/null || return 1
       _yellow "⚠️  ${app_id} exit requested."
       ;;
     restart)
       _bold "Restarting ${app_id} via whisplay-daemon..."
-      _daemon_request app.exit.request "{\"app_id\":\"${app_id}\"}" >/dev/null || true
-      sleep 2
-      _daemon_request app.launch "{\"app_id\":\"${app_id}\"}" >/dev/null
+      _daemon_request app.exit.request "{\"app_id\":\"${app_id}\"}" >/dev/null || return 1
+      _service_wait_stopped || return 1
+      _daemon_request app.launch "{\"app_id\":\"${app_id}\"}" >/dev/null || return 1
       _green "✅ ${app_id} restart requested."
       ;;
   esac
+}
+
+_service_wait_stopped() {
+  source "$(dirname "${BASH_SOURCE[0]}")/../scripts/app-lock.sh"
+  wait_for_app_unlock || { _red "Chatbot has not released its instance lock; restart refused."; return 1; }
+  local deadline=$((SECONDS + 20)) state
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state=$(_daemon_request app.list '{}') || return 1
+    if printf '%s' "$state" | node -e '
+const fs = require("fs");
+try {
+  const app = JSON.parse(fs.readFileSync(0, "utf8")).apps?.find(a => a.app_id === "whisplay-ai-chatbot");
+  process.exit(app && app.running === false ? 0 : 1);
+} catch { process.exit(1); }'; then return 0; fi
+    sleep 0.25
+  done
+  _red "Daemon has not confirmed chatbot exit; restart refused."
+  return 1
 }
 
 _service_daemon_app_status() {

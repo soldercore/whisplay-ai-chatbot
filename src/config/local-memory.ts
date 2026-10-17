@@ -399,7 +399,9 @@ const factForModel = (memory: UserMemory): string =>
 
 const STOPWORDS = new Set([
   "my", "the", "a", "an", "is", "are", "was", "were", "of", "to", "and", "what", "about",
-  "that", "your", "i", "me", "do", "you", "it",
+  "that", "your", "i", "me", "do", "you", "it", "how", "which", "did", "does",
+  "should", "could", "would", "can", "for", "this", "use", "today", "tonight",
+  "earlier", "mention", "mentioned", "remember", "recall", "tell", "like",
 ]);
 
 const topicWords = (topic: string): string[] =>
@@ -418,6 +420,9 @@ const findFacts = (store: MemoryStore, topic: string): UserMemory[] => {
   if (words.length === 0) return [];
   return store.userMemories.filter((memory) => {
     const haystack = normalizeSubject(`${factSubject(memory)} ${memory.content}`);
+    // A mention or a liking is not evidence of a favorite. Preserve the saved
+    // wording; never upgrade an ambiguous statement during deterministic recall.
+    if (words.includes("favorite") && !containsWord(haystack, "favorite")) return false;
     const hits = words.filter((word) => containsWord(haystack, word)).length;
     return hits > 0 && hits >= Math.ceil(words.length / 2);
   });
@@ -620,6 +625,8 @@ const buildMemoryPrompt = (userText: string): string => {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .filter((memory) => !recalledMemoryKeys.has(`user:${memory.id}`))
     .filter((memory) => !HAN.test(memory.content))
+    .filter((memory) => topicWords(userText).some((word) =>
+      containsWord(normalizeSubject(`${factSubject(memory)} ${memory.content}`), word)))
     .slice(0, Math.max(0, memoryWakeupMaxItems))
     .map((memory) => {
       const text = factForModel(memory);
@@ -639,7 +646,7 @@ const buildMemoryPrompt = (userText: string): string => {
 
   if (sections.length === 0) return "";
   return [
-    "Local memory about this user. Use it only when relevant, answer in English, and never invent details that are not listed here.",
+    "Local memory about this user. Use it only when relevant to the current request, not to decorate greetings. A past mention or liking is not necessarily a lasting favorite. Current instructions take precedence. Answer in English and never invent details that are not listed here.",
     ...sections,
   ].join("\n\n");
 };

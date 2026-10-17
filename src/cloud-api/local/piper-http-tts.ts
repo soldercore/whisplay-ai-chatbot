@@ -1,18 +1,16 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getAudioDurationInSeconds } from "get-audio-duration";
-import { ChildProcess, spawn } from "child_process";
+import { spawnOwned as spawn } from "../../utils/app-lifecycle";
 import dotenv from "dotenv";
 import { ttsDir } from "../../utils/dir";
-import { TTSResult, TTSServer } from "../../type";
+import { TTSResult } from "../../type";
 import { defaultPortMap } from "./common";
 
 dotenv.config();
 
 const piperHttpHost = process.env.PIPER_HTTP_HOST || "localhost";
 const piperHttpPort = process.env.PIPER_HTTP_PORT || defaultPortMap.piperHttp.toString();
-const piperHttpModel =
-  process.env.PIPER_HTTP_MODEL || "en_US-amy-medium";
 const piperHttpLengthScale =
   process.env.PIPER_HTTP_LENGTH_SCALE || "1";
 // Upper bound for one synthesis request, so a stalled Piper server cannot
@@ -31,7 +29,6 @@ const piperHttpUrl = `http://${piperHttpHost}:${piperHttpPort}${piperHttpPath}`;
 // keeps the server's default voice; an unknown name also falls back to it.
 const piperHttpVoice = (process.env.PIPER_HTTP_VOICE || "").trim();
 
-const ttsServer = (process.env.TTS_SERVER || "").toLowerCase();
 
 // TEMPORARY (Phase 0 TTS diagnostics): remove the [TTS-DIAG] lines once the
 // audio path is confirmed on the device.
@@ -39,41 +36,7 @@ console.log(
   `[TTS-DIAG][piper-http] endpoint ${piperHttpUrl}, voice ${piperHttpVoice || "(server default)"}, timeout ${piperHttpTimeoutSec}s`
 );
 
-let pyProcess: ChildProcess | null = null;
-if (ttsServer === TTSServer.piperhttp) {
-  if (
-    ["localhost", "0.0.0.0", "127.0.0.1"].includes(piperHttpHost)
-  ) {
-    console.log("Starting Piper HTTP server at port", piperHttpPort);
-    // python3 -m piper.http_server -m en_US-lessac-medium
-    pyProcess = spawn(
-      "python3",
-      [
-        "-m",
-        "piper.http_server",
-        "-m",
-        piperHttpModel,
-        "--port",
-        piperHttpPort,
-        "--host",
-        piperHttpHost,
-      ],
-      {
-        detached: true,
-        stdio: "inherit",
-      }
-    );
-    pyProcess.on("error", (error) => {
-      console.error("Failed to start the embedded Piper HTTP server:", error.message);
-    });
-    pyProcess.on("exit", (code, signal) => {
-      // Exits right away when another Piper server already owns the port.
-      console.log(
-        `[TTS-DIAG][piper-http] embedded Piper HTTP server exited (code ${code}, signal ${signal})`
-      );
-    });
-  }
-}
+// Embedded server ownership is handled by the application bootstrap.
 
 let requestSeq = 0;
 const PREVIEW_BYTES = 200;
@@ -250,27 +213,5 @@ const piperHttpTTS = async (
     });
   });
 };
-
-function cleanup() {
-  if (pyProcess && !pyProcess.killed) {
-    console.log("Killing python server...");
-    process.kill(-pyProcess.pid!, "SIGTERM");
-  }
-}
-
-process.on("SIGINT", cleanup); // Ctrl+C
-process.on("SIGTERM", cleanup); // systemctl / docker stop
-process.on("exit", cleanup);
-process.on("uncaughtException", (err) => {
-  console.error(err);
-  cleanup();
-  process.exit(1);
-});
-process.on("unhandledRejection", (err) => {
-  console.error(err);
-  cleanup();
-  process.exit(1);
-});
-
 
 export default piperHttpTTS;

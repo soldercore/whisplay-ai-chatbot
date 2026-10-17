@@ -1,4 +1,5 @@
-import { spawn, ChildProcess } from "child_process";
+import { ChildProcess } from "child_process";
+import { spawnOwned as spawn } from "../utils/app-lifecycle";
 import { readFileSync } from "fs";
 import { isEmpty, noop, set } from "lodash";
 import dotenv from "dotenv";
@@ -522,16 +523,7 @@ const stopPlaying = (): void => {
   }
 };
 
-// Close audio player when exiting program
-process.on("SIGINT", () => {
-  try {
-    if (player.process) {
-      player.process.stdin?.end();
-      player.process.kill();
-    }
-  } catch { }
-  process.exit();
-});
+// Owned audio processes are stopped by the application shutdown boundary.
 
 /**
  * Kill the persistent TTS player process to free the ALSA device.
