@@ -52,11 +52,12 @@ guard is intentionally English and narrow; it is not a universal intent parser.
   so exit/focus handling need not wait for model loading. Conversation providers
   are imported after readiness. No display layout, socket protocol or speech
   synchronization algorithm changed.
-* Piper compatibility: a nonempty string list from `/voices`, or the configured
-  synthesis endpoint rejecting empty input specifically for missing text.
-  Faster-Whisper compatibility: the repository's `/recognize` response to `{}`
-  is HTTP 400 with `error: "Invalid JSON"`. These probes do not submit audio or
-  synthesize speech. Per-probe timeout: 1.5 seconds, response cap: 64 KiB.
+* Piper compatibility: POST a short text to the configured synthesis endpoint
+  and validate its complete PCM WAV response, independent of Content-Type.
+  The probe synthesizes audio but does not play or save it. Its timeout is 15
+  seconds and response cap 2 MiB. Faster-Whisper compatibility remains the
+  repository's HTTP 400 `Invalid JSON` response to `{}` on `/recognize`, with
+  a 1.5-second timeout and 64 KiB response cap.
 * An occupied incompatible or not-yet-ready port causes a clear startup failure.
   No port owner is killed or adopted. Remote hosts remain externally managed.
   New local speech children have a 120-second readiness window each; one probe

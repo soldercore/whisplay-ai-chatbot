@@ -7,6 +7,30 @@ import { checkCancelled } from "./operation-lifecycle";
 type Service = { name: string; host: string; port: number; path: string; args: string[] };
 const local = (host: string) => ["localhost", "127.0.0.1", "0.0.0.0"].includes(host);
 
+// Validate the complete RIFF container and require a usable PCM format/data
+// pair. Content-Type is unreliable in Piper 1.8.
+function validPcmWav(data: unknown): boolean {
+  if (!Buffer.isBuffer(data) || data.length < 44 || data.toString("ascii", 0, 4) !== "RIFF"
+    || data.toString("ascii", 8, 12) !== "WAVE" || data.readUInt32LE(4) + 8 !== data.length) return false;
+  let offset = 12, format = false, audio = false, blockAlign = 0;
+  while (offset + 8 <= data.length) {
+    const id = data.toString("ascii", offset, offset + 4);
+    const size = data.readUInt32LE(offset + 4), start = offset + 8, end = start + size;
+    if (end > data.length || end + (size % 2) > data.length) return false;
+    if (id === "fmt ") {
+      if (size < 16 || data.readUInt16LE(start) !== 1) return false;
+      const channels = data.readUInt16LE(start + 2), rate = data.readUInt32LE(start + 4);
+      const byteRate = data.readUInt32LE(start + 8), align = data.readUInt16LE(start + 12);
+      const bits = data.readUInt16LE(start + 14);
+      if (!channels || !rate || !bits || bits % 8 || align !== channels * bits / 8 || byteRate !== rate * align) return false;
+      format = true; blockAlign = align;
+    }
+    if (id === "data") { if (!format || !size || size % blockAlign) return false; audio = true; }
+    offset = end + (size % 2);
+  }
+  return format && audio && offset === data.length;
+}
+
 export async function portAvailable(port: number, host = "0.0.0.0"): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
@@ -21,14 +45,10 @@ export async function compatibleService(service: Pick<Service, "name" | "host" |
     maxContentLength: 65536, validateStatus: () => true };
   try {
     if (service.name === "Piper") {
-      const voices = await axios.get(`${base}/voices`, options);
-      if (voices.status === 200 && Array.isArray(voices.data)
-        && voices.data.length > 0 && voices.data.every((v: unknown) => typeof v === "string")) return true;
-      // Older Piper versions have no /voices. Empty input must be rejected
-      // specifically as missing text: this probe must never synthesize audio.
-      const response = await axios.post(`${base}${service.path}`, {}, options);
-      return response.status === 400 && /(?:no|missing|required|provide).*text|text.*(?:required|missing)/i.test(
-        typeof response.data === "string" ? response.data : String(response.data?.error || ""));
+      const response = await axios.post(`${base}${service.path}`, { text: "Hello." }, {
+        ...options, timeout: 15000, maxContentLength: 2 * 1024 * 1024, responseType: "arraybuffer",
+      });
+      return response.status === 200 && validPcmWav(response.data);
     }
     const response = await axios.post(`${base}/recognize`, {}, options);
     return response.status === 400 && response.data?.error === "Invalid JSON";

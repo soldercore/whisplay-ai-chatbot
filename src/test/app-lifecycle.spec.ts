@@ -133,9 +133,17 @@ function services({ occupied = false, responses = [] as any[], startupExit = fal
 }
 const whisper = { name: "Faster-Whisper", host: "localhost", port: 8803, path: "/recognize", args: ["fixture.py"] };
 const whisperReady = { status: 400, data: { error: "Invalid JSON" } };
+function pcmWav(length = 108588): Buffer {
+  const wav = Buffer.alloc(length);
+  wav.write("RIFF", 0); wav.writeUInt32LE(length - 8, 4); wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(22050, 24); wav.writeUInt32LE(44100, 28); wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(length - 44, 40);
+  return wav;
+}
 
 test("compatible external Whisper and Piper are reused without spawning or owning them", async () => {
-  const f = services({ responses: [whisperReady, { status: 200, data: ["glad"] }] });
+  const f = services({ responses: [whisperReady, { status: 200, data: pcmWav() }] });
   await f.api.ensureLocalService(whisper);
   await f.api.ensureLocalService({ ...whisper, name: "Piper", path: "/synthesize" });
   assert.equal(f.children.length, 0); assert.equal(f.stopped.length, 0);
@@ -149,15 +157,27 @@ test("occupied incompatible port fails closed without starting/killing a process
   assert.equal(f.children.length, 0); assert.equal(f.stopped.length, 0);
 });
 
-test("legacy Piper missing-text probe is compatible; arbitrary HTTP responses are not", async () => {
-  const legacy = services({ responses: [{ status: 404 }, { status: 400, data: { error: "No text provided" } }] });
-  await legacy.api.ensureLocalService({ ...whisper, name: "Piper", path: "/synthesize" });
-  assert.equal(legacy.children.length, 0);
-  assert.equal(legacy.requests[1][0], "http://localhost:8803/synthesize");
-  assert.equal(JSON.stringify(legacy.requests[1][1]), "{}");
-  const wrong = services({ occupied: true, responses: [{ status: 200, data: { voices: "wrong" } }, { status: 200, data: "OK" }] });
-  await assert.rejects(wrong.api.ensureLocalService({ ...whisper, name: "Piper" }), /occupied/);
-  assert.equal(wrong.children.length, 0);
+test("Piper probes configured synthesis endpoint with bounded valid text", async () => {
+  const f = services({ responses: [{ status: 200, data: pcmWav() }] });
+  await f.api.prepareLocalServices({ TTS_SERVER: "piper-http", PIPER_HTTP_HOST: "127.0.0.1", PIPER_HTTP_PATH: "synthesize" });
+  assert.equal(f.requests[0][0], "http://127.0.0.1:8805/synthesize");
+  assert.equal(JSON.stringify(f.requests[0][1]), '{"text":"Hello."}');
+  assert.equal(f.requests[0][2].timeout, 15000); assert.equal(f.requests[0][2].maxContentLength, 2 * 1024 * 1024);
+  assert.equal(f.requests[0][2].responseType, "arraybuffer");
+  assert.equal(f.children.length, 0); assert.equal(f.stopped.length, 0);
+});
+
+for (const [name, response] of [
+  ["HTTP error", { status: 500, data: pcmWav() }],
+  ["HTML", { status: 200, data: Buffer.from("<html>not audio</html>") }],
+  ["truncated WAV", { status: 200, data: pcmWav().subarray(0, 100) }],
+  ["invalid PCM format", { status: 200, data: (() => { const b = pcmWav(); b.writeUInt16LE(3, 20); return b; })() }],
+  ["invalid chunk length", { status: 200, data: (() => { const b = pcmWav(); b.writeUInt32LE(999999, 40); return b; })() }],
+  ["transport timeout", new Error("timeout")],
+] as [string, any][]) test(`invalid Piper response fails closed without touching external service: ${name}`, async () => {
+  const f = services({ occupied: true, responses: [response] });
+  await assert.rejects(f.api.ensureLocalService({ ...whisper, name: "Piper", path: "/synthesize" }), /occupied/);
+  assert.equal(f.children.length, 0); assert.equal(f.stopped.length, 0);
 });
 
 test("owned service waits for readiness and retains existing startup arguments", async () => {
@@ -205,8 +225,15 @@ test("remote/unselected services are untouched and invalid ports reject", async 
 test("real loopback probes distinguish compatible APIs, wrong APIs and occupied ports", async () => {
   let mode = "piper";
   const server = http.createServer((req, res) => {
+    if (mode === "piper" && req.url === "/synthesize") {
+      let body = ""; req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        if (body !== '{"text":"Hello."}') { res.statusCode = 500; return res.end("<html>error</html>"); }
+        res.setHeader("Content-Type", "text/html"); res.end(pcmWav());
+      });
+      return;
+    }
     res.setHeader("Content-Type", "application/json");
-    if (mode === "piper" && req.url === "/voices") return res.end('["glad"]');
     res.statusCode = 400;
     res.end(JSON.stringify({ error: mode === "whisper" ? "Invalid JSON" : "unrelated endpoint" }));
   });
@@ -221,6 +248,22 @@ test("real loopback probes distinguish compatible APIs, wrong APIs and occupied 
     assert.equal(await compatibleService({ ...whisper, host: "127.0.0.1", port }), false);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   assert.equal(await portAvailable(port, "127.0.0.1"), true);
+});
+
+test("Piper probe rejects oversized responses and connection resets", async () => {
+  let reset = false;
+  const server = http.createServer((_req, res) => {
+    if (reset) { res.destroy(); return; }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(Buffer.alloc(2 * 1024 * 1024 + 1));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+  try {
+    const service = { name: "Piper", host: "127.0.0.1", port, path: "/synthesize" };
+    assert.equal(await compatibleService(service), false);
+    reset = true; assert.equal(await compatibleService(service), false);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
 test("Linux bootstrap guard accepts only the expected inherited lock inode", () => {
