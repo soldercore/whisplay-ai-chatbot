@@ -202,7 +202,7 @@ test("comparison requires the exact loaded model/context and preserves productio
 
 test("all comparison scenarios fit 4096 without trimming and request no tools or context change", () => {
   const generation = comparison.settings({});
-  for (const scenario of comparison.fixture.scenarios) for (const variant of ["A", "B"]) {
+  for (const scenario of comparison.fixture.scenarios) for (const variant of ["A", "B", "C"]) {
     const history = [{ role: "user", content: scenario.turns[0] }];
     const messages = comparison.buildMessages(variant, scenario, history, SPEECH_PROMPT);
     const request = comparison.requestFor(messages, generation);
@@ -288,4 +288,68 @@ test("comparison CLI dry-run emits a single JSON plan with the actual shared spe
   assert.match(plan.prompts.B, /Format your replies for spoken text-to-speech/);
   assert.match(plan.prompts.B, /Today is/); assert.match(plan.prompts.B, /endConversation/);
   assert.equal(plan.scenarios.length, 10);
+});
+
+test("candidate C retains A's factual and safety rules and stays evaluation-only without examples", () => {
+  const c = comparison.candidateC;
+  assert.equal(personaPrompt({ ASSISTANT_PERSONA: "glados" }), comparison.production);
+  assert.notEqual(c, comparison.production);
+  assert.ok(c.length <= 1800, `${c.length} characters`);
+  assert.doesNotMatch(c, /User:|Assistant:/);
+  for (const rule of ["Speak deadpan, with quiet superiority", "Humor is occasional, never compulsory",
+    "Do not repeat it or ask unnecessary follow-up questions", "never end by offering more help",
+    "No unsolicited disclaimers about being AI, code or lacking feelings",
+    "Answer direct identity questions honestly and briefly", "one short sentence, then stop",
+    "one dry observation, not a verdict on humanity", "never invent measurements",
+    "For distress, health concerns or serious assistance, drop the mockery",
+    "state the measured value and unit", "Give detail when requested", "call emergency services now, without jokes"]) {
+    assert.ok(c.includes(rule), rule);
+  }
+  const scenario = comparison.fixture.scenarios.find((s: any) => s.id === "temperature");
+  for (const value of [null, { value: 47.125, unit: "°C" }]) {
+    const history = [{ role: "user", content: scenario.turns[0] }];
+    const a = comparison.buildMessages("A", scenario, history, SPEECH_PROMPT, " fixed date", value);
+    const cMessages = comparison.buildMessages("C", scenario, history, SPEECH_PROMPT, " fixed date", value);
+    assert.equal(cMessages[0].content, c + SPEECH_PROMPT + " fixed date");
+    assert.deepEqual(a.slice(1), cMessages.slice(1));
+  }
+  assert.throws(() => comparison.buildMessages("unknown", scenario, []), /Unknown/);
+});
+
+test("A/C comparison reuses paired scenarios, settings, isolated history and unfilled scores", async () => {
+  const records: any[] = [];
+  const generation = comparison.settings({});
+  await comparison.compare({ generation, challenger: "C", suffix: SPEECH_PROMPT, webNote: " fixed date",
+    repetitions: 3, temperature: null, emit: (r: any) => records.push(r),
+    generateAnswer: async (request: any) => ({ content: request.messages[0].content.startsWith(comparison.candidateC) ? "C answer." : "A answer." }) });
+  assert.equal(records.length, 78);
+  assert.equal(records[0].variant, "A");
+  assert.equal(records.find(r => r.repeat === 2).variant, "C");
+  for (const r of records) {
+    assert.ok(["A", "C"].includes(r.variant));
+    assert.deepEqual(r.request.options, generation.options);
+    assert.equal(r.request.model, generation.model);
+    assert.ok(Object.values(r.scores).every(score => score === null));
+    const scenario = comparison.fixture.scenarios.find((s: any) => s.id === r.scenario);
+    const seedCount = scenario.prior?.length || 0;
+    if (seedCount) assert.deepEqual(r.request.messages.slice(1, 1 + seedCount), scenario.prior);
+    const earlier = r.request.messages.slice(1 + seedCount).filter((m: any) => m.role === "assistant" && m.content);
+    assert.equal(earlier.length, r.turn - 1);
+    assert.ok(earlier.every((m: any) => m.content === `${r.variant} answer.`));
+  }
+});
+
+test("CLI selects C explicitly while preserving production suffix, scenarios and model settings", () => {
+  const plan = (args: string[]) => JSON.parse(execFileSync(process.execPath,
+    ["--require", "ts-node/register/transpile-only", "scripts/persona-comparison.cjs", "--plan", ...args], {
+      cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 10000,
+      env: { ...process.env, OLLAMA_MODEL: comparison.fixture.model },
+    }));
+  const ab = plan([]), ac = plan(["--candidate=C"]);
+  assert.deepEqual(Object.keys(ac.prompts), ["A", "C"]);
+  assert.equal(ac.prompts.A, ab.prompts.A);
+  assert.equal(ac.prompts.C.slice(comparison.candidateC.length), ac.prompts.A.slice(comparison.production.length));
+  assert.deepEqual(ac.generation, ab.generation);
+  assert.deepEqual(ac.scenarios, ab.scenarios);
+  assert.deepEqual(ac.dimensions, ab.dimensions);
 });

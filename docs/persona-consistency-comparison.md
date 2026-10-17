@@ -1,5 +1,67 @@
 # GLaDOS personality: evidence and controlled A/B comparison
 
+## Final evaluation-only candidate C
+
+The user subsequently reported physical Qwen3.5 2B results: A had better dry
+humor about humans; B had better short greetings but sometimes asked unwanted
+follow-up questions. Both still produced generic disclaimers, monologues or
+unsupported claims. These are user-reported observations; the raw physical
+outputs were not independently inspected in this iteration. The earlier
+NOT VERIFIED statements below describe the original local investigation.
+
+Candidate C starts from the actual production A prefix and makes four targeted
+edits in `scripts/persona-comparison.cjs`: constrain discussion of humans to one
+dry observation, stop after a short greeting, broaden the no-invention rule to
+personal experiences, and replace the narrow AI-language-model phrase ban with
+no unsolicited AI/code/feelings disclaimers plus honest direct identity replies.
+A's deadpan delivery, optional humor, no unnecessary questions/service offers,
+technical detail, measurement units and serious/emergency rules stay intact.
+No examples were added: the reported comparison does not demonstrate that B's
+four examples improved humor, and copying/catchphrases remain a known risk.
+Neither production A nor the original B fixture was changed.
+
+The existing runner defaults to A/B. `--candidate=C` selects A/C instead, with
+the same ten scenarios, 13 turns, three repetitions, alternating variant order,
+shared suffix/context, settings and independent histories: 78 generations.
+Human scores remain null until reviewed. No production selection accepts C.
+
+Minimal physical procedure, after these evaluation files are available through
+the user's normal process, with the exact model already loaded at 4096 and no
+concurrent chatbot inference:
+
+```bash
+cd ~/whisplay-ai-chatbot
+mkdir -p .test-artifacts
+node --require ts-node/register/transpile-only scripts/persona-comparison.cjs --plan --candidate=C > .test-artifacts/persona-ac-plan.jsonl
+node --require ts-node/register/transpile-only scripts/persona-comparison.cjs --run --candidate=C > .test-artifacts/persona-ac-results.jsonl
+echo "Evaluation exit code: $?"
+```
+
+Inspect the plan before `--run`; do not alter model, thinking or output settings
+between variants. Prioritize `greeting`/`repeated_greeting`, `humans`, `temperature`
+and `serious`, then check the other existing cases for regressions. Review all
+three repetitions for brief natural greetings without questions, restrained
+humor without a humanity monologue, exact supplied temperature/unit or honest
+unavailability, and practical respectful help without mockery. Review factual,
+nonfabrication and safety dimensions separately; never trade them for humor.
+Temperature is one actual host snapshot when available, supplied identically
+through simulated tool context; this runner does not validate real tool dispatch.
+
+C is a hypothesis, not a proven quality fix. Prompt rules cannot guarantee
+truthfulness, brevity or style; prior generic history may still influence it.
+No local unit test establishes Qwen behavior. Do not activate C unless actual
+paired results improve greetings/consistency while retaining A's humor and
+accuracy, with no serious-help or factual regression. No additional personality
+iteration or production change is included here.
+
+Local validation of C: 19/19 focused persona tests and 433/433 full-suite tests
+passed; production TypeScript and `git diff --check` passed. C is 1729 ASCII
+characters versus A's 1550; the existing conservative estimator reports 604
+versus 544 tokens, a 60-token increase (actual Qwen tokenization unmeasured).
+No C model generations or physical tests were performed.
+
+## Original investigation record
+
 Date: 2026-10-18. **Production persona is unchanged. Candidate B is not enabled.**
 The task requires demonstrating improvement before another production change.
 There is no active development Ollama at `127.0.0.1:11434`; the exact Qwen model

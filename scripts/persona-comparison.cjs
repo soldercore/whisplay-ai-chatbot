@@ -11,6 +11,15 @@ const candidate = [fixture.candidateInstructions, fixture.exampleInstruction,
   ...fixture.examples.map(example => `User: ${example.user}\nAssistant: ${example.assistant}`),
   "End of fictional tone examples.\n"].join("\n\n");
 const production = personaPrompt({ ASSISTANT_PERSONA: "glados" });
+// Evaluation only: retain A's delivery and factual/safety rules; no examples
+// that could become catchphrases or answers keyed to the evaluation questions.
+const candidateC = production
+  .replace("Never explain a joke.", "Never explain a joke. On humans, make one dry observation, not a verdict on humanity.")
+  .replace("Greetings: one short sentence.", "Greetings: one short sentence, then stop.")
+  .replace("facts about the user or observations", "facts about the user, personal experiences or observations")
+  .replace("Never call yourself an AI language model.",
+    "No unsolicited disclaimers about being AI, code or lacking feelings. Answer direct identity questions honestly and briefly.");
+const prefixes = { A: production, B: candidate, C: candidateC };
 const quiet = work => { const log = console.log; console.log = () => {}; try { return work(); } finally { console.log = log; } };
 
 function settings(env) {
@@ -25,7 +34,8 @@ function settings(env) {
 }
 
 function buildMessages(variant, scenario, history, suffix = "", webNote = "", temperature = null) {
-  const messages = [{ role: "system", content: (variant === "A" ? production : candidate) + suffix + webNote }];
+  if (!Object.hasOwn(prefixes, variant)) throw Error("Unknown comparison variant");
+  const messages = [{ role: "system", content: prefixes[variant] + suffix + webNote }];
   if (scenario.context) messages.push({ role: "system", content: scenario.context });
   messages.push(...history.map(message => ({ ...message })));
   if (scenario.tool && history.length === 1) {
@@ -79,12 +89,13 @@ async function generate(request, signal) {
     prompt_eval_duration: done.prompt_eval_duration, eval_count: done.eval_count, eval_duration: done.eval_duration };
 }
 
-async function compare({ generation, suffix, webNote, temperature, repetitions = 3, generateAnswer = generate, emit }) {
+async function compare({ generation, suffix, webNote, temperature, challenger = "B", repetitions = 3, generateAnswer = generate, emit }) {
+  if (!["B", "C"].includes(challenger)) throw Error("Use comparison candidate B or C");
   for (let repeat = 0; repeat < repetitions; repeat++) {
     for (const scenario of fixture.scenarios) {
       // Alternate order to reduce systematic first/second cache bias. Histories
       // belong to one variant/scenario/replicate; no previous job is reused.
-      for (const variant of repeat % 2 ? ["B", "A"] : ["A", "B"]) {
+      for (const variant of repeat % 2 ? [challenger, "A"] : ["A", challenger]) {
         const history = (scenario.prior || []).map(message => ({ ...message }));
         for (let turn = 0; turn < scenario.turns.length; turn++) {
           history.push({ role: "user", content: scenario.turns[turn] });
@@ -107,6 +118,8 @@ async function compare({ generation, suffix, webNote, temperature, repetitions =
 }
 
 async function main(args) {
+  const challenger = args.includes("--candidate=C") ? "C" : "B";
+  args = args.filter(arg => arg !== "--candidate=C");
   if (args.length > 1 || (args.length && !["--plan", "--run"].includes(args[0]))) throw Error("Use --plan (default) or --run");
   // Reuse only the existing pure prompt assembly. Never import the Ollama
   // provider, registry, memory store, directory initializer or hardware modules.
@@ -118,8 +131,8 @@ async function main(args) {
     ? quiet(() => require("../src/config/web-search").getWebSearchSystemNote(new Date())) : "";
   const generation = settings(process.env);
   const measure = prompt => ({ characters: prompt.length, estimatedTokens: promptMessageTokens({ role: "system", content: prompt }) });
-  console.log(JSON.stringify({ kind: "plan", generation, A: measure(production), B: measure(candidate),
-    prompts: { A: production + suffix + webNote, B: candidate + suffix + webNote },
+  console.log(JSON.stringify({ kind: "plan", generation, A: measure(production), [challenger]: measure(prefixes[challenger]),
+    prompts: { A: production + suffix + webNote, [challenger]: prefixes[challenger] + suffix + webNote },
     scenarios: fixture.scenarios, repetitions: 3, dimensions: fixture.dimensions,
     limits: "Text-only, no tools offered/executed; tool results and memory are fixtures. No production routing/authorization or subjective quality proof." }));
   if (args[0] !== "--run") return;
@@ -127,8 +140,8 @@ async function main(args) {
   assertRuntime(runtime.data);
   const temperature = readTemperature();
   console.log(JSON.stringify({ kind: "host_sample", sampledAt: new Date().toISOString(), temperature }));
-  await compare({ generation, suffix, webNote, temperature, emit: record => console.log(JSON.stringify(record)) });
+  await compare({ generation, suffix, webNote, temperature, challenger, emit: record => console.log(JSON.stringify(record)) });
 }
 
-module.exports = { fixture, production, candidate, settings, buildMessages, requestFor, assertRuntime, generate, compare };
+module.exports = { fixture, production, candidate, candidateC, settings, buildMessages, requestFor, assertRuntime, generate, compare };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });
