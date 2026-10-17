@@ -25,12 +25,32 @@ const OFFICE_HOLDER =
   /\bwho(?: is|'s| are)(?: the)? (president|prime minister|chancellor|ceo|king|queen|pope|leader|mayor|governor)\b/i;
 const YEAR = /\b(20\d\d)\b/g;
 
+const CASUAL_QUESTION = new RegExp(
+  "^(?:how are you(?: doing| feeling)?|how have you been|how(?:'s| is) it going|" +
+  "how(?:'s| is| has) your day(?: going| been)?|what(?:'s| is) up(?: with you)?|" +
+  "what are you up to|what(?:'s| is) new with you|tell me (?:a|another) joke|" +
+  "let(?:'s| us) chat(?: for a bit)?|(?:thanks|thank you)(?: for your help)?)" +
+  "(?: (?:today|tonight|right now|now|at the moment|this morning|this afternoon|this evening|so far(?: today)?))?$", "i",
+);
+
+// Match a whole, clearly conversational utterance, not a keyword somewhere in
+// a request. Mixed requests, quoted search queries and unclear subjects remain
+// eligible for search. This rule also bounds model-selected search permission.
+export const isCasualConversation = (question: string): boolean => {
+  let text = `${question || ""}`.replace(/’/g, "'").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "").trim();
+  const greeting = /^(?:hi|hey|hello|good morning|good afternoon|good evening|good night|bye|goodbye)(?:[, ]+glados)?$/i;
+  if (greeting.test(text)) return true;
+  text = text.replace(/^(?:hi|hey|hello|good morning|good afternoon|good evening)[,!. ]+/i, "")
+    .replace(/^glados[,!. ]+/i, "").replace(/[, ]+glados$/i, "").trim();
+  return greeting.test(text) || CASUAL_QUESTION.test(text);
+};
+
 export const needsCurrentInformation = (
   question: string,
   now: Date = new Date(),
 ): boolean => {
   const text = `${question || ""}`.trim();
-  if (!text || DATE_ONLY.test(text)) return false;
+  if (!text || DATE_ONLY.test(text) || isCasualConversation(text)) return false;
   if (RECENCY.test(text)) return true;
   if (CURRENT.test(text) && !PHYSICS_CURRENT.test(text)) return true;
   if (LIVE_DATA.test(text) || RELEASE_OR_RESULT.test(text) || OFFICE_HOLDER.test(text)) {

@@ -187,6 +187,31 @@ test("news questions use the news search type", () => {
   assert.equal(searchTypeFor("When is GTA 6 coming out?"), "web");
 });
 
+test("greetings and clear small talk never become current-information requests because of recency words", () => {
+  for (const question of ["How are you doing today?", "How are you doing?", "How are you feeling right now?",
+    "Hey GLaDOS, how are you doing today?", "Hi! How are you today?", "How's your day going?",
+    "What are you up to today?", "What's up?", "What's new with you today?", "Hello, GLaDOS!",
+    "Tell me a joke today.", "Let's chat for a bit.", "Thanks for your help today."]) {
+    assert.equal(needsCurrentInformation(question), false, question);
+  }
+});
+
+test("greeting-like wording does not suppress mixed, quoted, ambiguous or real current-information questions", () => {
+  for (const question of ["How are you doing today? What's the weather in Oslo?",
+    "Hi! What's the latest AI news?", "Search the web for 'How are you doing today?'",
+    "How is Apple doing today?", "What's happening today?", "What's new in AI today?"]) {
+    assert.equal(needsCurrentInformation(question), true, question);
+  }
+});
+
+test("the small-talk guard preserves all other tool eligibility, ordering and follow-up rules", () => {
+  const { toolsRelevantTo } = require("../config/tool-router");
+  const tools = ["fixtureFirst", "web_search", "setVolume", "fetch_webpage", "fixtureLast"]
+    .map(name => ({ function: { name } }));
+  assert.deepEqual(toolsRelevantTo("What's up?", tools, "Set the volume to 50 percent.")
+    .map((tool: any) => tool.function.name), ["fixtureFirst", "fetch_webpage", "fixtureLast", "setVolume"]);
+});
+
 // ---- Search results ----------------------------------------------------------
 
 test("DuckDuckGo results keep their snippets", () => {
@@ -249,6 +274,60 @@ test("an ordinary question is answered without searching", async () => {
   assert.equal(chatRequests[0].messages.some((m) => m.role === "tool"), false);
   assert.equal(answer, "The capital of France is Paris.");
 });
+
+test("the reported greeting reaches the model without a forced search or injected tool result", async () => {
+  responders = [() => say("Operational. Thank you for asking.")];
+  const result = await ask("How are you doing today?");
+  assert.deepEqual(searches, []); assert.deepEqual(result.toolEvents, []);
+  assert.equal(chatRequests.length, 1); assert.equal(result.ends, 1);
+  assert.equal(toolNames(chatRequests[0]).includes("web_search"), false);
+  assert.equal(toolNames(chatRequests[0]).includes("fetch_webpage"), true, "unrelated tool behavior is preserved");
+  assert.equal(chatRequests[0].messages.some(message => message.role === "tool"), false);
+  assert.equal(result.answer, "Operational. Thank you for asking.");
+});
+
+for (const mode of ["native", "JSON fallback"] as const) {
+  test(`small talk cannot execute a model-proposed search (${mode})`, async () => {
+    const call = { query: "How are you doing", search_type: "web" };
+    responders = [() => mode === "native" ? callTool("web_search", call)
+      : say(JSON.stringify({ name: "web_search", arguments: call })), () => say("Should not require a search.")];
+    const result = await ask("How are you doing?");
+    assert.deepEqual(searches, []); assert.equal(chatRequests.length, 1); assert.equal(result.ends, 1);
+    assert.equal(toolNames(chatRequests[0]).includes("web_search"), false);
+    if (mode === "native") assert.match(result.answer, /Completion was not verified/);
+    else assert.equal(result.answer, "Sorry, I didn't catch that. Could you say it again?");
+  });
+
+  test(`a previous search cannot grant search permission to the next greeting (${mode})`, async () => {
+    responders = [groundedModel];
+    await ask("What's the latest AI news?");
+    assert.equal(searches.length, 1);
+    const previous = JSON.parse(JSON.stringify(chatRequests[0].messages));
+    responders = [() => mode === "native" ? callTool("web_search", { query: "latest AI news", search_type: "web" })
+      : say(JSON.stringify({ name: "web_search", arguments: { query: "latest AI news", search_type: "web" } })), () => say("No additional search needed.")];
+    await ask("What's up?");
+    assert.equal(searches.length, 1, "only the preceding genuine search may execute");
+    assert.equal(chatRequests.length, 2);
+    assert.equal(toolNames(chatRequests[1]).includes("web_search"), false);
+    assert.deepEqual(chatRequests[1].messages.slice(0, previous.length), previous, "existing history remains unchanged");
+    assert.equal(chatRequests[1].messages[chatRequests[1].messages.length - 1].content, "What's up?");
+  });
+}
+
+for (const [question, automatic] of [["What's new?", false], ["Search the web for 'How are you doing today?'", true],
+  ["How are you doing today? What's the weather in Oslo?", true]] as const) {
+  test(`real or ambiguous search remains available: ${question}`, async () => {
+    assert.equal(needsCurrentInformation(question), automatic);
+    const args = { query: question, search_type: "web" };
+    responders = automatic ? [() => say("Here are the requested results.")]
+      : [() => callTool("web_search", args), () => say("Here are the requested results.")];
+    const result = await ask(question);
+    assert.deepEqual(searches, [args]);
+    assert.ok(toolNames(chatRequests[0]).includes("web_search"));
+    assert.equal(result.answer, "Here are the requested results.");
+    assert.equal(chatRequests.length, automatic ? 1 : 2);
+  });
+}
 
 test("when the search fails the answer says so instead of guessing", async () => {
   llmFuncMap.web_search = async (args: any) => {

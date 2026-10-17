@@ -2,7 +2,7 @@
  * Chooses which tools a small local model is offered for a request. Tools that
  * read private data (memory), change the device (volume) or create images are
  * offered only when the request may need them; all other tools, including web
- * search, are always offered.
+ * search, are always offered except web_search for clear conversational turns.
  *
  * Without this, qwen3 1.7B (thinking off) calls some tool for ordinary
  * questions that end in an instruction: "What is 2 plus 2? Answer in one
@@ -11,7 +11,7 @@
  * Every extra tool round costs a full model call, which is slow on a Pi.
  */
 import { mayConcernUserMemory } from "./memory-commands";
-import { needsCurrentInformation } from "./web-search-router";
+import { isCasualConversation, needsCurrentInformation } from "./web-search-router";
 
 const MENTIONS_VOLUME =
   /\b(volume|louder|quieter|softer|loud|quiet|mute|unmute|sound|hear|speaker|turn (it|this|that|the sound|the music)? ?(up|down))\b/i;
@@ -73,8 +73,8 @@ export const isFollowUp = (text: string): boolean => {
 };
 
 /**
- * The tools to offer for the user's request: tools without a rule always, in
- * their original order, then the gated tools that apply. A follow-up also keeps
+ * The tools to offer: ungated tools in original order (except web_search for
+ * clear small talk), then gated tools that apply. A follow-up also keeps
  * the tools its previous request qualified for.
  */
 export const toolsRelevantTo = <T extends { function: { name: string } }>(
@@ -82,7 +82,12 @@ export const toolsRelevantTo = <T extends { function: { name: string } }>(
   tools: T[],
   previousRequest = "",
 ): T[] => {
-  const always = tools.filter((tool) => !RULES.has(tool.function.name));
+  // A greeting is a new conversational intent even after a previous search.
+  // Keep ordering and all other tool eligibility unchanged. Native/JSON calls
+  // still pass through the existing exact offered-list authorization boundary.
+  const casual = isCasualConversation(request);
+  const always = tools.filter((tool) => !RULES.has(tool.function.name)
+    && !(casual && tool.function.name === "web_search"));
   const gated = tools
     .filter((tool) => {
       const relevant = RULES.get(tool.function.name);
