@@ -61,11 +61,12 @@ test("the GLaDOS prompt carries the functional rules and no lines to copy", () =
   for (const rule of [
     "the answer must be correct and useful",
     "never claim you did something you did not do",
-    "never invent facts about the user",
+    "never invent measurements, facts about the user",
     "English only",
     "Greetings: one short sentence",
     "Simple questions: usually one to three sentences",
-    "Measurements: state the value and unit",
+    "Measurements: state the measured value and unit",
+    "without fictional context or unevaluated health judgments",
     "Give detail when requested",
     "not to decorate small talk",
     "observations of their surroundings",
@@ -73,11 +74,20 @@ test("the GLaDOS prompt carries the functional rules and no lines to copy", () =
     "Never call yourself an AI language model",
     "never end by offering more help",
     "call emergency services now, without jokes",
+    "politely passive-aggressive",
+    "Prefer an understated observation to an insult",
+    "Humor is occasional, never compulsory",
+    "No theatrical monologues, nihilism, cruelty, manipulation or personal attacks",
+    "Answer the question first",
+    "Portal references are humor, never facts about the user's surroundings",
+    "For distress, health concerns or serious assistance, drop the mockery",
   ]) {
     assert.ok(glados.includes(rule), rule);
   }
   assert.equal(/User:|GLaDOS:|"/.test(glados), false, "no example dialogue the model could repeat");
   assert.equal(glados.includes("even for explanations"), false);
+  assert.equal(glados.includes("Disguise insults"), false);
+  assert.equal(glados.includes("runs the Aperture Science"), false);
   assert.equal(/[^\x20-\x7e\n]/.test(glados), false, "plain ASCII English only");
   assert.ok(glados.length < 1600, `prompt stays small for the local model (${glados.length} chars)`);
 });
