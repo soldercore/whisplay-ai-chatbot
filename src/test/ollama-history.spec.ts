@@ -77,6 +77,29 @@ async function ask(provider: any, question = "Use the history tool.", history: o
 }
 const wireMessages = (request: number) => JSON.parse(captured[request].raw).messages.slice(1);
 
+test("successive requests trim scoped context with old turns and preserve current context and tool history", async t => {
+  t.mock.method(require("axios"), "get", async () => ({ data: { models: [{ name: "test", context_length: 4096 }] } }));
+  const provider = client();
+  const global = { role: "system", content: "Permanent additional instruction" };
+  for (let turn = 0; turn < 18; turn++) {
+    replies = [calls([call("historyAlpha", { label: String(turn) })]), finish(`Answer ${turn}.`)];
+    const context = { role: "system", contextScope: "turn", content: `Context ${turn}: ` + "x".repeat(700) };
+    const prior = turn === 0 ? [global, context] : [context];
+    await ask(provider, `Question ${turn}`, prior);
+    const sent = captured.at(-1)!.body.messages;
+    assert.ok(sent.some((m: any) => m.content === global.content));
+    assert.ok(sent.some((m: any) => m.content === context.content));
+    assert.ok(sent.some((m: any) => m.role === "tool" && m.content === `[success]historyAlpha:${turn}`));
+    assert.ok(sent.every((m: any) => !("contextScope" in m)));
+    for (const message of sent.filter((m: any) => m.content.startsWith("Context "))) {
+      const owner = message.content.match(/^Context (\d+):/)[1];
+      assert.ok(sent.some((m: any) => m.role === "user" && m.content === `Question ${owner}`), "no orphaned context");
+    }
+  }
+  assert.equal(captured.at(-1)!.body.messages.some((m: any) => m.content.startsWith("Context 0:")), false);
+  assert.equal(effects.length, 18, "one authorized execution per turn");
+});
+
 test("A native assistant tool calls preserve arguments, index and supplied ID on the wire", async () => {
   const args = { label: "æøå", details: { count: 2, enabled: true, tags: ["a", "ø"] } };
   replies = [calls([call("historyAlpha", args, 7, "provided-alpha-id")], "Checking. "), finish()];

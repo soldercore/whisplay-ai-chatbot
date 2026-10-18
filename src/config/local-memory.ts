@@ -548,7 +548,6 @@ const markRecalled = (items: SearchResult[]): void => {
 
 const searchStore = (query: string, mark = true): string[] => {
   const results = buildSearchMatches(query)
-    .filter((item) => !recalledMemoryKeys.has(item.key))
     .slice(0, Math.max(1, memoryMaxSearchResults));
 
   if (mark) {
@@ -623,7 +622,7 @@ const buildMemoryPrompt = (userText: string): string => {
   const wakeupItems = store.userMemories
     .slice()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .filter((memory) => !recalledMemoryKeys.has(`user:${memory.id}`))
+    // Each relevant turn needs its own context; an earlier turn may be trimmed.
     .filter((memory) => !HAN.test(memory.content))
     .filter((memory) => topicWords(userText).some((word) =>
       containsWord(normalizeSubject(`${factSubject(memory)} ${memory.content}`), word)))

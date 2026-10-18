@@ -3,6 +3,30 @@ import assert from "node:assert/strict";
 import { boundOllamaHistory } from "../cloud-api/local/ollama-history-limits";
 import type { OllamaMessage } from "../type";
 
+test("history cap removes injected context with its owner and preserves newer context, globals and tool pairs", () => {
+  const global: OllamaMessage = { role: "system", content: "Persona and global rules" };
+  const extra: OllamaMessage = { role: "system", content: "Additional global rule" };
+  const messages = [global, extra];
+  const turns: OllamaMessage[][] = [];
+  for (let i = 0; i < 50; i++) {
+    const turn: OllamaMessage[] = [
+      { role: "system", content: `Memory ${i}`, contextScope: "turn" },
+      { role: "system", content: `RAG ${i}`, contextScope: "turn" },
+      { role: "user", content: `Question ${i}` },
+      { role: "assistant", content: "", tool_calls: [[{ function: { index: 0, name: "probe", arguments: {} } }]] },
+      { role: "tool", content: `[success]Result ${i}`, tool_name: "probe" },
+      { role: "assistant", content: `Answer ${i}` },
+    ];
+    turns.push(turn); messages.push(...turn);
+    assert.equal(boundOllamaHistory(messages), false);
+    assert.ok(messages.length <= 200);
+  }
+  assert.deepEqual(messages.slice(0, 2), [global, extra]);
+  assert.equal(messages.includes(turns[0][0]), false);
+  assert.deepEqual(messages.slice(-6), turns.at(-1));
+  for (const turn of turns) for (const message of turn) assert.equal(messages.includes(message), messages.includes(turn[2]));
+});
+
 test("history message cap removes whole older turns and preserves call/result pairs", () => {
   const messages: OllamaMessage[] = [{ role: "system", content: "System" }];
   for (let i = 0; i < 50; i++) messages.push({ role: "user", content: `question ${i}` },

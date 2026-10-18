@@ -3,6 +3,8 @@ export interface Message {
   content: string;
   tool_calls?: FunctionCall[];
   tool_call_id?: string;
+  // Host-only lifetime marker for injected memory/RAG; never sent to Ollama.
+  contextScope?: "turn";
 }
 
 export interface OllamaMessage {
@@ -11,6 +13,7 @@ export interface OllamaMessage {
   tool_calls?: OllamaFunctionCall[][];
   tool_name?: string;
   tool_call_id?: string;
+  contextScope?: "turn";
 }
 
 export enum ASRServer {

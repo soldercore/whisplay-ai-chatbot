@@ -401,11 +401,12 @@ const answerFromAvailableToolResults = async ({
   let finalThinking = "";
   let responseTextBytes = 0;
   try {
-    let requestMessages = [
+    let requestMessages: PromptMessage[] = [
       ...messages.map((msg, index) =>
         withRequestSystemNote({
           role: msg.role,
           content: msg.content,
+          ...(msg.contextScope ? { contextScope: msg.contextScope } : {}),
           ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.flat() } : {}),
           ...(msg.tool_name !== undefined ? { tool_name: msg.tool_name } : {}),
           ...(msg.tool_call_id !== undefined ? { tool_call_id: msg.tool_call_id } : {}),
@@ -426,7 +427,7 @@ const answerFromAvailableToolResults = async ({
       `${ollamaEndpoint}/api/chat`,
       {
         model: ollamaModel,
-        messages: requestMessages,
+        messages: requestMessages.map(({ contextScope, ...message }) => message),
         think: enableThinking,
         stream: true,
         options: {
@@ -563,6 +564,7 @@ const chatWithLLMStreamInternal = async (
     let requestMessages = messages.map((msg, index) => ({
       role: msg.role,
       content: withRequestSystemNote(msg, index).content,
+      ...(msg.contextScope ? { contextScope: msg.contextScope } : {}),
       ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.flat() } : {}),
       ...(msg.tool_name !== undefined ? { tool_name: msg.tool_name } : {}),
       ...(msg.tool_call_id !== undefined ? { tool_call_id: msg.tool_call_id } : {}),
@@ -582,7 +584,7 @@ const chatWithLLMStreamInternal = async (
       `${ollamaEndpoint}/api/chat`,
       {
         model: ollamaModel,
-        messages: requestMessages,
+        messages: requestMessages.map(({ contextScope, ...message }) => message),
         think: enableThinking,
         stream: true,
         options: {

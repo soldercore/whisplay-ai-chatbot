@@ -91,7 +91,7 @@ export const toolsRelevantTo = <T extends { function: { name: string } }>(
   const gated = tools
     .filter((tool) => {
       const relevant = RULES.get(tool.function.name);
-      return relevant && (relevant(request) || (isFollowUp(request) && relevant(previousRequest)));
+      return relevant && (relevant(request) || (!casual && isFollowUp(request) && relevant(previousRequest)));
     })
     .sort((a, b) => GATED_ORDER.get(a.function.name)! - GATED_ORDER.get(b.function.name)!);
   return [...always, ...gated];

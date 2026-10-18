@@ -61,7 +61,7 @@ function evaluate(file: string, dependencies: Record<string, any>) {
 // ChatFlow display callbacks and StreamResponser. Only OS/model/audio edges
 // are simulated; the model's actual Pi output is not inferred from this fixture.
 async function run(t: TestContext, script: any[][], options: { rounds?: number; outcome?: string | Error; cancelLast?: boolean;
-  question?: string; enabled?: boolean; healthOutput?: string | Error; omitHealth?: boolean; cancelHealth?: boolean } = {}) {
+  question?: string; enabled?: boolean; healthOutput?: string | Error; omitHealth?: boolean; cancelHealth?: boolean; context?: boolean } = {}) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_700_000_000_000 });
   // Let Node deliver its one-time experimental-API warning before capturing
   // application errors; no application operation has started yet.
@@ -137,10 +137,11 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
   const utils = require("../utils");
   const states = evaluate("core/chat-flow/states.ts", {
     "../../device/display": display, "../../device/audio": {}, "../../cloud-api/server": { chatWithLLMStream: chat, llmServer: "ollama" },
-    "../../cloud-api/llm": { isImMode: false }, "../Knowledge": {}, "../../cloud-api/knowledge": { enableRAG: false },
+    "../../cloud-api/llm": { isImMode: false }, "../Knowledge": { getSystemPromptWithKnowledge: async () => "Current RAG" },
+    "../../cloud-api/knowledge": { enableRAG: Boolean(options.context) },
     "../../utils/dir": require("../utils/dir"), "../../utils/image": images, "../../cloud-api/whisplay-im/whisplay-im": {},
     "./camera-mode": {}, "../../utils": utils, "../../device/music-player": {},
-    "../../config/local-memory": { prepareMemoryPrompt: () => "", autoSaveExchange: noop },
+    "../../config/local-memory": { prepareMemoryPrompt: () => options.context ? "Current memory" : "", autoSaveExchange: noop },
     "../../config/unsupported-reminder": require("../config/unsupported-reminder"),
   }).flowStates;
   class Machine {
@@ -159,6 +160,7 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
     "../device/audio": {}, "../device/music-player": { isMusicPlaying: () => false },
   }).default;
   const ctx = new Flow();
+  if (options.context) ctx.knowledgePrompts.push("Current RAG"); // An earlier turn used the same retrieved content.
   t.after(() => { ctx.streamResponser.stop(); ctx.resetToolCallDisplay(); });
   // Exercise ordinary model-driven calls independently of mandatory local-state
   // routing; explicit health requests are covered separately below.
@@ -190,6 +192,21 @@ function assertDelivered(result: Awaited<ReturnType<typeof run>>, text: string) 
   assert.ok(result.displayed.some(payload => payload.status === "answering" && payload.text?.includes(text)), "actual ChatFlow display receives the answer");
   assert.equal(result.synthesized.join(" ").includes(PRIVATE_THINKING), false);
 }
+
+test("answer state marks fresh memory and repeated RAG as turn context through native tool rounds", async t => {
+  const result = await run(t, [[probeCall("context")], [{ message: { content: "Answer." }, done: true }]], { context: true });
+  const context = result.history.filter((m: any) => ["Current memory", "Current RAG"].includes(m.content));
+  assert.deepEqual(context.map((m: any) => ({ role: m.role, content: m.content, contextScope: m.contextScope })), [
+    { role: "system", content: "Current memory", contextScope: "turn" },
+    { role: "system", content: "Current RAG", contextScope: "turn" },
+  ]);
+  for (const request of requests) {
+    assert.ok(request.messages.some((m: any) => m.content === "Current memory"));
+    assert.ok(request.messages.some((m: any) => m.content === "Current RAG"));
+    assert.ok(request.messages.every((m: any) => !("contextScope" in m)));
+  }
+  assertDelivered(result, "Answer.");
+});
 
 test("scenario A: measured health results reach round 1 and visible text reaches display, TTS and playback", async t => {
   const result = await run(t, [[healthCall()], visible()]);

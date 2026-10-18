@@ -305,6 +305,38 @@ test("an ambiguous mention is preserved without being promoted to a favorite", (
   assert.match(prompt, /not necessarily a lasting favorite/);
 });
 
+test("relevant memory is available again after its earlier injected turn expires without writing the store", () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [{ id: "old-session", title: "Chess plans",
+    startedAt: "2026-01-01", updatedAt: "2026-01-01", summary: "The user planned a chess tournament.",
+    keywords: ["chess"], exchanges: [] }], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that my favorite color is amber.");
+  const before = fs.readFileSync(storePath, "utf8");
+  const first = memory.prepareMemoryPrompt("Which color did I mention before the chess tournament?");
+  assert.match(first, /amber/); assert.match(first, /chess tournament/);
+  assert.equal(memory.prepareMemoryPrompt("Hello."), "");
+  const repeated = memory.prepareMemoryPrompt("Which color did I mention before the chess tournament?");
+  assert.equal(repeated, first, "retrieval cannot rely on the old turn still being in model context");
+  assert.equal(fs.readFileSync(storePath, "utf8"), before);
+});
+
+test("greetings never inherit volume, image or health tools; short follow-ups and endConversation remain", () => {
+  const { toolsRelevantTo } = require("../config/tool-router");
+  const tools = ["fetch_webpage", "web_search", "endConversation", "setVolume", "increaseVolume", "decreaseVolume",
+    "generateImage", "showPreviouslyGeneratedImage", "getSystemHealth"].map(name => ({ function: { name } }));
+  const names = (question: string, previous: string) => toolsRelevantTo(question, tools, previous).map((t: any) => t.function.name);
+  for (const previous of ["Set the volume to 50 percent.", "Draw a picture.", "What is your CPU temperature?"]) {
+    for (const greeting of ["Hi", "Hello.", "Good morning", "Hello, GLaDOS!", "How are you doing today?"]) {
+      assert.deepEqual(names(greeting, previous), ["fetch_webpage", "endConversation"], `${greeting} after ${previous}`);
+    }
+  }
+  for (const [question, previous, expected] of [
+    ["A bit more.", "Turn the volume up.", "setVolume"],
+    ["Another one.", "Draw a picture.", "generateImage"],
+    ["And uptime?", "What is your CPU temperature?", "getSystemHealth"],
+    ["Hello, turn the volume down.", "Draw a picture.", "setVolume"],
+  ]) assert.ok(names(question, previous).includes(expected), question);
+});
+
 test("a greeting reaches Ollama without fresh unrelated memory after restart", async () => {
   fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
   memory.handleMemoryCommand("Remember that my favorite instrument is cello.");

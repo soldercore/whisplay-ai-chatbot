@@ -38,8 +38,11 @@ metadata and actual offered tools) is budgeted, not the whole tool registry.
 * Safety margin: `max(256, ceil(effective_context * 0.15))`.
 * Input/request budget: effective context minus output and safety reserves.
 * Required static instructions: the first message, unchanged.
-* Required memory/context: all additional system messages, unchanged and in
-  their original positions. Do not guess which instructions are disposable.
+* Required context: current-turn memory/RAG system messages, unchanged and in
+  their original positions. ChatFlow explicitly marks injected messages with
+  host-only `contextScope: "turn"`; the marker is stripped before Ollama HTTP
+  dispatch. Unmarked system instructions remain permanent. Do not infer scope
+  from message text.
 * Active turn: the newest real user question and every following message,
   including active assistant proposals, tool results and the final no-tools
   instruction. These messages are mandatory.
@@ -47,7 +50,8 @@ metadata and actual offered tools) is budgeted, not the whole tool registry.
   reserves. It is calculated afresh; there is no fixed 3072-token history cap.
 
 Only if the input exceeds this budget, drop complete oldest removable turns
-until it fits. Old assistant/tool pairs are never split. Retained messages are
+until it fits, including the scoped context immediately preceding each owning
+user question. Old assistant/tool pairs are never split. Retained messages are
 not reordered, summarized or rewritten. If mandatory content alone cannot fit,
 fail through the existing resource-error boundary before inference. A summary
 transcript is mandatory: an oversized one fails and the unchanged memory caller
@@ -62,9 +66,12 @@ or universal exact-token guarantee is claimed.
 
 Trimming is request-local: the existing stored/live-history limits of 200
 messages / 4 MiB are independent and unchanged. Persistent memory formats,
-facts and saving semantics are unchanged. All required system/context messages
-are retained even if that means rejecting an unusually large request instead
-of discarding instructions. No routing/authorization is weakened for caching.
+facts and saving semantics are unchanged. The history safety cap also removes
+scoped context with its owning turn. Current context and permanent instructions
+are retained even if that means rejecting an unusually large request. Relevant
+memory and RAG can be injected again on a later turn; retrieval no longer assumes
+that a previously injected turn remains in the prompt. No persistent memory is
+deleted or rewritten by trimming. No authorization is weakened for caching.
 
 ## Ollama startup paths found
 

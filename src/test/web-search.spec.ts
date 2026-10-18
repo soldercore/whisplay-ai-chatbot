@@ -204,12 +204,14 @@ test("greeting-like wording does not suppress mixed, quoted, ambiguous or real c
   }
 });
 
-test("the small-talk guard preserves all other tool eligibility, ordering and follow-up rules", () => {
+test("small talk drops inherited tools while preserving ordering and legitimate follow-ups", () => {
   const { toolsRelevantTo } = require("../config/tool-router");
   const tools = ["fixtureFirst", "web_search", "setVolume", "fetch_webpage", "fixtureLast"]
     .map(name => ({ function: { name } }));
   assert.deepEqual(toolsRelevantTo("What's up?", tools, "Set the volume to 50 percent.")
-    .map((tool: any) => tool.function.name), ["fixtureFirst", "fetch_webpage", "fixtureLast", "setVolume"]);
+    .map((tool: any) => tool.function.name), ["fixtureFirst", "fetch_webpage", "fixtureLast"]);
+  assert.deepEqual(toolsRelevantTo("A bit more.", tools, "Set the volume to 50 percent.")
+    .map((tool: any) => tool.function.name), ["fixtureFirst", "web_search", "fetch_webpage", "fixtureLast", "setVolume"]);
 });
 
 // ---- Search results ----------------------------------------------------------

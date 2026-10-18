@@ -1,6 +1,7 @@
 import axios from "axios";
 import { checkCancelled, operationDeadline, timeoutSetting, waitForOperation } from "../../utils/operation-lifecycle";
 import { OllamaResourceLimitError } from "./ollama-resource-limits";
+import { ollamaTurnStart } from "./ollama-history-limits";
 
 export type RuntimeContext = { effective: number; source: "/api/ps" | "fallback" };
 export type PromptMessage = { role: string; content: string; [key: string]: unknown };
@@ -31,7 +32,7 @@ export async function discoverRuntimeContext(endpoint: string, model: string, si
 // A deterministic, deliberately conservative estimate, not the model's tokenizer.
 // Count serialized UTF-8 bytes / 3, plus framing per message and tool list.
 // The separate 15% (minimum 256 token) margin covers template/tokenizer variance.
-export const promptMessageTokens = (message: PromptMessage): number =>
+export const promptMessageTokens = ({ contextScope, ...message }: PromptMessage): number =>
   16 + Math.ceil(Buffer.byteLength(JSON.stringify(message), "utf8") / 3);
 const toolTokens = (tools?: unknown): number => tools ? 64 + Math.ceil(Buffer.byteLength(JSON.stringify(tools), "utf8") / 3) : 0;
 
@@ -44,13 +45,14 @@ export function fitOllamaPrompt<T extends PromptMessage>(
   const requestBudget = runtime.effective - outputReserve - safetyReserve;
   const toolsReserve = toolTokens(tools);
   const costs = messages.map(promptMessageTokens);
-  // System/context messages stay in their original positions. Never summarize
-  // or rewrite them. Keep the entire active turn, including tool proposals and
-  // results (and the final no-tools instruction, if present).
-  const protectedMessage = (index: number) => index === 0 || messages[index].role === "system"
-    || activeUserIndex < 0 || index >= activeUserIndex;
+  // Only explicitly scoped injected context expires with a removed turn.
+  // Global instructions and the whole active turn remain mandatory.
+  const activeStart = ollamaTurnStart(messages, activeUserIndex);
+  const protectedMessage = (index: number) => index === 0
+    || messages[index].role === "system" && messages[index].contextScope !== "turn"
+    || activeUserIndex < 0 || index >= activeStart;
   const systemReserve = costs[0] || 0;
-  const contextReserve = messages.reduce((sum, message, index) => sum + (index > 0 && message.role === "system" ? costs[index] : 0), 0);
+  const contextReserve = messages.reduce((sum, message, index) => sum + (index > 0 && message.role === "system" && protectedMessage(index) ? costs[index] : 0), 0);
   const activeReserve = messages.reduce((sum, message, index) => sum + (index > 0 && message.role !== "system" && protectedMessage(index) ? costs[index] : 0), 0);
   const historyBudget = requestBudget - toolsReserve - systemReserve - contextReserve - activeReserve;
   console.log(`[Ollama] advertised_context=${advertised ?? "unknown"} effective_context=${runtime.effective} request_budget=${requestBudget} history_budget=${Math.max(0, historyBudget)} source=${runtime.source} reserves=system:${systemReserve},context:${contextReserve},active:${activeReserve},tools:${toolsReserve},output:${outputReserve},safety:${safetyReserve}`);
@@ -61,8 +63,10 @@ export function fitOllamaPrompt<T extends PromptMessage>(
   const before = total();
   // Drop complete oldest turns, never part of an assistant/tool exchange.
   const boundaries = [1];
-  for (let index = 2; index <= activeUserIndex; index++) if (messages[index]?.role === "user") boundaries.push(index);
-  if (!boundaries.includes(activeUserIndex)) boundaries.push(activeUserIndex);
+  for (let index = 2; index <= activeUserIndex; index++) if (messages[index]?.role === "user") {
+    const start = ollamaTurnStart(messages, index);
+    if (!boundaries.includes(start)) boundaries.push(start);
+  }
   for (let group = 0; total() > requestBudget && group + 1 < boundaries.length; group++) {
     const start = boundaries[group], end = boundaries[group + 1];
     kept = kept.filter(index => index < start || index >= end || protectedMessage(index));

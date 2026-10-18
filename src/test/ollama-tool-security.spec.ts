@@ -183,3 +183,18 @@ test("malformed native calls terminate safely without invoking a handler", async
   assert.match(await ask("Hello."), /Completion was not verified/);
   assert.deepEqual(effects, []);
 });
+
+test("a greeting after a volume request cannot execute an inherited native tool", async () => {
+  Object.assign(process.env, { OLLAMA_ENDPOINT: endpoint, OLLAMA_MODEL: "test", OLLAMA_ENABLE_TOOLS: "true" });
+  delete require.cache[modulePath];
+  const llm = require(modulePath).default;
+  replies = [content("Volume explained.")];
+  await llm.chatWithLLMStream([{ role: "user", content: "Explain volume." }], () => {}, () => {});
+  assert.ok(requests[0].tools.some((tool: any) => tool.function.name === "setVolume"));
+  replies = [call("setVolume", { percent: 50 })];
+  let answer = "";
+  await llm.chatWithLLMStream([{ role: "user", content: "Hello." }], (text: string) => answer += text, () => {});
+  assert.equal(requests[1].tools.some((tool: any) => tool.function.name === "setVolume"), false);
+  assert.deepEqual(effects, [], "unchanged central offered-list authorization denies the call");
+  assert.match(answer, /couldn't run the requested tool/);
+});

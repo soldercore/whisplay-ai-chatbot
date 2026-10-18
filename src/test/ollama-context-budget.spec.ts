@@ -6,12 +6,56 @@ import { discoverRuntimeContext, fitOllamaPrompt, PromptMessage, promptMessageTo
 import { OllamaResourceLimitError } from "../cloud-api/local/ollama-resource-limits";
 
 const runtime = { effective: 4096, source: "/api/ps" as const };
+test("injected memory/RAG expire with trimmed turns while global instructions and active results survive", () => {
+  const global = { role: "system", content: "Permanent global instructions." };
+  const messages: PromptMessage[] = [global];
+  const turns: PromptMessage[][] = [];
+  for (let i = 0; i < 30; i++) {
+    const turn = [
+      { role: "system", content: `Memory ${i}: ` + "m".repeat(150), contextScope: "turn" },
+      { role: "system", content: `RAG ${i}: ` + "k".repeat(150), contextScope: "turn" },
+      { role: "user", content: `Question ${i}` },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "probe", arguments: { i } } }] },
+      { role: "tool", tool_name: "probe", content: `[success]Result ${i}` },
+      { role: "assistant", content: `Answer ${i}` },
+    ];
+    turns.push(turn); messages.push(...turn);
+  }
+  const extraGlobal = { role: "system", content: "Another permanent instruction." };
+  messages.splice(7, 0, extraGlobal);
+  const before = JSON.stringify(messages);
+  const fitted = fitOllamaPrompt(messages, undefined, runtime);
+  assert.ok(fitted.messages.includes(global)); assert.ok(fitted.messages.includes(extraGlobal));
+  assert.equal(fitted.messages.includes(turns[0][0]), false);
+  assert.deepEqual(fitted.messages.slice(-6), turns.at(-1));
+  for (const turn of turns) {
+    const kept = fitted.messages.includes(turn[2]);
+    for (const message of turn) assert.equal(fitted.messages.includes(message), kept, "whole turn including its preceding context and tools");
+  }
+  assert.ok(fitted.estimatedTokens <= fitted.requestBudget);
+  assert.equal(JSON.stringify(messages), before, "request trimming never mutates history");
+  assert.equal(promptMessageTokens(turns[0][0]), promptMessageTokens({ role: "system", content: turns[0][0].content }), "host marker is not a wire token");
+});
+
+test("current scoped context stays mandatory through final-answer instructions and fails closed if oversized", () => {
+  const current: PromptMessage[] = [{ role: "system", content: "Persona" },
+    { role: "system", content: "Current memory", contextScope: "turn" },
+    { role: "system", content: "Current knowledge", contextScope: "turn" },
+    { role: "user", content: "Actual question" },
+    { role: "assistant", content: "", tool_calls: [{ function: { name: "probe", arguments: {} } }] },
+    { role: "tool", content: "[success]Actual result" },
+    { role: "user", content: "Answer using the available results." }];
+  assert.deepEqual(fitOllamaPrompt(current, undefined, runtime, undefined, 128, 3).messages, current);
+  assert.throws(() => fitOllamaPrompt(current.map((m, i) => i === 1 ? { ...m, content: "x".repeat(20000) } : m),
+    undefined, runtime, undefined, 128, 3), OllamaResourceLimitError);
+});
+
 function conversation() {
   const messages: PromptMessage[] = [{ role: "system", content: "Required static safety instructions." }];
   for (let turn = 0; turn < 40; turn++) messages.push(
     { role: "user", content: `Old question ${turn}: ` + "x".repeat(160) },
     { role: "assistant", content: `Old answer ${turn}: ` + "y".repeat(160) });
-  messages.push({ role: "system", content: "Relevant memory: keep this exact context." },
+  messages.push({ role: "system", content: "Relevant memory: keep this exact context.", contextScope: "turn" },
     { role: "user", content: "Newest user question." },
     { role: "assistant", content: "", tool_calls: [{ function: { name: "fixture", arguments: {} } }] },
     { role: "tool", tool_name: "fixture", content: "[success]Required active result, exactly preserved." });
@@ -123,6 +167,7 @@ for (const loaded of [true, false]) for (const finalPath of [false, true]) test(
   assert.equal(answer, "Ready."); assert.equal(ends, 1);
   assert.equal(captured.length, finalPath ? 2 : 1); assert.equal(discoveries, captured.length);
   for (const request of captured) {
+    assert.ok(request.messages.every((message: any) => !("contextScope" in message)), "host lifetime metadata never reaches the model");
     assert.equal(request.options.num_ctx, undefined);
     assert.match(request.messages[0].content, /Format your replies for spoken text-to-speech/);
     assert.ok(request.messages.some((message: any) => message.content === "Newest user question."));

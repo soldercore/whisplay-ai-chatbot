@@ -360,18 +360,9 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       Promise.resolve().then(() => prepareMemoryPrompt(ctx.asrText)),
     ])
       .then(([res, memoryPrompt]: [string, string]) => {
-        let knowledgePrompt = res;
+        const knowledgePrompt = res;
         if (res) {
           console.log("Retrieved knowledge for RAG:\n", res);
-        }
-        if (ctx.knowledgePrompts.includes(res)) {
-          console.log(
-            "[RAG] Knowledge prompt already used in this session, skipping to avoid repetition.",
-          );
-          knowledgePrompt = "";
-        }
-        if (knowledgePrompt) {
-          ctx.knowledgePrompts.push(knowledgePrompt);
         }
         display({
           rag_icon_visible: Boolean(enableRAG && knowledgePrompt),
@@ -379,17 +370,20 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         const prompt: {
           role: "system" | "user";
           content: string;
+          contextScope?: "turn";
         }[] = compact([
           memoryPrompt
             ? {
               role: "system",
               content: memoryPrompt,
+              contextScope: "turn" as const,
             }
             : null,
           knowledgePrompt
             ? {
               role: "system",
               content: knowledgePrompt,
+              contextScope: "turn" as const,
             }
             : null,
           {
