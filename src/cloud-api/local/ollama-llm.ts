@@ -37,7 +37,7 @@ import {
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../../config/tool-router";
-import { hasSystemHealthMeasurements } from "../../config/system-health";
+import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { boundOllamaHistory } from "./ollama-history-limits";
@@ -356,6 +356,12 @@ const prefetchSystemHealth = async (
     const reply = "I couldn't retrieve my system health.";
     messages.push({ role: "assistant", content: reply });
     partialCallback(reply);
+    return false;
+  }
+  const directAnswer = directCpuTemperatureAnswer(execution.output, question);
+  if (directAnswer) {
+    messages.push({ role: "assistant", content: directAnswer });
+    partialCallback(directAnswer);
     return false;
   }
   state.healthPrefetched = true;

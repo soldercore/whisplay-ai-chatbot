@@ -286,7 +286,7 @@ test("cancellation of the post-tool stream never emits the empty-answer fallback
   assert.equal(result.rawText, ""); assert.deepEqual(result.synthesized, []); assert.equal(requests.length, 2);
 });
 
-for (const question of ["How is your system doing?", "What's your CPU temperature?",
+for (const question of ["How is your system doing?",
   "How much RAM are you using?", "How much memory are you using?", "How much disk space is left?"]) {
   test(`required health is measured before the model can answer: ${question}`, async t => {
     // The model never requests a tool. Before the fix it could answer from no
@@ -305,6 +305,29 @@ for (const question of ["How is your system doing?", "What's your CPU temperatur
     assertDelivered(result, ANSWER);
   });
 }
+
+test("standalone CPU temperature is spoken from the measured value without model invention", async t => {
+  const result = await run(t, [], { question: "What's your CPU temperature?" });
+  assertDelivered(result, "My CPU temperature is 65 degrees Celsius.");
+  assert.equal(result.rawText, "My CPU temperature is 65 degrees Celsius.");
+  assert.equal(result.healthCalls, 1); assert.equal(requests.length, 0);
+  assert.deepEqual(result.events.map(event => event.name), ["getSystemHealth", "getSystemHealth"]);
+  assert.equal(result.history[result.history.length - 1].content, result.rawText);
+  assert.match(result.history[result.history.length - 2].content, /^\[success\]/);
+});
+
+test("a temperature question with an additional request still reaches the model", async t => {
+  const result = await run(t, [visible()], { question: "What's your CPU temperature, and tell me about the room?" });
+  assert.equal(result.healthCalls, 1); assert.equal(requests.length, 1);
+  assertDelivered(result, ANSWER);
+});
+
+test("a DNS explanation remains a normal model response", async t => {
+  const answer = "DNS translates domain names into IP addresses.";
+  const result = await run(t, [[{ message: { content: answer }, done: true }]], { question: "Explain DNS." });
+  assert.equal(result.healthCalls, 0); assert.equal(requests.length, 1);
+  assertDelivered(result, answer);
+});
 
 for (const question of ["How are you doing?", "What is RAM?", "How does CPU temperature affect performance?"]) {
   test(`ordinary conversation does not force a local measurement: ${question}`, async t => {

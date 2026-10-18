@@ -2,10 +2,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import axios from "axios";
-import { collectSystemHealth, hasSystemHealthMeasurements, systemHealthTool } from "../config/system-health";
+import { collectSystemHealth, directCpuTemperatureAnswer, hasSystemHealthMeasurements, systemHealthTool } from "../config/system-health";
 import { executeToolCall } from "../config/tool-execution";
 import { withToolSignal } from "../utils/operation-lifecycle";
 import { needsSystemHealth, toolsRelevantTo } from "../config/tool-router";
+
+test("direct temperature answer requires a valid measured Celsius value and a standalone request", () => {
+  const question = "What's your CPU temperature?";
+  assert.equal(directCpuTemperatureAnswer('[success]{"temperature":{"value":46.3,"unit":"°C"}}', question),
+    "My CPU temperature is 46.3 degrees Celsius.");
+  for (const output of ['[success]{"temperature":null}', '[success]{"temperature":{"value":46.3,"unit":"F"}}',
+    '[success]{"temperature":{"value":"46.3","unit":"°C"}}', '[success]bad JSON']) {
+    assert.equal(directCpuTemperatureAnswer(output, question), null);
+  }
+  assert.equal(directCpuTemperatureAnswer('[success]{"temperature":{"value":46.3,"unit":"°C"}}',
+    "What's your CPU temperature, and is the room heater on?"), null);
+});
 
 const os = require("node:os"), fs = require("node:fs"), cp = require("node:child_process");
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };

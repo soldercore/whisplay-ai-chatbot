@@ -166,3 +166,14 @@ export function hasSystemHealthMeasurements(output: string, question: string): b
       || quantity(report.disk?.available, ["GiB"]) || quantity(report.temperature, ["°C"]);
   } catch { return false; }
 }
+
+// Only a standalone request for the current CPU temperature is answered here.
+// Questions with additional instructions or other subjects stay conversational.
+export function directCpuTemperatureAnswer(output: string, question: string): string | null {
+  const standalone = /^\s*(?:glados[, ]+)?(?:what(?:'s| is)|(?:can|could) you (?:tell me|report|check))\s+(?:your|the|this device'?s)\s+(?:current\s+)?(?:cpu|processor)\s+temperature\s*[?.!]*\s*$/i;
+  if (!standalone.test(question) || !hasSystemHealthMeasurements(output, question)) return null;
+  try {
+    const report = JSON.parse(output.replace(/^\[(success|response)\]/, ""));
+    return `My CPU temperature is ${report.temperature.value} degrees Celsius.`;
+  } catch { return null; }
+}
