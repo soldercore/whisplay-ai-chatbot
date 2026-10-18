@@ -41,11 +41,17 @@ export const parseMemoryCommand = (input: string): MemoryCommand | null => {
 
   const text = raw.replace(LEADING_FILLER, "");
 
+  // "Remember this" introduces a statement after punctuation, or an ASR-
+  // omitted separator before a new my/I/this clause. Preserve "this robot...".
   match = text.match(
+    /^(?:(?:can|could|would|will) you\s+)?(?:please\s+)?remember\s+this(?:\s*[.,:;!?]+\s*|\s+(?=(?:my|i|this)\b))(.+)$/i,
+  ) || text.match(
     /^(?:(?:can|could|would|will) you\s+)?(?:please\s+)?(?:remember|memorize|memorise|keep in mind|note|make a note)(?:\s+that)?[\s,:]+(.+)$/i,
   ) || text.match(/^(?:don't|do not) forget(?:\s+that)?[\s,:]+(.+)$/i);
   if (match && !/^(when|how|why|where|if)\b/i.test(match[1])) {
-    return { type: "remember", statement: clean(match[1]) };
+    const statement = clean(match[1]);
+    if (!statement || /^this[\s,.:;!?]*$/i.test(statement)) return null;
+    return { type: "remember", statement };
   }
 
   match = text.match(

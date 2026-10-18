@@ -150,6 +150,72 @@ test("memory commands are recognised in natural phrasing", () => {
 
 // ---- Save, retrieve, update, forget -------------------------------------------
 
+// Each prefix case runs in its own process and disposable store. Check the
+// extracted statement separately from storage's existing sentence punctuation.
+function prefixFixture(input: string) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "memory-prefix-"));
+  const output = execFileSync(process.execPath, ["--require", "ts-node/register/transpile-only", "-e", `
+    const fs = require('node:fs'), path = require('node:path');
+    const m = require('./src/config/local-memory');
+    const commands = require('./src/config/memory-commands');
+    const input = ${JSON.stringify(input)};
+    const parsed = commands.parseMemoryCommand(input);
+    const reply = m.handleMemoryCommand(input);
+    const file = path.join(process.env.MEMORY_DIR, 'memory.json');
+    const contents = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).userMemories.map(item => item.content) : [];
+    console.log('PREFIX_RESULT=' + JSON.stringify({ parsed, reply, contents }));
+  `], { env: { ...process.env, MEMORY_DIR: directory }, cwd: path.join(__dirname, "../.."),
+    encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024 });
+  const line = output.split(/\r?\n/).find(item => item.startsWith("PREFIX_RESULT="));
+  assert.ok(line);
+  return JSON.parse(line.slice("PREFIX_RESULT=".length));
+}
+
+for (const [label, input, statement, content] of [
+  ["period", "Remember this. My robot is named Max.", "My robot is named Max", "My robot is named Max."],
+  ["comma", "Remember this, my robot is named Max.", "my robot is named Max", "My robot is named Max."],
+  ["that", "Remember that my robot is named Max.", "my robot is named Max", "My robot is named Max."],
+  ["rename", "Remember this. I changed my robot's name from Copper Finch to Max.",
+    "I changed my robot's name from Copper Finch to Max", "I changed my robot's name from Copper Finch to Max."],
+  // saveFact has always added terminal punctuation; punctuation-free ASR must
+  // produce a clean statement without changing that persistence convention.
+  ["no separator", "Remember this my robot is named Max", "my robot is named Max", "My robot is named Max."],
+  ["meaningful This", "Remember this. This is important.", "This is important", "This is important."],
+  ["repeated This", "Remember this. This robot is named Max.", "This robot is named Max", "This robot is named Max."],
+  ["unpunctuated meaningful This", "Remember this robot is named Max.", "this robot is named Max", "This robot is named Max."],
+  ["that followed by meaningful This", "Remember that this robot is named Max.", "this robot is named Max", "This robot is named Max."],
+] as [string, string, string, string][]) {
+  test(`memory prefix normalization: ${label}`, () => {
+    const result = prefixFixture(input);
+    assert.deepEqual(result.contents, [content]);
+    assert.deepEqual(result.parsed, { type: "remember", statement });
+    assert.ok(result.reply);
+  });
+}
+
+test("memory prefix normalization: incomplete command does not save this or empty content", () => {
+  for (const input of ["Remember this.", "Remember this", "Remember this,", "Remember this:"]) {
+    const result = prefixFixture(input);
+    assert.deepEqual(result.contents, []); assert.equal(result.parsed, null); assert.equal(result.reply, null);
+  }
+});
+
+test("memory prefix normalization: ordinary sentences do not acquire save authorization", () => {
+  const result = prefixFixture("This robot is named Max.");
+  assert.deepEqual(result.contents, []); assert.equal(result.parsed, null); assert.equal(result.reply, null);
+});
+
+test("memory prefix normalization: ASR whitespace, punctuation, names, negation and qualifiers survive", () => {
+  const input = "  PLEASE   ReMeMbEr   ThIs :  My robot is NOT named Max 2.5 and this detail matters!  ";
+  const result = prefixFixture(input);
+  assert.deepEqual(result.parsed, { type: "remember", statement: "My robot is NOT named Max 2.5 and this detail matters" });
+  assert.deepEqual(result.contents, ["My robot is NOT named Max 2.5 and this detail matters."]);
+  for (const separator of [";", "!", "?", "...", "\n"]) {
+    const command = commands.parseMemoryCommand(`Remember this${separator} My robot is named Max.`);
+    assert.deepEqual(command, { type: "remember", statement: "My robot is named Max" });
+  }
+});
+
 test("saving, retrieving, updating and forgetting a preference never calls the model", async () => {
   assert.equal((await ask("Remember that my favorite color is blue.")).answer, "I'll remember that your favorite color is blue.");
   assert.deepEqual(facts(), ["My favorite color is blue."]);
@@ -198,6 +264,40 @@ test("facts persist across a restart", async () => {
   );
   assert.match(output, /Your dog's name is Max\./);
 });
+
+for (const command of ["Remember that my imaginary robot is named Copper Finch.",
+  "Remember this. My imaginary robot is named Copper Finch."]) {
+  test(`persisted robot reaches real Ollama HTTP after process exit: ${command}`, () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cold-memory-"));
+    const fixture = path.join(__dirname, "fixtures", "memory-restart.cjs");
+    const child = (mode: string, variant: string) => {
+      const output = execFileSync(process.execPath, ["--require", "ts-node/register/transpile-only", fixture, mode, directory, variant], {
+        env: { ...process.env, MEMORY_DIR: directory }, cwd: path.join(__dirname, "../.."),
+        encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
+      });
+      const line = output.split(/\r?\n/).find(item => item.startsWith("RESTART_RESULT="));
+      assert.ok(line, "fresh process returns its pipeline evidence");
+      return JSON.parse(line.slice("RESTART_RESULT=".length));
+    };
+    const saved = child("write", command); // execFileSync returns only after the writer exits.
+    assert.equal(saved.persisted, true); assert.equal(saved.version, 1); assert.equal(saved.imported, true);
+    const bytes = fs.readFileSync(path.join(directory, "memory.json"), "utf8");
+    assert.match(bytes, /Copper Finch/);
+    for (const variant of ["automatic", "explicit", "trimmed"]) {
+      const loaded = child("read", variant);
+      assert.notEqual(loaded.pid, saved.pid, "reader cannot reuse writer module state");
+      for (const key of ["loaded", "injected", "inEveryHttpRequest", "hostMarkerAbsent", "irrelevantExcluded",
+        "repeated", "bytesUnchanged", "offered", "historyTrimmed"]) assert.equal(loaded[key], true, `${variant}: ${key}`);
+      assert.equal(loaded.greeting, ""); assert.equal(loaded.unrelated, "");
+      assert.equal(loaded.requestCount, variant === "explicit" ? 2 : 1);
+      if (variant === "explicit") assert.equal(loaded.explicitResult, true, "authorized memory search returns persisted fact");
+      if (variant !== "trimmed") assert.equal(loaded.firstQuestion,
+        variant === "explicit" ? "Search your saved memories. What is the name of my imaginary robot?"
+          : "What was the name of my imaginary robot that I asked you to remember?");
+      assert.equal(fs.readFileSync(path.join(directory, "memory.json"), "utf8"), bytes);
+    }
+  });
+}
 
 test("an older store with only a remembered conversation is imported once, with a backup", () => {
   const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "whisplay-memory-legacy-"));
