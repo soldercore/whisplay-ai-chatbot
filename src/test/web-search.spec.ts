@@ -281,6 +281,111 @@ test("a failed search tells the model to say it could not check", async () => {
   assert.match(result, /Tell the user you could not check this right now\. Do not guess/);
 });
 
+test("news search normalizes the Pi utterance and falls back from unrelated results", async t => {
+  const urls: string[] = [];
+  t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async (url: string) => {
+    urls.push(url);
+    const body = urls.length === 1
+      ? '<rss><item><title>Oppo phone release</title><link>https://example.com/oppo</link></item></rss>'
+      : '<a class="result__a" href="https://example.com/pi">Raspberry Pi news update</a>';
+    return new Response(body, { status: 200 });
+  });
+  const result = await realWebSearch({ query: "Search where the latest Raspberry Pi news.", search_type: "news" });
+  assert.equal(urls.length, 2);
+  for (const url of urls) assert.equal(new URL(url).searchParams.get("q"), "the latest Raspberry Pi news.");
+  assert.match(result, /^\[success\]Source: duckduckgo_html/);
+  assert.match(result, /Raspberry Pi news update/);
+  assert.doesNotMatch(result, /Oppo/);
+});
+
+test("relevant Google News is retained and irrelevant entries are excluded", async t => {
+  let calls = 0;
+  t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async () => {
+    calls++;
+    return new Response('<rss><item><title>Raspberry Pi news</title><link>https://example.com/pi</link></item>' +
+      '<item><title>Oppo phone</title><link>https://example.com/oppo</link></item></rss>');
+  });
+  const result = await realWebSearch({ query: "What's the latest Raspberry Pi news?", search_type: "news" });
+  assert.equal(calls, 1); assert.match(result, /Raspberry Pi news/); assert.doesNotMatch(result, /Oppo/);
+});
+
+test("irrelevant results from both news sources yield a direct unverified answer", async t => {
+  let calls = 0;
+  t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async () => {
+    calls++;
+    return new Response(calls === 1
+      ? '<rss><item><title>Oppo phone</title><link>https://example.com/oppo</link></item></rss>'
+      : '<a class="result__a" href="https://example.com/phone">Another phone</a>');
+  });
+  const result = await realWebSearch({ query: "latest Raspberry Pi news", search_type: "news" });
+  assert.equal(calls, 2);
+  assert.equal(result, "[response]I couldn't find relevant news results to verify that right now.");
+});
+
+test("empty news results and provider failures cannot generate fabricated claims", async t => {
+  let mode = "empty", calls = 0;
+  t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async () => {
+    calls++;
+    if (mode === "failure") throw new Error("unavailable");
+    return new Response(calls % 2 ? "<rss></rss>" : "<html></html>");
+  });
+  for (mode of ["empty", "failure"]) {
+    calls = 0;
+    assert.equal(await realWebSearch({ query: "latest Raspberry Pi news", search_type: "news" }),
+      "[response]I couldn't find relevant news results to verify that right now.");
+    assert.equal(calls, 2);
+  }
+});
+
+test("a cancelled news request does not start a fallback", async t => {
+  const controller = new AbortController();
+  let calls = 0;
+  t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async () => {
+    calls++; controller.abort(new Error("cancelled")); throw new Error("cancelled");
+  });
+  const { withToolSignal } = require("../utils/operation-lifecycle");
+  const rawSearch = require("../config/web-search").webSearchTools.find((tool: any) => tool.function.name === "web_search").func;
+  await assert.rejects(withToolSignal(controller.signal, () => rawSearch({ query: "Raspberry Pi news", search_type: "news" })));
+  assert.equal(calls, 1);
+});
+
+test("relevant news respects the requested result limit", async t => {
+  t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async () => new Response(
+    '<rss><item><title>Raspberry Pi one</title><link>https://example.com/one</link></item>' +
+    '<item><title>Raspberry Pi two</title><link>https://example.com/two</link></item></rss>'));
+  const result = await realWebSearch({ query: "Raspberry Pi news", search_type: "news", num_results: 1 });
+  assert.match(result, /Raspberry Pi one/); assert.doesNotMatch(result, /Raspberry Pi two/);
+});
+
+test("failed automatic news search returns a host answer without asking the model", async () => {
+  llmFuncMap.web_search = async () => "[response]I couldn't find relevant news results to verify that right now.";
+  const result = await ask("Search where the latest Raspberry Pi news.");
+  assert.equal(result.answer, "I couldn't find relevant news results to verify that right now.");
+  assert.equal(result.ends, 1); assert.equal(chatRequests.length, 0);
+});
+
+for (const automatic of [true, false]) {
+  test(`unavailable news is delivered without a model-generated claim (${automatic ? "prefetch" : "native call"})`, async t => {
+    t.mock.method(require("../cloud-api/proxy-fetch"), "proxyFetch", async () => new Response("<html></html>"));
+    llmFuncMap.web_search = realWebSearch;
+    if (!automatic) responders = [() => callTool("web_search", { query: "Raspberry Pi news", search_type: "news" })];
+    const result = await ask(automatic ? "Latest Raspberry Pi news?" : "Find information about Raspberry Pi.");
+    assert.equal(result.answer, "I couldn't find relevant news results to verify that right now.");
+    assert.equal(result.ends, 1); assert.equal(chatRequests.length, automatic ? 0 : 1);
+  });
+}
+
+test("explicit search normalization retains topics, qualifiers and non-command questions", () => {
+  const { normalizeSearchQuery } = require("../config/web-search");
+  for (const [input, expected] of [
+    ["Search where the latest Raspberry Pi news.", "the latest Raspberry Pi news."],
+    ["Search the web for Raspberry Pi 5 prices in Norway", "Raspberry Pi 5 prices in Norway"],
+    ["Look up weather in Oslo", "weather in Oslo"],
+    ["When is GTA 6 coming out?", "When is GTA 6 coming out?"],
+    ["Search for", "Search for"],
+  ]) assert.equal(normalizeSearchQuery(input), expected);
+});
+
 // ---- Ollama conversation flow -----------------------------------------------
 
 test("a time-sensitive question searches first and the answer uses the results", async () => {

@@ -46,6 +46,26 @@ const SEARCH_ANSWER_NOTE =
   "\n\nAnswer the user's question using only these search results. Do not state any number, date or name that does not appear in them. If they do not contain the answer, say that you could not verify it.";
 const SEARCH_FAILED_NOTE =
   "\n\nThe web search failed, so there is no current information. Tell the user you could not check this right now. Do not guess or give a date, number or name from memory.";
+const NEWS_UNAVAILABLE = "I couldn't find relevant news results to verify that right now.";
+
+// Strip only a leading search command; retain the topic and all its qualifiers.
+export function normalizeSearchQuery(input: string): string {
+  const original = input.trim();
+  const query = original.replace(/^(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:search\s+(?:(?:the\s+)?(?:web|internet)|online|where)\s+(?:for\s+)?|search\s+for\s+|look\s+up\s+|google\s+)/i, "").trim();
+  return query || original;
+}
+
+// Only literal topic matches are accepted; general news has no topic to check.
+function relevantNews(results: SearchResult[], query: string): SearchResult[] {
+  const ignored = new Set(["the", "a", "an", "for", "of", "on", "in", "about", "latest", "recent", "current", "news", "headlines", "today", "this", "week", "what", "s", "is", "are", "tell", "me", "please"]);
+  const words = (text: string) => text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  const terms = [...new Set(words(query).filter(word => !ignored.has(word)))];
+  if (!terms.length) return results;
+  return results.filter(result => {
+    const found = new Set(words(`${result.title} ${result.snippet || ""}`));
+    return terms.every(term => found.has(term));
+  });
+}
 
 /**
  * Request-time system prompt addition: today's date plus when to search.
@@ -141,9 +161,14 @@ if (webSearchEnabled) {
     func: async (params: any) => {
       try {
         const result = await performUniversalWebSearch(params || {});
+        if ((params?.search_type === "news" || params?.search_type === "google_news") && !result.results.length) {
+          return `${ToolReturnTag.Response}${NEWS_UNAVAILABLE}`;
+        }
         return `${ToolReturnTag.Success}${formatSearchResponse(result)}${SEARCH_ANSWER_NOTE}`;
       } catch (error: any) {
+        checkCancelled(currentToolSignal());
         console.error("[WebSearch] web_search error:", error);
+        if (params?.search_type === "news" || params?.search_type === "google_news") return `${ToolReturnTag.Response}${NEWS_UNAVAILABLE}`;
         return `${ToolReturnTag.Error}Failed to search web: ${error.message}${SEARCH_FAILED_NOTE}`;
       }
     },
@@ -325,7 +350,7 @@ async function performUniversalWebSearch(params: {
   source: string;
   results: SearchResult[];
 }> {
-  const query = `${params.query || ""}`.trim();
+  const query = normalizeSearchQuery(`${params.query || ""}`);
   if (!query) {
     throw new Error("query is required");
   }
@@ -335,14 +360,17 @@ async function performUniversalWebSearch(params: {
   if (searchType === "news" || searchType === "google_news") {
     try {
       const news = await searchGoogleNewsRss(query, limit);
-      if (news.results.length) {
-        return news;
+      const relevant = relevantNews(news.results, query);
+      if (relevant.length) {
+        return { ...news, results: relevant };
       }
-      console.warn("[WebSearch] Google News RSS returned no results; falling back to DuckDuckGo HTML");
+      console.warn("[WebSearch] Google News RSS returned no relevant results; falling back to DuckDuckGo HTML");
     } catch (error: any) {
+      checkCancelled(currentToolSignal());
       console.warn("[WebSearch] Google News RSS failed; falling back to DuckDuckGo HTML:", error.message);
     }
-    return searchDuckDuckGo(query, limit);
+    const fallback = await searchDuckDuckGo(query, limit);
+    return { ...fallback, results: relevantNews(fallback.results, query) };
   }
 
   if (["sites", "site", "configured_sites"].includes(searchType)) {

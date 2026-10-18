@@ -306,13 +306,14 @@ const withRequestSystemNote = <T extends { role: string; content: string }>(
 const prefetchWebSearchIfNeeded = async (
   inputMessages: Message[],
   toolLoopState: ToolLoopState,
+  partialCallback: (text: string) => void,
   invokeFunctionCallback?: (functionName: string, result?: string) => void,
-): Promise<void> => {
+): Promise<boolean> => {
   const allowedTools = toolsForRequest(toolLoopState) || [];
-  if (!ollamaEnableTools || !allowedTools.some((tool) => tool.function.name === "web_search")) return;
+  if (!ollamaEnableTools || !allowedTools.some((tool) => tool.function.name === "web_search")) return true;
   const lastUser = [...inputMessages].reverse().find((msg) => msg.role === "user");
   const question = typeof lastUser?.content === "string" ? lastUser.content.trim() : "";
-  if (!question || !needsCurrentInformation(question)) return;
+  if (!question || !needsCurrentInformation(question)) return true;
 
   const args = { query: question, search_type: searchTypeFor(question) };
   reserveToolAttempts(toolLoopState.budget, 1, false);
@@ -323,7 +324,7 @@ const prefetchWebSearchIfNeeded = async (
   });
   const result = execution.output;
   invokeFunctionCallback?.("web_search", result);
-  if (toolLoopState.signal?.aborted) return;
+  if (toolLoopState.signal?.aborted) return false;
 
   const call = { function: { index: 0, name: "web_search", arguments: args } };
   messages.push(
@@ -331,7 +332,15 @@ const prefetchWebSearchIfNeeded = async (
     { role: "tool", content: result, tool_name: "web_search" },
   );
   toolLoopState.signatures.add(toolCallSignature(call));
+  if (args.search_type === "news" && (result.startsWith(ToolReturnTag.Response) || execution.status !== "success")) {
+    const reply = result.startsWith(ToolReturnTag.Response) && execution.status === "success"
+      ? extractToolResponse(result) : "I couldn't find relevant news results to verify that right now.";
+    messages.push({ role: "assistant", content: reply });
+    partialCallback(reply);
+    return false;
+  }
   toolLoopState.webToolsOnly = true;
+  return true;
 };
 
 // Reuse the existing prefetch/dispatch path: a local-state request cannot be
@@ -523,7 +532,10 @@ const chatWithLLMStreamInternal = async (
         return;
       }
     } else {
-      await prefetchWebSearchIfNeeded(inputMessages, toolLoopState, invokeFunctionCallback);
+      if (!await prefetchWebSearchIfNeeded(inputMessages, toolLoopState, partialCallback, invokeFunctionCallback)) {
+        endCallback();
+        return;
+      }
     }
   }
   // A cancelled answer must not compact the history the newer question uses.
@@ -812,6 +824,13 @@ const chatWithLLMStreamInternal = async (
           describeMessage?.content || "",
         );
         if (responseContent) {
+          if (describeMessage?.tool_name === "web_search") {
+            messages.push(...newMessages, { role: "assistant", content: responseContent });
+            partialCallback(responseContent);
+            endResolve();
+            endCallback();
+            return;
+          }
           console.log(
             `[LLM] Tool response starts with "[response]", return it directly.`,
           );
