@@ -44,15 +44,19 @@ import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 
 export const flowStates: Record<FlowName, FlowStateHandler> = {
   sleep: (ctx: ChatFlowContext) => {
-    onButtonPressed(() => {
+    onButtonPressed(async () => {
       resetCameraModeControl();
       // Stop any playing music when waking up
       stopMusicPlayback();
+      await ctx.pauseWakeWordListener();
+      if (ctx.currentFlowName !== "sleep") return;
       ctx.transitionTo("listening");
     });
     onButtonReleased(noop);
     onCameraModeExit(null);
-    onTextInput((text: string) => {
+    onTextInput(async (text: string) => {
+      if (ctx.currentFlowName !== "sleep") return;
+      await ctx.pauseWakeWordListener();
       if (ctx.currentFlowName !== "sleep") return;
       ctx.answerId += 1;
       ctx.asrText = text;
@@ -63,7 +67,9 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       const captureImgPath = `${cameraDir}/capture-${moment().format(
         "YYYYMMDD-HHmmss",
       )}.jpg`;
-      onButtonDoubleClick(() => {
+      onButtonDoubleClick(async () => {
+        await ctx.pauseWakeWordListener();
+        if (ctx.currentFlowName !== "sleep") return;
         enterCameraMode(captureImgPath);
         ctx.transitionTo("camera");
       });

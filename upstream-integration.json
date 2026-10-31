@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "custom_reference": {
+    "branch": "tts-pipeline-fix",
+    "commit": "21177a05b8775ff880109fbd2b69fc8e89427083"
+  },
+  "upstream": {
+    "repository": "PiSugar/whisplay-ai-chatbot",
+    "tag": "v2.1.9",
+    "annotated_tag_objects": [
+      "f85e7c76f3c926791e691db48b5988f817223dec"
+    ],
+    "commit": "509b4462069a1166d59d3192b892b97a4818bac4",
+    "release_url": "https://github.com/PiSugar/whisplay-ai-chatbot/releases/tag/v2.1.9",
+    "published_at": "2026-10-31T12:58:59Z",
+    "verified_at": "2026-10-31T19:24:03.037181+00:00",
+    "draft": false,
+    "prerelease": false
+  },
+  "production_installation": "not accessed; installed revision and hardware behavior unverified",
+  "companion": {
+    "repository": "soldercore/Whisplay",
+    "development_branch": "integrate/driver-v3.2.7"
+  }
+}

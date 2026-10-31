@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "yarn build && yarn start",
+    "prebuild": "patch-package --error-on-fail",
     "build": "rm -rf dist && tsc && node scripts/register-whisplay-daemon-app.js",
     "start": "bash run_chatbot.sh",
     "index-knowledge": "node -r ts-node/register -r tsconfig-paths/register dist/index-knowledge.js",
@@ -31,7 +32,7 @@
     "@picovoice/leopard-node": "^2.0.2",
     "@picovoice/orca-node": "^2.0.1",
     "@qdrant/js-client-rest": "^1.16.2",
-    "axios": "^1.13.5",
+    "axios": "^1.18.0",
     "crypto": "^1.0.1",
     "dotenv": "^16.5.0",
     "get-audio-duration": "^4.0.1",
@@ -44,9 +45,9 @@
     "node-fetch": "^3.3.2",
     "onnxruntime-node": "^1.21.0",
     "openai": "^5.12.2",
-    "undici": "^7.24.0",
-    "uuid": "^11.1.0",
-    "ws": "^8.18.1"
+    "undici": "^7.29.0",
+    "uuid": "^11.1.1",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/koa": "^2.13.12",
@@ -60,5 +61,10 @@
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.8.3"
+  },
+  "resolutions": {
+    "**/adm-zip": "^0.6.0",
+    "**/fast-xml-parser": "^5.7.0",
+    "**/uuid": "^11.1.1"
   }
 }
