@@ -68,8 +68,7 @@ async function main() {
     const res = await sendRequest(SOCKET_PATH, request);
     if (!res || !res.ok) {
       const reason = (res && res.error) || "unknown error";
-      console.log(`[DaemonRegister] register failed: ${reason}`);
-      return;
+      throw new Error(`register failed: ${reason}`);
     }
     console.log("[DaemonRegister] app registered to whisplay-daemon");
     if (!enableAutostart) {

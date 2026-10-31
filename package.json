@@ -14,7 +14,11 @@
     "configure-env": "node -r ts-node/register -r tsconfig-paths/register dist/configure-env.js",
     "upgrade-env": "node -r ts-node/register -r tsconfig-paths/register dist/upgrade-env.js",
     "postinstall": "patch-package",
-    "test": "node --require ts-node/register/transpile-only --require ./src/test/fixtures/isolate-tests.cjs --test src/test/app-lifecycle.spec.ts src/test/app-launcher.spec.ts src/test/ollama-context-budget.spec.ts src/test/ollama-ownership.spec.ts src/test/ollama-post-tool.spec.ts src/test/image-tool-direct.spec.ts src/test/system-health.spec.ts src/test/process-lifecycle.spec.ts src/test/ollama-history-limits.spec.ts src/test/operation-lifecycle.spec.ts src/test/web-lifecycle.spec.ts src/test/ollama-lifecycle.spec.ts src/test/faster-whisper-asr.spec.ts src/test/unsupported-reminder.spec.ts src/test/ollama-resources.spec.ts src/test/ollama-history.spec.ts src/test/ollama-stream.spec.ts src/test/startup-data.spec.ts src/test/tool-execution.spec.ts src/test/ollama-tool-security.spec.ts src/test/tts-pipeline.spec.ts src/test/web-search.spec.ts src/test/memory.spec.ts src/test/persona.spec.ts src/test/speech-sync.spec.ts"
+    "test": "node --require ts-node/register/transpile-only --require ./src/test/fixtures/isolate-tests.cjs --test src/test/app-lifecycle.spec.ts src/test/app-launcher.spec.ts src/test/ollama-context-budget.spec.ts src/test/ollama-ownership.spec.ts src/test/ollama-post-tool.spec.ts src/test/image-tool-direct.spec.ts src/test/system-health.spec.ts src/test/process-lifecycle.spec.ts src/test/ollama-history-limits.spec.ts src/test/operation-lifecycle.spec.ts src/test/web-lifecycle.spec.ts src/test/ollama-lifecycle.spec.ts src/test/faster-whisper-asr.spec.ts src/test/unsupported-reminder.spec.ts src/test/ollama-resources.spec.ts src/test/ollama-history.spec.ts src/test/ollama-stream.spec.ts src/test/startup-data.spec.ts src/test/tool-execution.spec.ts src/test/ollama-tool-security.spec.ts src/test/tts-pipeline.spec.ts src/test/web-search.spec.ts src/test/memory.spec.ts src/test/persona.spec.ts src/test/speech-sync.spec.ts src/test/deploy-preservation.spec.ts src/test/upstream-integration.spec.ts",
+    "typecheck": "tsc --noEmit --incremental false",
+    "typecheck:tests": "tsc --project tsconfig.tests.json --incremental false",
+    "test:python": "python3 -B -m unittest discover -s python/test -p 'test_*whisper_host.py' -v && python3 -B python/test/test_wakeword.py",
+    "test:ui": "python3 -B python/dev/preview_ui.py --selftest"
   },
   "author": "",
   "license": "GPL-3.0-only",
@@ -40,12 +44,12 @@
     "koa-bodyparser": "^4.4.1",
     "koa-static": "^5.0.0",
     "lodash": "^4.17.21",
-    "moment": "^2.30.1",
+    "moment": "^2.31.0",
     "mp3-duration": "^1.1.0",
     "node-fetch": "^3.3.2",
     "onnxruntime-node": "^1.21.0",
     "openai": "^5.12.2",
-    "undici": "^7.29.0",
+    "undici": "^7.30.1",
     "uuid": "^11.1.1",
     "ws": "^8.21.0"
   },
@@ -63,8 +67,9 @@
     "typescript": "^5.8.3"
   },
   "resolutions": {
-    "**/adm-zip": "^0.6.0",
+    "**/adm-zip": "^0.6.1",
     "**/fast-xml-parser": "^5.7.0",
     "**/uuid": "^11.1.1"
-  }
+  },
+  "packageManager": "yarn@1.22.22"
 }
