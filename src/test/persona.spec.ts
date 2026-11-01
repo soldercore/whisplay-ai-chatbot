@@ -17,7 +17,7 @@ const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "whisplay-persona-spec-"
 let memory: any;
 
 before(() => {
-  Object.assign(process.env, { MEMORY_ENABLED: "true", MEMORY_DIR: memoryDir, ASSISTANT_PERSONA: "default" });
+  Object.assign(process.env, { MEMORY_ENABLED: "true", MEMORY_DIR: memoryDir, ASSISTANT_PERSONA: "default", GLADOS_PERSONA_VARIANT: "A" });
   memory = require("../config/local-memory");
 });
 
@@ -32,7 +32,7 @@ const systemPromptWith = (env: Record<string, string>): string =>
     process.execPath,
     ["--require", "ts-node/register/transpile-only", "-e", 'console.log = () => {}; process.stdout.write(require("./src/config/llm-config").systemPrompt)'],
     {
-      env: { ...process.env, ASSISTANT_PERSONA: "", SYSTEM_PROMPT: "", WAKE_WORD_ENABLED: "false", ...env },
+      env: { ...process.env, ASSISTANT_PERSONA: "", GLADOS_PERSONA_VARIANT: "A", SYSTEM_PROMPT: "", WAKE_WORD_ENABLED: "false", ...env },
       cwd: path.join(__dirname, "..", ".."),
       encoding: "utf8",
     },
@@ -352,4 +352,152 @@ test("CLI selects C explicitly while preserving production suffix, scenarios and
   assert.deepEqual(ac.generation, ab.generation);
   assert.deepEqual(ac.scenarios, ab.scenarios);
   assert.deepEqual(ac.dimensions, ab.dimensions);
+});
+
+test("D is opt-in only for GLaDOS; A, default and custom prompts retain their selection", () => {
+  const a = personaPrompt({ ASSISTANT_PERSONA: "glados" });
+  const d = personaPrompt({ ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: " d " });
+  assert.notEqual(d, a);
+  assert.equal(d, comparison.candidateD);
+  for (const variant of ["", "A", "B", "C", "unknown"]) {
+    assert.equal(personaPrompt({ ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: variant }), a);
+  }
+  assert.equal(personaPrompt({ GLADOS_PERSONA_VARIANT: "D" }), ORIGINAL_PROMPT);
+  assert.equal(personaPrompt({ ASSISTANT_PERSONA: "default", GLADOS_PERSONA_VARIANT: "D", SYSTEM_PROMPT: "Custom." }), "Custom.");
+  assert.ok(d.length <= 1800, "bound prefix cost on the small model");
+  assert.doesNotMatch(d, /User:|Assistant:|\[emotion:|<break/);
+});
+
+test("D replaces only the persona prefix; shared speech and wake-word instructions are unchanged", () => {
+  for (const wake of ["true", "false"]) {
+    const a = systemPromptWith({ ASSISTANT_PERSONA: "glados", WAKE_WORD_ENABLED: wake });
+    const d = systemPromptWith({ ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: "D", WAKE_WORD_ENABLED: wake });
+    assert.ok(d.startsWith(comparison.candidateD));
+    assert.equal(d.slice(comparison.candidateD.length), a.slice(comparison.production.length));
+    assert.equal(count(d, SPEECH_PROMPT), 1);
+    assert.equal(count(d, "endConversation"), wake === "true" ? 1 : 0);
+  }
+});
+
+test("D memory replies retain supplied facts and avoid invented prior behavior", () => {
+  const env = { ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: "D" };
+  const facts = "Your preferred editor is Vim. Your favorite color is green.";
+  assert.equal(memoryReply("recalled", facts, env), facts);
+  assert.equal(memoryReply("saved", "your favorite color is green", env), "Recorded. Your favorite color is green.");
+  assert.equal(memoryReply("updated", "your favorite color is green", env), "Updated. Your favorite color is green.");
+  assert.equal(memoryReply("notFound", "your favorite color", env), "I have nothing saved about your favorite color.");
+  assert.equal(memoryReply("failed", "", env), "I couldn't complete the memory operation. The result is not confirmed.");
+  assert.match(memoryReply("secret", "", env), /don't store passwords/);
+  assert.equal(memoryReply("saved", "your favorite color is green", { ...env, ASSISTANT_PERSONA: "default" }),
+    "I'll remember that your favorite color is green.");
+});
+
+test("D uses the existing memory store, preserves updates/recall/deletion and rejects secrets", () => {
+  const previous = { persona: process.env.ASSISTANT_PERSONA, variant: process.env.GLADOS_PERSONA_VARIANT };
+  Object.assign(process.env, { ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: "D" });
+  try {
+    assert.equal(memory.handleMemoryCommand("Remember that my favorite color is blue.").text, "Recorded. Your favorite color is blue.");
+    const updated = memory.handleMemoryCommand("Actually, my favorite color is green.");
+    assert.equal(updated.text, "Updated. Your favorite color is green.");
+    assert.equal(updated.contextChanged, true);
+    assert.equal(memory.handleMemoryCommand("What is my favorite color?").text, "Your favorite color is green.");
+    const stored = fs.readFileSync(path.join(memoryDir, "memory.json"), "utf8");
+    assert.deepEqual(JSON.parse(stored).userMemories.map((m: any) => m.content), ["My favorite color is green."]);
+    assert.match(memory.handleMemoryCommand("Remember my PIN is 4821.").text, /don't store passwords/);
+    assert.equal(fs.readFileSync(path.join(memoryDir, "memory.json"), "utf8"), stored, "secret refused without changing stored memory");
+    memory.handleMemoryCommand("Forget my favorite color.");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(memoryDir, "memory.json"), "utf8")).userMemories.length, 0);
+  } finally {
+    process.env.ASSISTANT_PERSONA = previous.persona;
+    if (previous.variant === undefined) delete process.env.GLADOS_PERSONA_VARIANT;
+    else process.env.GLADOS_PERSONA_VARIANT = previous.variant;
+  }
+});
+
+test("targeted comparisons select continuity scenarios without changing historical A/B/C defaults", () => {
+  const defaults = comparison.parseArgs([]);
+  assert.equal(defaults.challenger, "B"); assert.equal(defaults.repetitions, 3);
+  assert.deepEqual(defaults.scenarios, comparison.fixture.scenarios);
+  const targeted = comparison.parseArgs(["--candidate=D", "--repetitions=1", "--scenarios=teasing_repair,earned_credit"]);
+  assert.equal(targeted.challenger, "D"); assert.equal(targeted.repetitions, 1);
+  assert.deepEqual(targeted.scenarios.map((s: any) => s.id), ["teasing_repair", "earned_credit"]);
+  for (const args of [["--run", "--plan"], ["--candidate=C", "--candidate=D"], ["--candidate=X"],
+    ["--scenarios="], ["--scenarios=greeting,greeting"], ["--scenarios=unknown"], ["--repetitions=0"]]) {
+    assert.throws(() => comparison.parseArgs(args));
+  }
+});
+
+test("A/D continuity runs use the same inputs/settings and each variant's real preceding answers", async () => {
+  const { scenarios } = comparison.parseArgs(["--scenarios=teasing_repair,earned_credit"]);
+  const records: any[] = [];
+  const generation = comparison.settings({ ENABLE_THINKING: "true", OLLAMA_PREDICT_NUM: "400" });
+  await comparison.compare({ generation, challenger: "D", repetitions: 1, scenarios, suffix: SPEECH_PROMPT,
+    emit: (r: any) => records.push(r), generateAnswer: async (request: any) => ({
+      content: request.messages[0].content.startsWith(comparison.candidateD) ? "D previous answer." : "A previous answer.",
+    }) });
+  assert.equal(records.length, 14);
+  for (const r of records) {
+    assert.deepEqual(r.request.options, generation.options);
+    assert.equal(r.request.think, true); assert.equal(r.request.model, comparison.fixture.model);
+    assert.equal("num_ctx" in r.request.options, false); assert.equal("tools" in r.request, false);
+    assert.ok(Object.values(r.scores).every(score => score === null));
+    const earlier = r.request.messages.filter((m: any) => m.role === "assistant");
+    assert.equal(earlier.length, r.turn - 1);
+    assert.ok(earlier.every((m: any) => m.content === `${r.variant} previous answer.`));
+  }
+  const repaired = records.find(r => r.variant === "D" && r.scenario === "teasing_repair" && r.turn === 4);
+  assert.ok(repaired.request.messages.some((m: any) => m.content === "Sorry. That was unfair."));
+});
+
+test("D comparison preserves identical external facts and shared instructions for both variants", () => {
+  const generation = comparison.settings({});
+  for (const scenario of comparison.availableScenarios) {
+    const history = [...(scenario.prior || []), { role: "user", content: scenario.turns[0] }];
+    for (const value of [null, { value: 47.125, unit: "°C" }]) {
+      const a = comparison.buildMessages("A", scenario, history, SPEECH_PROMPT, " date", value);
+      const d = comparison.buildMessages("D", scenario, history, SPEECH_PROMPT, " date", value);
+      assert.deepEqual(a.slice(1), d.slice(1));
+      assert.equal(d[0].content.slice(comparison.candidateD.length), a[0].content.slice(comparison.production.length));
+      assert.deepEqual(comparison.requestFor(d, generation).messages, d);
+    }
+  }
+});
+
+test("evaluation honors the configured loopback endpoint and rejects remote/credentialed URLs", () => {
+  assert.equal(comparison.endpointFor({}), "http://127.0.0.1:11434");
+  assert.equal(comparison.endpointFor({ OLLAMA_ENDPOINT: "http://localhost:8000/" }), "http://localhost:8000");
+  for (const endpoint of ["http://example.com:11434", "http://127.0.0.1.evil.test", "http://name:pass@localhost",
+    "file:///tmp/model", "http://localhost/api", "http://localhost/?x=1", "http://localhost/#x"]) {
+    assert.throws(() => comparison.endpointFor({ OLLAMA_ENDPOINT: endpoint }));
+  }
+});
+
+test("generation uses the selected local endpoint and records real first-content/server timings", async () => {
+  const axios = require("axios"), originalPost = axios.post;
+  axios.post = async (url: string, _body: unknown, options: any) => {
+    assert.equal(url, "http://localhost:8000/api/chat");
+    assert.equal(options.maxRedirects, 0); assert.equal(options.proxy, false);
+    return { data: Readable.from([Buffer.from('{"message":{"content":"Answer."},"done":true,"total_duration":50,"load_duration":10}\n')]) };
+  };
+  try {
+    const r = await comparison.generate({}, new AbortController().signal, "http://localhost:8000");
+    assert.equal(r.total_duration, 50); assert.equal(r.load_duration, 10);
+    assert.ok(Number.isFinite(r.firstContentMs) && r.firstContentMs >= 0);
+  } finally { axios.post = originalPost; }
+});
+
+test("D CLI plans remain offline, control A ignores inherited D, and unknown thinking blocks inference", () => {
+  const args = ["--require", "ts-node/register/transpile-only", "scripts/persona-comparison.cjs"];
+  const env = { ...process.env, OLLAMA_MODEL: comparison.fixture.model, GLADOS_PERSONA_VARIANT: "D", ENABLE_THINKING: "",
+    OLLAMA_ENDPOINT: "http://localhost:8000" };
+  const options = { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" as const, timeout: 10000, env };
+  const plan = JSON.parse(execFileSync(process.execPath, [...args, "--plan", "--candidate=D", "--repetitions=1",
+    "--scenarios=greeting,teasing_repair,earned_credit,serious,temperature"], options));
+  assert.equal(plan.generationRequests, 20); assert.equal(plan.repetitions, 1);
+  assert.equal(plan.endpoint, "http://localhost:8000");
+  assert.equal(plan.configuration.thinkingExplicit, false);
+  assert.ok(plan.prompts.A.startsWith(comparison.production));
+  assert.ok(plan.prompts.D.startsWith(comparison.candidateD));
+  assert.throws(() => execFileSync(process.execPath, [...args, "--run", "--candidate=D"], { ...options, stdio: "pipe" }),
+    (error: any) => error.status === 1 && /confirm OLLAMA_MODEL and ENABLE_THINKING/.test(error.stderr));
 });
