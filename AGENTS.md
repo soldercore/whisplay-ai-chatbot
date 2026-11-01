@@ -2,6 +2,16 @@
 
 > **Note:** This file is intended for AI coding agents. Please keep it updated when making architectural changes.
 
+## Custom integration entry point
+
+- Read `docs/CUSTOM_BUILD.md`, `docs/UPSTREAM_UPDATES.md` and `upstream-integration.json` before updating this custom build. Historical phase documents are not proof of deployment or current test results.
+- Preserve terminal UI/classic fallback, GLaDOS voice/persona, speech reveal, memory and turn context, Ollama parsing/budgets, owned-process cleanup, launcher lock and startup data preservation.
+- Preserve existing tool restrictions: no shell runner and no enabling unmigrated image/music/skill/plugin tools by merely adding metadata.
+- `npm test` includes the complete custom suite and new integration/data-preservation contracts; real `rsync` is required for deploy tests. Python SDK/model contracts and UI self-tests are separate commands documented in `docs/CUSTOM_BUILD.md`.
+- Use pinned Yarn 1.22.22 and `--frozen-lockfile`. Full build runs daemon registration when its socket exists; build in an isolated environment. Never use `deploy-aihat2.sh --provision` for an incremental app update.
+- Wake-word and ambient-capture children use application ownership. A queued start must be cancelled by a later stop/shutdown; microphone release requires confirmed child exit.
+- Hailo services are external: missing SDK/model returns unavailable, and client shutdown aborts HTTP without stopping an external server. Actual Hailo inferencing still requires Pi acceptance.
+
 ## Project Overview
 
 Whisplay AI Chatbot is a pocket-sized AI chatbot device built for Raspberry Pi Zero 2W / Pi 5. It features voice interaction (press button, speak, get spoken responses), an LCD display with emoji/status visualization, RGB LED indicators, and extensible AI backend support.
@@ -385,8 +395,9 @@ bash startup.sh
 whisplay service install
 
 # Service file location: /etc/systemd/system/chatbot.service
-# If whisplay-daemon.service exists, startup.sh refuses to install chatbot.service.
-# In that case the chatbot should be launched and managed by whisplay-daemon instead.
+# If whisplay-daemon.service is running, startup.sh registers the chatbot,
+# enables daemon-managed boot autostart, and requests an immediate launch.
+# If the daemon unit exists but is unavailable, startup.sh asks the user to start it.
 # Logs: ~/whisplay-ai-chatbot/chatbot.log
 
 # View logs

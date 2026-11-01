@@ -40,7 +40,7 @@ try:
     HAILO_AVAILABLE = True
 except ImportError as _e:
     HAILO_AVAILABLE = False
-    print(f"[WARN] Hailo platform not available ({_e}). Service will return empty transcriptions.")
+    print(f"[WARN] Hailo platform not available ({_e}). Readiness and recognition will return HTTP 503.")
 
 # ── CLI args ─────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Hailo Whisper ASR HTTP Service")
@@ -125,7 +125,9 @@ def _b64_to_temp_wav(b64: str) -> str:
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "hailo": HAILO_AVAILABLE})
+    ready = HAILO_AVAILABLE and speech2text is not None
+    return jsonify({"status": "ok" if ready else "unavailable",
+                    "hailo": HAILO_AVAILABLE, "model_loaded": ready}), 200 if ready else 503
 
 
 @app.route("/recognize", methods=["POST"])
@@ -140,7 +142,7 @@ def recognize():
         return jsonify({"error": "Either filePath or base64 is required"}), 400
 
     if not HAILO_AVAILABLE or speech2text is None:
-        return jsonify({"recognition": "", "language": language, "time_cost": 0})
+        return jsonify({"error": "Hailo Whisper model is unavailable"}), 503
 
     temp_file: str | None = None
     try:

@@ -46,6 +46,69 @@ function clock() {
   };
 }
 const flush = async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); };
+
+function wakeFixture() {
+  const children: any[] = [], stops: any[] = [];
+  const app = new AbortController();
+  let release: () => void = () => {}, fail: (error: Error) => void = () => {};
+  const api = load("device/wakeword.ts", {
+    events: { EventEmitter }, child_process: {}, path,
+    dotenv: { config() {} },
+    "../utils/app-lifecycle": {
+      appSignal: app.signal,
+      spawnOwned(_command: string, _args: string[], options: any) {
+        assert.equal(options.detached, true);
+        const result = child(); children.push(result); return result;
+      },
+      stopOwnedChild(owned: any) {
+        stops.push(owned);
+        return new Promise<void>((resolve, reject) => { release = resolve; fail = reject; });
+      },
+    },
+  }, { process: { platform: "linux", env: { WAKE_WORD_ENABLED: "true" } } });
+  const listener = new api.WakeWordListener();
+  return { listener, children, stops, app, release: () => release(), fail: () => fail(new Error("exit unconfirmed")) };
+}
+
+test("wake waits for owned Python/SoX release and emits only once", async () => {
+  const f = wakeFixture(); let wakes = 0;
+  f.listener.on("wake", () => { wakes++; }); f.listener.start();
+  f.children[0].stdout.write("WAKE jarvis 0.9\nWAKE jarvis 0.9\n");
+  assert.equal(wakes, 0); assert.equal(f.stops.length, 1);
+  f.release(); await flush(); assert.equal(wakes, 1);
+});
+
+test("stop cancels a queued wakeword restart; old data/close cannot affect a new child", async () => {
+  const f = wakeFixture(); f.listener.start();
+  const pending = f.listener.stop();
+  f.listener.start(); f.listener.start();
+  assert.equal(f.listener.stop(), pending);
+  f.release(); await pending; await flush();
+  assert.equal(f.children.length, 1);
+  f.listener.start(); assert.equal(f.children.length, 2);
+  let wakes = 0; f.listener.on("wake", () => { wakes++; });
+  f.children[0].stdout.write("WAKE stale 0.9\n"); f.children[0].emit("close", 0);
+  f.listener.start(); assert.equal(f.children.length, 2); assert.equal(wakes, 0);
+});
+
+test("wakeword restarts once after confirmed stop, but never after application shutdown", async () => {
+  const f = wakeFixture(); f.listener.start();
+  const pending = f.listener.stop(); f.listener.start(); f.listener.start();
+  f.release(); await pending; await flush(); assert.equal(f.children.length, 2);
+  const next = f.listener.stop(); f.listener.start(); f.app.abort();
+  f.release(); await next; await flush();
+  f.listener.start(); assert.equal(f.children.length, 2);
+});
+
+test("failed microphone release or a superseding stop cannot emit wake", async () => {
+  for (const failure of [true, false]) {
+    const f = wakeFixture(); let wakes = 0; f.listener.on("wake", () => { wakes++; });
+    f.listener.start(); f.children[0].stdout.write("WAKE jarvis 0.9\n");
+    if (failure) f.fail();
+    else { const stopped = f.listener.stop(); f.release(); await stopped; }
+    await flush(); assert.equal(wakes, 0);
+  }
+});
 function child() {
   const c: any = new EventEmitter();
   c.pid = 123; c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.signals = [];

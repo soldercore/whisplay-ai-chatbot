@@ -158,6 +158,7 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
     "../utils/dir": require("../utils/dir"), "../device/wakeword": {}, "../device/im-bridge": {},
     "./chat-flow/stateMachine": { FlowStateMachine: Machine }, "./chat-flow/states": { flowStates: states },
     "../device/audio": {}, "../device/music-player": { isMusicPlaying: () => false },
+    "../utils/app-lifecycle": { appSignal: new AbortController().signal },
   }).default;
   const ctx = new Flow();
   if (options.context) ctx.knowledgePrompts.push("Current RAG"); // An earlier turn used the same retrieved content.

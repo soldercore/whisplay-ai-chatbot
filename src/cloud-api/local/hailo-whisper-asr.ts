@@ -1,10 +1,8 @@
 import axios from "axios";
 import dotenv from "dotenv";
 import fs from "fs";
-import { spawn } from "child_process";
-import { resolve } from "path";
-import { ASRServer } from "../../type";
 import { defaultPortMap } from "./common";
+import { appSignal } from "../../utils/app-lifecycle";
 
 dotenv.config();
 
@@ -16,8 +14,6 @@ const hailoWhisperLanguage =
   process.env.HAILO_WHISPER_LANGUAGE || "en";
 const hailoWhisperRequestType =
   process.env.HAILO_WHISPER_REQUEST_TYPE || "base64";
-
-let pyProcess: ReturnType<typeof spawn> | null = null;
 
 interface HailoWhisperResponse {
   recognition: string;
@@ -43,7 +39,7 @@ export const recognizeAudio = async (
     .post<HailoWhisperResponse>(
       `http://${hailoWhisperHost}:${hailoWhisperPort}/recognize`,
       body,
-      { timeout: 20000 }
+      { timeout: 20000, signal: appSignal }
     )
     .then((response) => {
       if (response.data?.recognition) {
@@ -58,29 +54,6 @@ export const recognizeAudio = async (
     });
 };
 
-// ── Cleanup ──────────────────────────────────────────────────────────────────
-
-function cleanup() {
-  if (pyProcess && !pyProcess.killed && pyProcess.pid) {
-    console.log("Stopping Hailo Whisper service …");
-    try {
-      process.kill(-pyProcess.pid, "SIGTERM");
-    } catch {
-      // ignore
-    }
-  }
-}
-
-process.on("SIGINT", cleanup);
-process.on("SIGTERM", cleanup);
-process.on("exit", cleanup);
-process.on("uncaughtException", (err) => {
-  console.error(err);
-  cleanup();
-  process.exit(1);
-});
-process.on("unhandledRejection", (err) => {
-  console.error(err);
-  cleanup();
-  process.exit(1);
-});
+// This client never starts the external Hailo server. Application shutdown
+// aborts its HTTP request; it must not install competing process-exit handlers
+// or claim ownership of the service.

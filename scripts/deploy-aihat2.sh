@@ -1,45 +1,70 @@
 #!/usr/bin/env bash
 # deploy-aihat2.sh — Deploy Whisplay to a Raspberry Pi AI HAT+ 2 (Hailo-10H)
 # Usage:
-#   bash scripts/deploy-aihat2.sh           (full install)
-#   bash scripts/deploy-aihat2.sh --sync-only  (rsync code only, no service reinstall)
+#   PI_HOST=pi@host bash scripts/deploy-aihat2.sh --sync-only  (default: code only)
+#   PI_HOST=pi@host bash scripts/deploy-aihat2.sh --build      (code + locked build)
+#   PI_HOST=pi@host bash scripts/deploy-aihat2.sh --provision  (legacy full install)
 # ============================================================
 set -euo pipefail
 
 # ---- Configuration -----------------------------------------
-PI_HOST="${PI_HOST:-pi@192.168.100.252}"
+PI_HOST="${PI_HOST:-}"
 REMOTE_DIR="${REMOTE_DIR:-/home/pi/whisplay-ai-chatbot}"
 HAILO_APPS_DIR="/home/pi/hailo-apps"
 PIPER_DIR="/home/pi/piper"
 PIPER_VOICE="${PIPER_VOICE:-en_US-amy-medium}"
 LLM_MODEL="${LLM_MODEL:-qwen2.5-instruct:1.5b}"
-SYNC_ONLY=false
+SYNC_ONLY=true
+PROVISION=false
+DRY_RUN=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---- End Configuration -------------------------------------
 
 for arg in "$@"; do
   case "$arg" in
-    --sync-only) SYNC_ONLY=true ;;
+    --sync-only) SYNC_ONLY=true; PROVISION=false ;;
+    --build) SYNC_ONLY=false; PROVISION=false ;;
+    --provision) SYNC_ONLY=false; PROVISION=true ;;
+    --dry-run) DRY_RUN=true ;;
+    --help|-h)
+      echo 'Usage: PI_HOST=user@host deploy-aihat2.sh [--sync-only|--build|--provision] [--dry-run]'
+      echo 'Default: transfer code only; preserve data/config/models/plugins; no deletion.'
+      echo '--build requires Yarn 1.22.22 on the target. --provision changes OS/services/models.'
+      exit 0 ;;
     *) echo "Unknown argument: $arg"; exit 1 ;;
   esac
 done
 
 log()  { echo "[deploy] $*"; }
-ssh_run() { ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "${PI_HOST}" "$@"; }
+[[ "$PI_HOST" =~ ^([A-Za-z0-9_.-]+@)?[A-Za-z0-9][A-Za-z0-9.:-]*$ ]] || {
+  echo 'Set PI_HOST explicitly to user@host before any transfer.' >&2; exit 1;
+}
+[[ "$REMOTE_DIR" =~ ^/[A-Za-z0-9_./-]+$ && "$REMOTE_DIR" != / && ! "$REMOTE_DIR" =~ (^|/)\.\.(/|$) ]] || {
+  echo 'REMOTE_DIR must be a non-root absolute path without shell metacharacters or .. components.' >&2; exit 1;
+}
+ssh_run() {
+  # OpenSSH joins remote arguments into one shell command. Preserve bash -c's
+  # multiline argument instead of letting the login shell split it again.
+  local remote_command
+  printf -v remote_command '%q ' "$@"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -- "${PI_HOST}" "$remote_command"
+}
 
 # ─── Step 1: Sync project files ─────────────────────────────
 log "Syncing project to ${PI_HOST}:${REMOTE_DIR} …"
-rsync -az --delete \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='dist' \
-  --exclude='.env' \
-  "${PROJECT_ROOT}/" "${PI_HOST}:${REMOTE_DIR}/"
+source "$SCRIPT_DIR/deploy-sync.sh"
+sync_options=()
+if [ "$DRY_RUN" = true ]; then sync_options+=(--dry-run --itemize-changes); fi
+sync_aihat_code "$PROJECT_ROOT" "${PI_HOST}:${REMOTE_DIR}" "${sync_options[@]}"
 log "Sync complete."
+if [ "$DRY_RUN" = true ] || [ "$SYNC_ONLY" = true ]; then
+  log 'Code transfer finished. No dependency install, config edit, build or service change requested.'
+  exit 0
+fi
 
 # ─── Step 2: Build on device ────────────────────────────────
-log "Running npm install + build on device …"
+log "Running locked Yarn install + build on device …"
 ssh_run bash -c "
   set -e
   cd '${REMOTE_DIR}'
@@ -47,9 +72,17 @@ ssh_run bash -c "
     echo 'ERROR: Node.js not found on device. Install Node.js 20+ first.' >&2
     exit 1
   fi
-  npm install --prefer-offline
-  npm run build
+  if ! command -v yarn >/dev/null || [ \"\$(yarn --version)\" != '1.22.22' ]; then
+    echo 'ERROR: provision Yarn 1.22.22 separately; npm fallback would ignore Yarn resolutions.' >&2
+    exit 1
+  fi
+  yarn install --frozen-lockfile --non-interactive
+  yarn build
 "
+if [ "$PROVISION" != true ]; then
+  log 'Build complete. No configuration, model, driver or service provisioning requested.'
+  exit 0
+fi
 
 # ─── Step 3: Bootstrap .env if missing ──────────────────────
 log "Configuring .env for AI HAT+ 2 …"
@@ -61,20 +94,15 @@ ssh_run bash -c "
     # Apply AI HAT+ 2 defaults
     sed -i 's/^ASR_SERVER=.*/ASR_SERVER=hailowhisper/' .env
     sed -i 's/^TTS_SERVER=.*/TTS_SERVER=piper-http/' .env
-    sed -i 's/^LLM_API=.*/LLM_API=ollama/' .env
+    sed -i 's/^LLM_SERVER=.*/LLM_SERVER=ollama/' .env
     # Point ollama at hailo-ollama on port 8000
-    grep -q '^OLLAMA_BASE_URL=' .env || echo 'OLLAMA_BASE_URL=http://localhost:8000' >> .env
+    sed -i 's|^OLLAMA_ENDPOINT=.*|OLLAMA_ENDPOINT=http://localhost:8000|' .env
     grep -q '^OLLAMA_MODEL='    .env || echo 'OLLAMA_MODEL=${LLM_MODEL}' >> .env
     echo '[deploy] .env created from template with AI HAT+ 2 defaults.'
   else
     echo '[deploy] .env already exists, leaving it unchanged.'
   fi
 "
-
-if [ "${SYNC_ONLY}" = true ]; then
-  log "Sync-only mode — skipping service install. Done."
-  exit 0
-fi
 
 # ─── Step 4: Install/verify hailo-h10-all ───────────────────
 log "Checking Hailo driver …"

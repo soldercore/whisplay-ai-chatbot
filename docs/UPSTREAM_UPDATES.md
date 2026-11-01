@@ -1,0 +1,14 @@
+# Incremental upstream updates
+
+Keep one accepted custom line and a clean upstream remote per repository. The protected historical references are chatbot `21177a0` and driver `53a9d6e`; do not rebase or overwrite them. New updates start from the last accepted custom integration tip, not from the old standard-install branch.
+
+1. Query the official published releases. Exclude draft/prerelease releases, fetch the selected tag without forcing existing tags, peel annotated tags and compare the commit against release metadata. Record tag object, commit, release URL and verification time in `upstream-integration.json`. Never integrate a moving `*-latest` ref as if it were stable.
+2. Create a new isolated worktree/branch from the accepted custom tip. Fetch upstream into its own remote refs. Compute the common ancestor and changed-file intersection before reading large modules. Record the previous accepted tip and test baseline.
+3. Merge the verified upstream commit with history (`--no-ff --no-commit`). Resolve by preserving both contracts. Do not choose whole-file `ours/theirs` for shared core files. If a conflict cannot be resolved without losing a required function, leave that integration unmerged and document the blocker.
+4. Use `docs/CUSTOM_BUILD.md` and regression tests as the feature contract. Review shared audio/state/provider interfaces and the companion daemon version. Keep unmigrated tools disabled. Do not combine a model/driver/data-format migration with an incidental app update.
+5. Use Yarn 1.22.22 and the committed lock. Apply dependency patches, build/typecheck in an isolated environment, run the complete Node and Python/UI contracts, real-rsync data-preservation tests and dependency audit. Document any residual advisory instead of forcing incompatible transitive major versions.
+6. Commit the integration and any additional compatibility/security fixes as reviewable changes on that development branch. Record exact tested commands, environment, results and remaining physical tests. Keep voice/model contents, `.env`, private memory and runtime data out of Git and agent context.
+7. Review chatbot and driver branches separately. Prepare a paired compatibility manifest and candidate artefact. Physical acceptance and deployment require their own operational session; code review does not establish installed versions.
+8. On the next update reuse the manifest and inspect only the new upstream delta and affected custom contracts. Maintain vendored UI palette/safe-area/font provenance between repositories. Avoid a new automatic updating service until the manual process has proved sufficient.
+
+Deployment should eventually switch versioned app artefacts while keeping config/data/plugins/models separately preserved. Code-only rsync is a non-deleting transfer aid, not a transactional release manager. Keep driver/kernel rollback separate from app rollback, and test active-writer-safe backup before modifying production.
