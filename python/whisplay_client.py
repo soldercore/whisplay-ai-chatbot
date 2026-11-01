@@ -5,13 +5,6 @@ import socket
 import threading
 import time
 
-try:
-    from whisplay import WhisplayBoard
-except Exception:
-    import sys
-    sys.path.append(os.path.abspath("../Driver"))
-    from WhisPlay import WhisPlayBoard
-
 DEFAULT_DAEMON_SOCKET_PATH = "/tmp/whisplay-daemon.sock"
 DEFAULT_APP_ID = "whisplay-ai-chatbot"
 DEFAULT_APP_DISPLAY_NAME = "AI Chatbot"
@@ -56,6 +49,8 @@ class WhisplayDaemonProxy:
     def _send_request(self, cmd: str, payload: dict | None = None) -> dict:
         body = {"version": 1, "cmd": cmd, "payload": payload or {}}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            if os.environ.get("WHISPLAY_LATENCY_DIAGNOSTICS") == "true":
+                client.settimeout(2.0)
             client.connect(self.socket_path)
             client.sendall((json.dumps(body) + "\n").encode("utf-8"))
             line = client.makefile("r").readline().strip()
@@ -262,8 +257,18 @@ def create_whisplay_hardware(
         persist=persist,
     )
     if daemon.ping():
-        daemon.register()
+        # A diagnostic session must use existing registration, never rewrite it.
+        if os.environ.get("WHISPLAY_LATENCY_DIAGNOSTICS") != "true":
+            daemon.register()
         daemon.start_event_listener()
         daemon.acquire_foreground()
         return daemon
+    if os.environ.get("WHISPLAY_LATENCY_DIAGNOSTICS") == "true" and os.path.exists(socket_path):
+        raise RuntimeError("diagnostic_daemon_unavailable")
+    try:
+        from whisplay import WhisplayBoard
+    except ImportError:
+        import sys
+        sys.path.append(os.path.abspath("../Driver"))
+        from WhisPlay import WhisPlayBoard as WhisplayBoard
     return WhisplayBoard()

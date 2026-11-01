@@ -1,5 +1,9 @@
 # Pi latency measurement procedure
 
+**Reliability revision:** read [diagnostic-reliability.md](diagnostic-reliability.md).
+The helper now supervises its children and writes filtered JSONL directly.
+Read-only display preflight is available while production remains running.
+
 Do not execute the interruption/test steps until the user agrees to the test
 window. **Nothing in these helpers stops services, restores Qwen, edits `.env`,
 unloads models, upgrades Ollama or installs models.** Intended baseline is not
@@ -76,6 +80,22 @@ Do not run `npm run build`, the daemon registration script, provisioning or an
 installer: those are outside this measurement procedure. No dependency upgrade
 is needed. Compiler failure stops the procedure.
 
+Run the read-only preflight **before requesting or performing any interruption**.
+Production may keep running; the preflight does not acquire its application lock:
+
+```bash
+WHISPLAY_DIAGNOSTIC_RUNTIME_DIR="$ACTIVE" \
+  bash scripts/pi-latency.sh check --confirm-idle > .test-artifacts/latency/voice-preflight.json
+```
+
+It checks selected Python imports, font/emoji resources, UI files, pidfd support,
+current compiled diagnostic modules and the existing local model configuration.
+No hardware is initialized, no app is registered, and success is not a hardware
+startup guarantee. Missing ignored Python assets can be read from the explicitly
+supplied production runtime directory; no extra font/emoji symlinks or downloads
+are needed. The archive is optional, the runtime SVG directory is checked.
+On failure, inspect the structured checks and keep production running unchanged.
+
 ## Agreed interruption and three real voice interactions
 
 This phase needs temporary interruption of the chatbot and a foreground run of
@@ -107,7 +127,9 @@ no directory, leave that optional link absent. Never remove/overwrite receiver d
 cd "$REVIEW"
 for item in data knowledge plugins; do
   if [ -d "$ACTIVE/$item" ]; then
-    ln -s "$ACTIVE/$item" "$REVIEW/$item"
+    if [ ! -e "$REVIEW/$item" ] && [ ! -L "$REVIEW/$item" ]; then
+      ln -s "$ACTIVE/$item" "$REVIEW/$item"
+    fi
   fi
 done
 bash scripts/pi-latency.sh snapshot > .test-artifacts/latency/before-voice.json
@@ -118,27 +140,15 @@ environment, without dumping/copying secrets into logs. The helper refuses an
 incorrect candidate baseline rather than fixing it. It requires Qwen already
 resident alone at 4096; if not, stop and review how to establish that state safely.
 
-Start the foreground test. This sets diagnostic variables only for the child
-process and filters stdout/stderr **before** writing the diagnostic file:
-
-First check the candidate configuration without starting it. A refusal is shown
-on the terminal; correct nothing automatically. This also verifies Pi-local speech
-hosts, physical rather than browser audio, a local Qwen artifact and the compiled
-diagnostic build:
-
-```bash
-WHISPLAY_DIAGNOSTIC_RUNTIME_DIR="$ACTIVE" \
-  bash scripts/pi-latency.sh check --confirm-idle > .test-artifacts/latency/voice-preflight.json
-```
-
-Proceed only after that command succeeds:
+Start the supervised foreground run only after the approved interruption and the
+successful read-only preflight below. It repeats preflight and acquires the lock.
+Stdout is already privacy-safe JSONL; startup failures remain visible on stderr.
+Do not add an external collector pipe:
 
 ```bash
 cd "$REVIEW"
-set -o pipefail
 WHISPLAY_DIAGNOSTIC_RUNTIME_DIR="$ACTIVE" \
-  bash scripts/pi-latency.sh voice --confirm-idle 2>&1 \
-  | bash scripts/pi-latency.sh collect > .test-artifacts/latency/voice.jsonl
+  bash scripts/pi-latency.sh voice --confirm-idle > .test-artifacts/latency/voice.jsonl
 ```
 
 Use the Whisplay microphone, normal button/VAD interaction, Piper voice and
@@ -156,7 +166,8 @@ interaction IDs. The wall-time anchor helps association but is not acoustic proo
 
 After the three answers, Ctrl-C the **foreground diagnostic run** and wait for
 its owned cleanup. The shared per-user lock prevents the normal app launching
-beside it. If the daemon refuses focus/input for an unregistered foreground
+beside it. Ctrl+Z requests shutdown rather than suspension; SSH/pipe loss also
+triggers bounded owned-child cleanup. If the daemon refuses focus/input for an unregistered foreground
 candidate, stop the test and report the launcher issue; do not replace its normal
 registration or autostart target. Empty/incomplete logs are not a successful test.
 
@@ -165,6 +176,11 @@ cd "$REVIEW"
 bash scripts/pi-latency.sh snapshot > .test-artifacts/latency/after-voice.json
 bash scripts/pi-latency.sh report .test-artifacts/latency/voice.jsonl > .test-artifacts/latency/voice-report.json
 ```
+
+Operator SIGINT normally retains exit code 130 even with valid completed turns.
+The report separates measurement data from session termination status. Empty or
+incomplete data is an explicit failure, never successful JSON `[]`. Inspect the
+filtered JSONL for selected Python/Node failure metadata, not raw private logs.
 
 The report separates button-release proxy, capture finalization, ASR, context,
 model rounds, first text/segment, full audio, playback submission and SoX spawn.
@@ -215,6 +231,7 @@ start the original registered application with its unchanged launcher:
 cd "$REVIEW"
 source scripts/app-lock.sh
 wait_for_app_unlock
+bash scripts/pi-latency.sh verify-cleanup .test-artifacts/latency/voice.jsonl
 whisplay service start
 whisplay service status
 ```
@@ -230,5 +247,6 @@ Return only `inspection.jsonl`, hardware snapshots, benchmark JSONL and filtered
 `voice.jsonl`/report, plus optional manually measured acoustic intervals. Never
 upload `.env`, recordings, memory stores or an unfiltered service journal. Keep
 the review worktree and data links until results are reviewed; no cleanup command
-is needed. If any step fails, restore the original launch and report the failure
-before attempting optimization.
+is needed. Restore the original registered app only after verified cleanup and
+lock release. If cleanup cannot be verified, report the failure and investigate
+owned resources before attempting a restart. Never terminate unrelated processes.

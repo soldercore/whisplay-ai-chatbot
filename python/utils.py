@@ -4,6 +4,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import cairosvg
+from runtime_resources import resource_path
 
 try:
   import cv2 as cv
@@ -120,7 +121,7 @@ class EmojiUtils:
   @staticmethod
   def get_local_emoji_svg_image(char, size):
     filename = EmojiUtils.emoji_to_filename(char)
-    path = os.path.join("emoji_svg", filename)
+    path = str(resource_path("emoji_svg") / filename)
     if not os.path.exists(path):
       # print(f"[警告] 找不到 SVG 图标: {path}")
       return None

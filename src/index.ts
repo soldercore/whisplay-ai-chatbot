@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { requireLauncherLock } from "./utils/app-launch-lock";
 import { installAppShutdown, shutdownApplication, onAppShutdown, appSignal } from "./utils/app-lifecycle";
 import { prepareLocalServices, portAvailable } from "./utils/local-services";
+import { diagnosticEvent, diagnosticFailure } from "./utils/diagnostic-events";
 
 async function main(): Promise<void> {
   requireLauncherLock();
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
   require("./status/wifi-status").startWifiStatus();
   require("./status/vpn-status").startVpnStatus();
   new ChatFlow({ enableCamera: process.env.ENABLE_CAMERA === "true" });
+  diagnosticEvent("application_ready");
 }
 
-void main().catch(error => { console.error("[Lifecycle] Startup failed:", error.message); shutdownApplication(1); });
+void main().catch(error => { diagnosticFailure(error); console.error("[Lifecycle] Startup failed:", error.message); shutdownApplication(1); });

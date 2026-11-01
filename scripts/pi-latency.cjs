@@ -6,6 +6,50 @@ const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const MODEL = 'qwen3.5:2b-q4_K_M';
 const PREFIX = '[AudioTiming] interaction ';
+const diagnosticError=(reason,message)=>Object.assign(new Error(message),{diagnosticReason:reason});
+function modelParameters(text) {
+ const result={};for(const line of (text||'').split('\n')){const [key,value]=line.trim().split(/\s+/);
+  if(['temperature','top_k','top_p','presence_penalty','draft_num_predict'].includes(key)&&Number.isFinite(Number(value)))result[key]=Number(value);
+ }return result;
+}
+function parseSession(line) {
+ let r;try{r=JSON.parse(line);}catch{return null;}
+ if(!r||!['diagnostic_session','diagnostic_event'].includes(r.kind)||
+  !['start','child_started','stop_requested','startup_failure','runtime_failure','collection_failure','cleanup_start','cleanup_verified','cleanup_failure','escalation','end','command_failure','display_ready','application_ready','display_failure','node_failure'].includes(r.event)||
+  !['startup','runtime','collection','cleanup'].includes(r.phase))return null;
+ const out={kind:r.kind,event:r.event,phase:r.phase};
+ if(typeof r.session_id==='string'&&/^[a-f0-9-]{36}$/.test(r.session_id))out.session_id=r.session_id;
+ for(const key of ['child_pid','signal','remaining','exit_code','app_exit_code','measurement_events','line'])
+  if(r[key]===null||Number.isSafeInteger(r[key]))out[key]=r[key];
+ const safeValues={reason:new Set(['display_failure','node_failure','display_not_ready','display_spawn_failed','startup_failed','module_missing','required_file_missing','permission_denied','port_in_use','display_port_in_use',
+  'application_exited_before_ready','application_exit_nonzero','startup_timeout','no_interaction_events','owned_exit_unverified','supervisor_error','guardian_terminated','output_closed','output_backpressure','supervisor_prerequisites','display_prerequisites','not_pi','model_residency','baseline_mismatch','missing_build','runtime_version','remote_speech_host','browser_audio','cleanup_unverified','command_failed']),
+  error_type:new Set(['ModuleNotFoundError','ImportError','FileNotFoundError','PermissionError','OSError','RuntimeError','ValueError','TypeError','AttributeError','SyntaxError','Exception']),
+  module:new Set(['PIL','PIL.Image','numpy','cairosvg','gpiod','spidev','WhisPlay','picamera2','cv2']),
+  frame:new Set(['chatbot-ui.py','utils.py','whisplay_client.py','whisplay.py','fonts.py','diagnostic_display.py'])};
+ for(const key of ['reason','error_type','module','frame'])if(safeValues[key].has(r[key]))out[key]=r[key];
+ if(typeof r.cleanup_verified==='boolean')out.cleanup_verified=r.cleanup_verified;
+ return out;
+}
+function displayPreflight(env) {
+ const child=cp.spawnSync('python3',['-B',path.join(__dirname,'../python/diagnostic_display.py'),'--preflight'],
+  {env,encoding:'utf8',timeout:15000,maxBuffer:131072,stdio:['ignore','pipe','pipe']});
+ let data;try{data=JSON.parse((child.stdout||'').trim().split('\n').at(-1));}catch{}
+ if(data?.kind==='display_preflight')console.log(JSON.stringify(data));
+ if(child.status!==0||data?.ok!==true){
+  if(data?.kind==='display_preflight')console.error(JSON.stringify(data));
+  throw diagnosticError('display_prerequisites','Display prerequisites failed; inspect display_preflight checks');
+ }
+ return data;
+}
+function compiledBuild() {
+ const hashes={};
+ for(const [file,marker] of [['core/audio-timing.js','WHISPLAY_LATENCY_DIAGNOSTICS'],['utils/diagnostic-events.js','diagnosticFailure'],['device/display.js','diagnostic_display.py'],['index.js','diagnosticFailure']]){
+  const text=read(path.join(__dirname,'../dist',file));
+  if(!text?.includes(marker))throw diagnosticError('missing_build','Diagnostic emitted build is missing or stale; compile the reviewed checkout first');
+  hashes[file]=crypto.createHash('sha256').update(text).digest('hex');
+ }
+ return {protocol:2,sha256:hashes};
+}
 function endpointFor(env) {
  const url=new URL(env.OLLAMA_ENDPOINT||'http://127.0.0.1:11434');
  if(!['http:','https:'].includes(url.protocol)||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||
@@ -95,26 +139,29 @@ function residency(ps,mode,digest) {
  if(!Array.isArray(models))throw Error('Malformed /api/ps');
  if(mode==='cold'){if(models.length)throw Error('Cold test refused: a model is already resident; nothing was unloaded');return;}
  if(models.length!==1||![models[0].name,models[0].model].includes(MODEL)||models[0].context_length!==4096||models[0].digest!==digest)
-  throw Error('Only the verified Qwen must already be resident at context 4096. Nothing was switched or unloaded.');
+  throw diagnosticError('model_residency','Only the verified Qwen must already be resident at context 4096. Nothing was switched or unloaded.');
 }
 function localModel(show) {
  if(show?.remote_host||show?.remote_model||show?.details?.family!=='qwen35'||show?.details?.quantization_level!=='Q4_K_M')
   throw Error('Local Qwen35 Q4_K_M artifact required; remote/unknown model refused');
 }
+function ensurePi() {
+ if(!/Raspberry Pi 5/.test(read('/proc/device-tree/model')||''))throw diagnosticError('not_pi','Inference is restricted to the actual Raspberry Pi 5; PC/cloud runs refused');
+}
 function ensurePiLock() {
- if(!/Raspberry Pi 5/.test(read('/proc/device-tree/model')||''))throw Error('Inference is restricted to the actual Raspberry Pi 5; PC/cloud runs refused');
+ ensurePi();
  const lock=`/tmp/whisplay-chatbot-${process.getuid()}/application.lock`;
  let inherited;try{inherited=fs.readlinkSync('/proc/self/fd/9');}catch{}
  if(inherited!==lock||process.env.WHISPLAY_APPLICATION_LOCK!==lock)throw Error('Use pi-latency.sh so the same-user application lock is held');
 }
 function baselineConfig(env) {
  for(const key of ['FASTER_WHISPER_HOST','PIPER_HTTP_HOST'])
-  if(!['localhost','127.0.0.1','::1','[::1]'].includes(env[key]||'localhost'))throw Error('Remote speech inference refused; speech hosts must be Pi-local');
- if(['true','1'].includes((env.WEB_AUDIO_ENABLED||'').toLowerCase()))throw Error('Browser audio is not the requested Whisplay hardware test');
+  if(!['localhost','127.0.0.1','::1','[::1]'].includes(env[key]||'localhost'))throw diagnosticError('remote_speech_host','Remote speech inference refused; speech hosts must be Pi-local');
+ if(['true','1'].includes((env.WEB_AUDIO_ENABLED||'').toLowerCase()))throw diagnosticError('browser_audio','Browser audio is not the requested Whisplay hardware test');
  if(env.OLLAMA_MODEL!==MODEL||env.LLM_SERVER!=='ollama'||env.ASSISTANT_PERSONA!=='glados'||
   ![undefined,'','A'].includes(env.GLADOS_PERSONA_VARIANT)||env.ENABLE_THINKING!=='false'||env.SYSTEM_PROMPT||
   env.ASR_SERVER!=='faster-whisper'||env.TTS_SERVER!=='piper-http')
-  throw Error('Actual candidate configuration is not the requested Qwen + A / thinking=false / Faster-Whisper / Piper HTTP baseline. Nothing was changed.');
+  throw diagnosticError('baseline_mismatch','Actual candidate configuration is not the requested Qwen + A / thinking=false / Faster-Whisper / Piper HTTP baseline. Nothing was changed.');
  return endpointFor({OLLAMA_ENDPOINT:env.OLLAMA_ENDPOINT});
 }
 async function benchmark(mode,endpoint) {
@@ -134,7 +181,7 @@ async function benchmark(mode,endpoint) {
  if(process.env.SYSTEM_PROMPT)throw Error('Custom SYSTEM_PROMPT present; fixed baseline benchmark refused');
  const {readOllamaNDJSON}=require('../src/cloud-api/local/ollama-ndjson');
  const before=snapshot();console.log(JSON.stringify({kind:'benchmark_start',mode,version:version.version,model:MODEL,digest:tag.digest,
-  model_parameters:show.parameters,context:4096,thinking:false,options,tools:[],before,pre_request_residency:beforePS,
+  model_parameters:modelParameters(show.parameters),context:4096,thinking:false,options,tools:[],before,pre_request_residency:beforePS,
   concurrency:'Operator confirmed no other clients; application lock excludes the supported same-user launcher only.'}));
  const initial=[{role:'system',content:system},{role:'user',content:'Explain what DNS does.'}];
  const history=initial.map(x=>({...x}));const outputs=[];
@@ -177,27 +224,52 @@ async function main(args) {
  const [mode='plan',arg,...rest]=args;
  if(mode==='plan'){console.log(JSON.stringify({model:MODEL,context:4096,thinking:false,options,tools:[],experiments:['identical:3','incremental:3','cold:1'],inference:'Pi-only, explicit command, application lock and operator idle confirmation required. No model unloading.'}));return;}
  if(mode==='collect'){
-  const rl=require('node:readline').createInterface({input:process.stdin});for await(const line of rl){const r=parseEvent(line);if(r)console.log(JSON.stringify(r));}return;
+  let measured=0,lastExit;
+  const rl=require('node:readline').createInterface({input:process.stdin});for await(const line of rl){
+   const r=parseEvent(line)||parseEvent(PREFIX+line)||parseSession(line);
+   if(r){if(r.id)measured++;if(r.event==='end')lastExit=r.exit_code;console.log(JSON.stringify(r));}
+  }
+  process.exitCode=Number.isSafeInteger(lastExit)&&lastExit!==0?lastExit:measured?0:65;return;
  }
+ if(mode==='resource-check')return displayPreflight({...require('dotenv').parse(fs.readFileSync('.env')),...process.env,WHISPLAY_LATENCY_DIAGNOSTICS:'true'});
  if(mode==='snapshot'){console.log(JSON.stringify(snapshot(),null,2));return;}
+ if(mode==='verify-cleanup'){
+  const records=fs.readFileSync(arg,'utf8').split('\n').map(parseSession).filter(Boolean);
+  const start=records.filter(r=>r.event==='start').at(-1);
+  const end=records.filter(r=>r.event==='end').at(-1);
+  if(!start?.session_id||end?.session_id!==start.session_id||!end?.cleanup_verified||!records.some(r=>r.session_id===start.session_id&&r.event==='cleanup_verified'&&r.remaining===0))
+   throw diagnosticError('cleanup_unverified','Diagnostic resource release was not verified; do not restart production');
+  console.log(JSON.stringify({kind:'diagnostic_cleanup',verified:true}));return;
+ }
  if(mode==='voice-check'&&arg==='--confirm-idle'){
-  ensurePiLock();
+  ensurePi(); // Read-only preflight is permitted while production owns the lock.
   const env={...require('dotenv').parse(fs.readFileSync('.env')),...process.env};
+  displayPreflight({...env,WHISPLAY_LATENCY_DIAGNOSTICS:'true'});
   const endpoint=baselineConfig(env),axios=require('axios');
   const opts={proxy:false,maxRedirects:0,timeout:10000,maxContentLength:2*1024*1024};
-  const version=(await axios.get(endpoint+'/api/version',opts)).data;if(version.version!=='0.34.4')throw Error('Unexpected Ollama version');
+  const version=(await axios.get(endpoint+'/api/version',opts)).data;if(version.version!=='0.34.4')throw diagnosticError('runtime_version','Unexpected Ollama version');
   const ps=(await axios.get(endpoint+'/api/ps',opts)).data;
   const tags=(await axios.get(endpoint+'/api/tags',opts)).data;
   const tag=tags.models?.find(x=>x.name===MODEL||x.model===MODEL);
   if(!tag||!/^[a-f0-9]{64}$/.test(tag.digest))throw Error('Installed Qwen identity is unavailable');
   residency(ps,'warm',tag.digest);
   const show=(await axios.post(endpoint+'/api/show',{model:MODEL},opts)).data;localModel(show);
-  if(!read(path.join(__dirname,'../dist/core/audio-timing.js'))?.includes('WHISPLAY_LATENCY_DIAGNOSTICS'))throw Error('Diagnostic emitted build is missing; compile the reviewed checkout first');
-  console.log(JSON.stringify({kind:'voice_preflight',config:safeConfig(env),version:version.version,digest:tag.digest,model_parameters:show.parameters,residency:ps}));return;
+  const build=compiledBuild();
+  console.log(JSON.stringify({kind:'voice_preflight',config:safeConfig(env),version:version.version,digest:tag.digest,model_parameters:modelParameters(show.parameters),residency:ps,build}));return;
  }
  if(mode==='report'){
   const lines=fs.readFileSync(arg,'utf8').split('\n');if(lines.length>100000)throw Error('Report input exceeds 100000 lines');
-  const rows=lines.filter(Boolean).map(line=>parseEvent(PREFIX+line)).filter(Boolean);console.log(JSON.stringify(report(rows),null,2));return;
+  const rows=lines.filter(Boolean).map(line=>parseEvent(PREFIX+line)).filter(Boolean);
+  const sessions=lines.filter(Boolean).map(parseSession).filter(Boolean),interactions=report(rows);
+  const failures=sessions.filter(r=>r.event.endsWith('failure'));
+  const lastEnd=sessions.filter(r=>r.event==='end').at(-1);
+  const lastStart=sessions.filter(r=>r.event==='start').at(-1);
+  const complete=interactions.filter(r=>r.outcome==='completed').length;
+  const closed=!lastStart||(lastEnd?.cleanup_verified===true&&lastEnd.session_id===lastStart.session_id);
+  const status=!rows.length||failures.length?'failed':complete&&closed?'measured':'incomplete';
+  console.log(JSON.stringify({schema_version:1,status,reason:!rows.length?'no_interaction_measurements':null,
+   sessions,completed_interactions:complete,interactions},null,2));
+  process.exitCode=lastEnd?.exit_code||((status==='measured')?0:65);return;
  }
  if(mode==='inspect'){
   if(!/^\d+$/.test(arg||''))throw Error('inspect requires the actual chatbot Node PID, not a guessed service');
@@ -215,5 +287,9 @@ async function main(args) {
   return benchmark(arg,process.env.OLLAMA_ENDPOINT||'http://127.0.0.1:11434');
  throw Error('Use plan | snapshot | inspect NODE_PID | collect | report FILE | benchmark identical|incremental|cold --confirm-idle');
 }
-module.exports={throttle,safeConfig,parseEvent,report,residency,localModel,endpointFor,baselineConfig,benchmark,main};
-if(require.main===module)main(process.argv.slice(2)).catch(error=>{console.error('[Latency] '+error.message);process.exitCode=1;});
+module.exports={throttle,safeConfig,parseEvent,parseSession,displayPreflight,compiledBuild,report,residency,localModel,endpointFor,baselineConfig,benchmark,main};
+if(require.main===module)main(process.argv.slice(2)).catch(error=>{
+ const failure={kind:'diagnostic_session',event:'command_failure',phase:process.argv[2]==='report'?'collection':'startup',
+  reason:error.diagnosticReason||(error.code==='ENOENT'?'required_file_missing':'command_failed'),exit_code:1};
+ console.log(JSON.stringify(failure));console.error(JSON.stringify(failure));process.exitCode=1;
+});

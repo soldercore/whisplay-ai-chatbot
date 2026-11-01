@@ -1,0 +1,116 @@
+{
+  "date": "2026-11-01",
+  "branch": "diagnostics/voice-latency",
+  "previous_review_commit": "0531279be8f8421ad38310f7971447ae2f4ecf5b",
+  "pr": 3,
+  "access": {
+    "executor": "Linux Codex Cloud, not local Windows",
+    "vpn_configured": false,
+    "private_tcp_grants": 0,
+    "configured_ssh_identity": false,
+    "normal_ssh_attempt": "Local SSH system include ownership/permissions error",
+    "strict_retry": "User-supplied .local hostname could not be resolved; authentication and device not reached",
+    "host_key_verification_disabled": false,
+    "pi_access_obtained": false
+  },
+  "production": {
+    "changes": 0,
+    "service_interruptions": 0,
+    "registration_changes": 0,
+    "configuration_edits": 0,
+    "model_changes": 0,
+    "models_removed": 0,
+    "user_previously_reported": {
+      "running": true,
+      "foreground": true,
+      "selected": true
+    },
+    "independently_verified_now": false,
+    "restoration_performed_this_task": false
+  },
+  "tests": {
+    "full_canonical_node_suite": {
+      "command": "node --require ts-node/register/transpile-only --require ./src/test/fixtures/isolate-tests.cjs --test --test-concurrency=1 src/test/app-lifecycle.spec.ts src/test/app-launcher.spec.ts src/test/ollama-context-budget.spec.ts src/test/ollama-ownership.spec.ts src/test/ollama-post-tool.spec.ts src/test/image-tool-direct.spec.ts src/test/system-health.spec.ts src/test/process-lifecycle.spec.ts src/test/ollama-history-limits.spec.ts src/test/operation-lifecycle.spec.ts src/test/web-lifecycle.spec.ts src/test/ollama-lifecycle.spec.ts src/test/faster-whisper-asr.spec.ts src/test/unsupported-reminder.spec.ts src/test/ollama-resources.spec.ts src/test/ollama-history.spec.ts src/test/ollama-stream.spec.ts src/test/startup-data.spec.ts src/test/tool-execution.spec.ts src/test/ollama-tool-security.spec.ts src/test/tts-pipeline.spec.ts src/test/web-search.spec.ts src/test/memory.spec.ts src/test/persona.spec.ts src/test/speech-sync.spec.ts src/test/voice-latency.spec.ts src/test/diagnostic-reporting.spec.ts src/test/deploy-preservation.spec.ts src/test/upstream-integration.spec.ts",
+      "passed": 520,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "duration_ms": 83355.424639,
+      "note": "All package.json test files, serial. Existing isolated rsync tool supplies real data-preservation tests."
+    },
+    "final_reporting_subset": {
+      "passed": 10,
+      "failed": 0,
+      "note": "Rechecked after defensive unknown-error/prototype handling; no additional unique tests."
+    },
+    "python_diagnostic_resources_lifecycle": {
+      "command": "python3 -B -m unittest discover -s python/test -p test_diagnostic_session.py -v",
+      "passed": 18,
+      "failed": 0,
+      "meaning": "Real Linux processes, pidfds, subreapers, kernel locks, actual Node exit status; fake application/hardware edges, no inference."
+    },
+    "existing_whisper_contracts": {
+      "passed": 11,
+      "failed": 0,
+      "meaning": "Existing fake SDK/model contracts, not Hailo/Whisper inference."
+    },
+    "existing_wakeword_contracts": {
+      "passed": 4,
+      "failed": 0
+    },
+    "production_renderer_selftest": "PASS: python/dev/preview_ui.py --selftest, fake LCD"
+  },
+  "build_checks": {
+    "emitted_app_typescript": "PASS",
+    "spec_typescript": "PASS",
+    "node_shell_syntax": "PASS",
+    "python_syntax": "PASS",
+    "git_diff_check": "PASS",
+    "daemon_registration_hook": "Not run"
+  },
+  "test_environment": {
+    "node": "v24.19.0",
+    "python": "3.12, isolated temporary venv with system packages and existing CairoSVG dependency",
+    "production_dependencies_changed": false
+  },
+  "verified_contracts": [
+    "Missing/invalid font and import detection without board initialization",
+    "CWD-independent runtime resource fallback; archive optional",
+    "Daemon path avoids direct GPIO imports and diagnostic registration writes",
+    "Safe Python main/render-thread failures; no raw messages/tracebacks in capture",
+    "Read-only preflight without acquiring production lock; stale build refusal",
+    "Original nonzero process status retained; empty/incomplete reports fail",
+    "SIGINT, SIGTERM, SIGHUP and Ctrl+Z perform bounded owned cleanup",
+    "Parent relay death, guardian death and stopped guardian recovery",
+    "Closed and backpressured output cannot indefinitely block cleanup",
+    "Stubborn detached descendants escalate; unrelated process survives",
+    "PID birth plus pidfd identity prevents numeric PID-reuse targeting",
+    "Existing lock inode retained, release checked before restoration"
+  ],
+  "new_real_model_inference": 0,
+  "new_pi_latency_measurements": 0,
+  "remaining": [
+    "Access through the existing local Windows SSH environment or reviewed private route",
+    "Read-only verification of current production health/build/config, diagnostic resources/build and preflight on Pi",
+    "Explicit user approval before a brief production interruption",
+    "Real display/microphone/Ollama/Piper/speaker and three voice interactions",
+    "Verify all owned diagnostic processes exited and kernel lock released",
+    "Restore original registered app and independently confirm running/focus/hardware"
+  ],
+  "limitations": [
+    "Actual Pi traceback and why SIGTERM failed there remain unverified",
+    "Unit/protocol/kernel-process tests do not establish real Pi hardware startup or acoustic latency",
+    "Simultaneous uncatchable termination of all supervisors or kernel-uninterruptible tasks cannot be guaranteed recoverable; unverified cleanup fails closed and must not be treated as permission to restart"
+  ],
+  "custom_commits_preserved": 37,
+  "unchanged_contract_files": [
+    "src/config/persona.ts",
+    "src/config/local-memory.ts",
+    "src/config/tool-execution.ts",
+    "src/cloud-api/local/ollama-llm.ts",
+    "src/cloud-api/local/faster-whisper-asr.ts",
+    "src/cloud-api/local/piper-http-tts.ts",
+    "yarn.lock",
+    "upstream-integration.json"
+  ]
+}

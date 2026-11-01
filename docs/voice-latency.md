@@ -1,5 +1,10 @@
 # Voice latency: instrumentation audit and measurement status
 
+**Reliability follow-up:** [diagnostic-reliability.md](diagnostic-reliability.md)
+supersedes the original unsupervised capture/preflight behavior. It adds runtime
+resource checks, owned-process supervision, structured failures and explicit
+cleanup verification. Actual Pi measurements are still unavailable.
+
 2026-11-01. Separate diagnostic branch `diagnostics/voice-latency`, based on stable
 `tts-pipeline-fix` at `9aa0fcfae89f67539bbd6e32b8d8511be490f68a`. No personality
 changes from PR #2 are included. Its reference commit
