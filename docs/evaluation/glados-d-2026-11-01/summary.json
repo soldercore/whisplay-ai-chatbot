@@ -1,0 +1,239 @@
+{
+  "status": "NO_ACCEPTED_FIX",
+  "generated_responses": 72,
+  "failed_transports_or_incomplete_outputs": 0,
+  "repetitions": "Seed 42 only; limited screening, not a reliability certification",
+  "experiments": {
+    "screen": 16,
+    "followup": 17,
+    "diagnostics": 10,
+    "official": 5,
+    "conversation": 22,
+    "apology": 2
+  },
+  "profiles": {
+    "A": {
+      "responses": 5,
+      "words_total": 177,
+      "median_elapsed_ms": 10372.73,
+      "max_elapsed_ms": 15686.401,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "B": {
+      "responses": 5,
+      "words_total": 157,
+      "median_elapsed_ms": 11893.099,
+      "max_elapsed_ms": 12579.939,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "D0": {
+      "responses": 19,
+      "words_total": 836,
+      "median_elapsed_ms": 7639.993,
+      "max_elapsed_ms": 14583.878,
+      "options_observed": [
+        {
+          "presence_penalty": 1.5,
+          "seed": 42,
+          "temperature": 0.4
+        },
+        {
+          "presence_penalty": 1.5,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "D0_p0": {
+      "responses": 18,
+      "words_total": 671,
+      "median_elapsed_ms": 2949.215,
+      "max_elapsed_ms": 12576.649,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.4
+        },
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "concrete": {
+      "responses": 5,
+      "words_total": 240,
+      "median_elapsed_ms": 9236.133,
+      "max_elapsed_ms": 16829.045,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "generic": {
+      "responses": 3,
+      "words_total": 373,
+      "median_elapsed_ms": 14810.025,
+      "max_elapsed_ms": 14986.492,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "official_text": {
+      "responses": 5,
+      "words_total": 265,
+      "median_elapsed_ms": 13729.934,
+      "max_elapsed_ms": 16681.943,
+      "options_observed": [
+        {
+          "presence_penalty": 2,
+          "seed": 42,
+          "temperature": 1,
+          "top_p": 1
+        }
+      ]
+    },
+    "short": {
+      "responses": 4,
+      "words_total": 320,
+      "median_elapsed_ms": 12395.633,
+      "max_elapsed_ms": 14300.169,
+      "options_observed": [
+        {
+          "presence_penalty": 1.5,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "short_p0": {
+      "responses": 4,
+      "words_total": 342,
+      "median_elapsed_ms": 6836.773,
+      "max_elapsed_ms": 13640.537,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    },
+    "unbranded": {
+      "responses": 4,
+      "words_total": 119,
+      "median_elapsed_ms": 8540.449,
+      "max_elapsed_ms": 10976.163,
+      "options_observed": [
+        {
+          "presence_penalty": 0,
+          "seed": 42,
+          "temperature": 0.7
+        }
+      ]
+    }
+  },
+  "runtime": {
+    "ollama_version": "0.34.4",
+    "details": {
+      "parent_model": "model.gguf",
+      "format": "gguf",
+      "family": "qwen35",
+      "families": [
+        "qwen35"
+      ],
+      "parameter_size": "1.9B",
+      "quantization_level": "Q4_K_M"
+    },
+    "model": "qwen3.5:2b-q4_K_M",
+    "context": 4096,
+    "think": false,
+    "model_parameters": "presence_penalty               1.5\ntemperature                    1\ntop_k                          20\ntop_p                          0.95",
+    "text_blob_sha256": "20cb277f0967ace47b0b5d5658e5e494a88937f7378b74b5a266496400938f4c",
+    "projector_blob_sha256": "5ddf560e34046fd958b2576324f2a9b57d70f297afe6526958d60a23f3bfc20b",
+    "cpu": "x86-64 AMD EPYC 7763; isolated container limited to 2 CPUs / 5 GiB",
+    "pi_blob_identity_verified": false,
+    "ollama_archive_sha256": "c238986e61d40c0cc5f4a9b9e40b9eea104350b77efa34741fc134e105cb9533"
+  },
+  "results_sha256": "b2d2319866e1f4fa2dac35b6e8bf95e55b58fbb27d8811c10843c36c933e42a5",
+  "pi_transcript_exchanges_sha256": "9228673409ded2525fe61f5f36c6593bde5bb3646d74ba8f7d577667476f3dcc",
+  "model_card": {
+    "url": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/README.md",
+    "retrieved_at": "2026-11-01T16:36:08.272650+00:00",
+    "sha256": "c0e83a849c776e6fa843d011f023132d942a0f0140d903205bf1c363adad2275"
+  },
+  "runtime_application_changes": false,
+  "production_configuration_changes": false,
+  "pi_accessed_by_agent": false,
+  "test_server_stopped_and_removed": true,
+  "full_conversations": {
+    "D0": {
+      "turns": 11,
+      "words": 464,
+      "trimmed_messages_by_turn": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "median_seconds": 6.7,
+      "max_seconds": 9.734
+    },
+    "D0_p0": {
+      "turns": 11,
+      "words": 391,
+      "trimmed_messages_by_turn": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "median_seconds": 3.625,
+      "max_seconds": 9.858
+    }
+  },
+  "evaluator_validation": {
+    "targeted_tests": 55,
+    "passed": 55,
+    "failed": 0,
+    "production_types": "passed",
+    "spec_types": "passed",
+    "javascript_syntax": "passed",
+    "full_suite_rerun": false
+  }
+}

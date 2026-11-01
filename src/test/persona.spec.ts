@@ -8,6 +8,7 @@ import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import { memoryReply, personaName, personaPrompt } from "../config/persona";
 
 const ORIGINAL_PROMPT =
@@ -500,4 +501,64 @@ test("D CLI plans remain offline, control A ignores inherited D, and unknown thi
   assert.ok(plan.prompts.D.startsWith(comparison.candidateD));
   assert.throws(() => execFileSync(process.execPath, [...args, "--run", "--candidate=D"], { ...options, stdio: "pipe" }),
     (error: any) => error.status === 1 && /confirm OLLAMA_MODEL and ENABLE_THINKING/.test(error.stderr));
+});
+
+test("the Pi failure transcript stays verbatim, including first-response failure and misheard names", () => {
+  const pi = comparison.piRegression;
+  assert.equal(pi.exchanges.length, 11);
+  assert.equal(createHash("sha256").update(JSON.stringify(pi.exchanges)).digest("hex"),
+    "9228673409ded2525fe61f5f36c6593bde5bb3646d74ba8f7d577667476f3dcc");
+  assert.equal(pi.exchanges[0].user, "Hey, glattos, what do you think of humans?");
+  assert.equal(pi.exchanges[8].user, "Gladdles, do you realize how annoying you can be?");
+  assert.equal(pi.repository_reference.commit, "3176bfb970ccfc0f29df5d9932b108c1e94ac6a1");
+  const scenario = comparison.availableScenarios.find((s: any) => s.id === "pi_conversation");
+  assert.deepEqual(scenario.turns, pi.exchanges.map((x: any) => x.user));
+});
+
+test("sampling experiments change only explicit options, with identical prompts and frozen history", () => {
+  const scenario = comparison.availableScenarios.find((s: any) => s.id === "pi_apology_recovery");
+  const history = [...scenario.prior, { role: "user", content: scenario.turns[0] }];
+  assert.equal(history[1].content, comparison.piRegression.exchanges[0].assistant);
+  const messages = comparison.buildMessages("D0", scenario, history, SPEECH_PROMPT);
+  assert.ok(messages[0].content.startsWith(comparison.piRegression.repository_reference.prefix));
+  const inputs = { OLLAMA_MODEL: comparison.fixture.model, ENABLE_THINKING: "false" };
+  const one = comparison.requestFor(messages, comparison.settings(inputs, { presence_penalty: 1.5, seed: 42 }));
+  const zero = comparison.requestFor(messages, comparison.settings(inputs, { presence_penalty: 0, seed: 42 }));
+  assert.deepEqual(one.messages, zero.messages);
+  assert.deepEqual({ ...one, options: { ...one.options, presence_penalty: 0 } }, zero);
+  assert.equal(one.options.temperature, 0.7); assert.equal(one.think, false);
+  assert.equal("presence_penalty" in comparison.settings(inputs).options, false, "no silent default override");
+  assert.equal(comparison.settings(inputs, { top_p: 1 }).options.top_p, 1);
+  for (const sampling of [{ temperature: NaN }, { presence_penalty: 3 }, { seed: -1 }, { num_ctx: 8192 }, { top_p: 0 }]) {
+    assert.throws(() => comparison.settings(inputs, sampling));
+  }
+});
+
+test("production-like history trimming is explicit, whole-turn, and leaves source history intact", () => {
+  const messages: any[] = [{ role: "system", content: comparison.production }];
+  for (let i = 0; i < 9; i++) messages.push({ role: "user", content: `Question ${i}` },
+    { role: "assistant", content: "old answer ".repeat(60) });
+  messages.push({ role: "user", content: "The latest question." });
+  const original = JSON.stringify(messages), generation = comparison.settings({});
+  assert.throws(() => comparison.requestFor(messages, generation), /trim/);
+  const r = comparison.requestFor(messages, generation, true);
+  assert.equal(JSON.stringify(messages), original);
+  assert.ok(r.messages.length < messages.length);
+  assert.deepEqual(r.messages[0], messages[0]);
+  assert.equal(r.messages.at(-1).content, "The latest question.");
+  assert.equal(r.messages[1].role, "user");
+  assert.equal("num_ctx" in r.options, false);
+});
+
+test("Pi comparison controls preserve default workload and require explicit experimental settings", () => {
+  const defaults = comparison.parseArgs([]);
+  assert.equal(defaults.baseline, "A"); assert.deepEqual(defaults.sampling, {});
+  assert.equal(defaults.productionHistoryBudget, false);
+  const p = comparison.parseArgs(["--baseline=D0", "--candidate=D", "--temperature=0.4",
+    "--presence-penalty=0", "--seed=42", "--production-history-budget", "--scenarios=pi_conversation"]);
+  assert.equal(p.baseline, "D0"); assert.equal(p.productionHistoryBudget, true);
+  assert.deepEqual(p.sampling, { temperature: 0.4, presence_penalty: 0, seed: 42 });
+  for (const args of [["--presence-penalty="], ["--temperature=NaN"], ["--seed=-1"], ["--baseline=B"]]) {
+    assert.throws(() => comparison.parseArgs(args));
+  }
 });

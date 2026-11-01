@@ -6,6 +6,7 @@
 
 - Read `docs/CUSTOM_BUILD.md`, `docs/UPSTREAM_UPDATES.md` and `upstream-integration.json` before updating this custom build. Historical phase documents are not proof of deployment or current test results.
 - GLaDOS A remains default; `GLADOS_PERSONA_VARIANT=D` is an explicit opt-in candidate only with `ASSISTANT_PERSONA=glados`. Read `docs/glados-personality-d.md`; deterministic tests do not establish model quality, and A/B/C evaluation history must be preserved.
+- D failed actual Pi acceptance. Read `docs/glados-d-hardware-regression.md` and its summary before raw evaluation JSONL. The 72 measured generations did not establish a replacement; keep A available and PR #2 open. Never equate completed inference or unit-test passes with personality acceptance.
 - Preserve terminal UI/classic fallback, GLaDOS voice/persona, speech reveal, memory and turn context, Ollama parsing/budgets, owned-process cleanup, launcher lock and startup data preservation.
 - Preserve existing tool restrictions: no shell runner and no enabling unmigrated image/music/skill/plugin tools by merely adding metadata.
 - `npm test` includes the complete custom suite and new integration/data-preservation contracts; real `rsync` is required for deploy tests. Python SDK/model contracts and UI self-tests are separate commands documented in `docs/CUSTOM_BUILD.md`.

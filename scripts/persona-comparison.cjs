@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const axios = require("axios");
 const fixture = require("../src/test/fixtures/persona-consistency.json");
 const continuity = require("../src/test/fixtures/persona-continuity.json");
+const piRegression = require("../src/test/fixtures/glados-d-pi-regression.json");
 const { personaPrompt } = require("../src/config/persona");
 const { promptMessageTokens, fitOllamaPrompt } = require("../src/cloud-api/local/ollama-context-budget");
 const { readOllamaNDJSON } = require("../src/cloud-api/local/ollama-ndjson");
@@ -21,8 +22,18 @@ const candidateC = production
   .replace("Never call yourself an AI language model.",
     "No unsolicited disclaimers about being AI, code or lacking feelings. Answer direct identity questions honestly and briefly.");
 const candidateD = personaPrompt({ ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: "D" });
-const prefixes = { A: production, B: candidate, C: candidateC, D: candidateD };
-const availableScenarios = [...fixture.scenarios, ...continuity.scenarios];
+const prefixes = { A: production, B: candidate, C: candidateC, D: candidateD, D0: piRegression.repository_reference.prefix };
+const piScenarios = [
+  { id: "pi_conversation", turns: piRegression.exchanges.map(x => x.user),
+    criterion: "Exact reported user turns with newly generated answers; judge apology, achievement, relevance, wit and nonfabrication, not just missing phrases." },
+  ...piRegression.exchanges.map((x, i) => ({ id: `pi_fresh_${i + 1}`, turns: [x.user],
+    criterion: "Fresh history: concise situational wit, honest facts and no hostility or unsupported history." })),
+  { id: "pi_apology_recovery", prior: piRegression.exchanges.slice(0, 2).flatMap(x =>
+    [{ role: "user", content: x.user }, { role: "assistant", content: x.assistant }]),
+    turns: [piRegression.exchanges[2].user],
+    criterion: "Accept the exact apology despite the same two recorded hostile answers; do not reject it or continue their fictional circumstances." },
+];
+const availableScenarios = [...fixture.scenarios, ...continuity.scenarios, ...piScenarios];
 const quiet = work => { const log = console.log; console.log = () => {}; try { return work(); } finally { console.log = log; } };
 
 function endpointFor(env) {
@@ -33,13 +44,21 @@ function endpointFor(env) {
   return url.origin;
 }
 
-function settings(env) {
+function settings(env, sampling = {}) {
   if (env.OLLAMA_MODEL && env.OLLAMA_MODEL !== fixture.model) throw Error("Configured model differs from required comparison model");
   const options = { temperature: 0.7 };
   if (env.OLLAMA_PREDICT_NUM) {
     const n = Number(env.OLLAMA_PREDICT_NUM);
     if (!Number.isSafeInteger(n) || n === 0 || n < -2) throw Error("Invalid OLLAMA_PREDICT_NUM");
     options.num_predict = n;
+  }
+  // Explicit evaluation-only overrides. Never read by the application's provider.
+  for (const [name, value] of Object.entries(sampling)) {
+    const valid = name === "seed" ? Number.isSafeInteger(value) && value >= 0 && value <= 2147483647
+      : name === "top_p" ? Number.isFinite(value) && value > 0 && value <= 1
+      : ["temperature", "presence_penalty"].includes(name) && Number.isFinite(value) && value >= 0 && value <= 2;
+    if (!valid) throw Error("Invalid evaluation sampling override");
+    options[name] = value;
   }
   return { model: fixture.model, think: env.ENABLE_THINKING === "true", stream: true, options, keep_alive: -1 };
 }
@@ -60,11 +79,11 @@ function buildMessages(variant, scenario, history, suffix = "", webNote = "", te
   return messages;
 }
 
-function requestFor(messages, generation) {
+function requestFor(messages, generation, productionHistoryBudget = false) {
   const fitted = quiet(() => fitOllamaPrompt(messages, undefined, { effective: 4096, source: "/api/ps" }, undefined,
     generation.options.num_predict));
-  if (fitted.messages.length !== messages.length) throw Error("Evaluation would trim context; comparison refused");
-  return { ...generation, messages };
+  if (!productionHistoryBudget && fitted.messages.length !== messages.length) throw Error("Evaluation would trim context; comparison refused");
+  return { ...generation, messages: fitted.messages };
 }
 
 // Sample once for both variants. Missing/non-CPU metrics remain unavailable.
@@ -106,18 +125,20 @@ async function generate(request, signal, endpoint = "http://127.0.0.1:11434") {
 }
 
 async function compare({ generation, suffix, webNote, temperature, challenger = "B", repetitions = 3,
-  scenarios = fixture.scenarios, generateAnswer = generate, emit }) {
+  scenarios = fixture.scenarios, baseline = "A", productionHistoryBudget = false, generateAnswer = generate, emit }) {
   if (!["B", "C", "D"].includes(challenger)) throw Error("Use comparison candidate B, C or D");
+  if (!["A", "D0"].includes(baseline)) throw Error("Use baseline A or the frozen hardware-reference D0");
   if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 3) throw Error("Use one to three repetitions");
   for (let repeat = 0; repeat < repetitions; repeat++) {
     for (const scenario of scenarios) {
       // Alternate order to reduce systematic first/second cache bias. Histories
       // belong to one variant/scenario/replicate; no previous job is reused.
-      for (const variant of repeat % 2 ? [challenger, "A"] : ["A", challenger]) {
+      for (const variant of repeat % 2 ? [challenger, baseline] : [baseline, challenger]) {
         const history = (scenario.prior || []).map(message => ({ ...message }));
         for (let turn = 0; turn < scenario.turns.length; turn++) {
           history.push({ role: "user", content: scenario.turns[turn] });
-          const request = requestFor(buildMessages(variant, scenario, history, suffix, webNote, temperature), generation);
+          const inputs = buildMessages(variant, scenario, history, suffix, webNote, temperature);
+          const request = requestFor(inputs, generation, productionHistoryBudget);
           const started = Date.now();
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(new Error("Evaluation request timed out")), 7200000);
@@ -125,6 +146,7 @@ async function compare({ generation, suffix, webNote, temperature, challenger = 
             const answer = await generateAnswer(request, controller.signal);
             history.push({ role: "assistant", content: answer.content });
             emit({ variant, repeat: repeat + 1, scenario: scenario.id, turn: turn + 1, request, answer,
+              trimmedMessages: inputs.length - request.messages.length,
               elapsedMs: Date.now() - started, criterion: scenario.criterion,
               exactExampleReuse: fixture.examples.some(example => answer.content.includes(example.assistant)),
               scores: Object.fromEntries(fixture.dimensions.map(dimension => [dimension, null])) });
@@ -136,7 +158,8 @@ async function compare({ generation, suffix, webNote, temperature, challenger = 
 }
 
 function parseArgs(args) {
-  const result = { mode: "--plan", challenger: "B", repetitions: 3, scenarios: fixture.scenarios };
+  const result = { mode: "--plan", challenger: "B", baseline: "A", repetitions: 3,
+    scenarios: fixture.scenarios, sampling: {}, productionHistoryBudget: false };
   const seen = new Set();
   for (const arg of args) {
     const key = ["--plan", "--run"].includes(arg) ? "mode" : arg.split("=")[0];
@@ -144,19 +167,27 @@ function parseArgs(args) {
     seen.add(key);
     if (key === "mode") result.mode = arg;
     else if (/^--candidate=[BCD]$/.test(arg)) result.challenger = arg.slice(-1);
+    else if (/^--baseline=(A|D0)$/.test(arg)) result.baseline = arg.slice("--baseline=".length);
+    else if (arg === "--production-history-budget") result.productionHistoryBudget = true;
+    else if (/^--(temperature|presence-penalty|top-p|seed)=/.test(arg)) {
+      const [flag, text] = arg.split("=");
+      if (!text || arg.split("=").length !== 2) throw Error("Invalid evaluation sampling override");
+      result.sampling[flag.slice(2).replace("-", "_")] = Number(text);
+    }
     else if (/^--repetitions=[123]$/.test(arg)) result.repetitions = Number(arg.slice(-1));
     else if (arg.startsWith("--scenarios=")) {
       const ids = arg.slice("--scenarios=".length).split(",");
       if (new Set(ids).size !== ids.length || ids.some(id => !availableScenarios.some(s => s.id === id)))
         throw Error("Unknown or duplicate scenario; inspect the plan's availableScenarios");
       result.scenarios = ids.map(id => availableScenarios.find(s => s.id === id));
-    } else throw Error("Use --plan (default) or --run, --candidate=B|C|D, --repetitions=1|2|3, --scenarios=id,id");
+    } else throw Error("Use --plan/--run, --candidate=B|C|D, --baseline=A|D0, --repetitions=1|2|3, --scenarios=id,id; sampling overrides are evaluation-only");
   }
+  settings({}, result.sampling); // Validate without network or application imports.
   return result;
 }
 
 async function main(args) {
-  const { mode, challenger, repetitions, scenarios } = parseArgs(args);
+  const { mode, challenger, baseline, repetitions, scenarios, sampling, productionHistoryBudget } = parseArgs(args);
   // Reuse only the existing pure prompt assembly. Never import the Ollama
   // provider, registry, memory store, directory initializer or hardware modules.
   process.env.ASSISTANT_PERSONA = "glados";
@@ -167,11 +198,12 @@ async function main(args) {
   const suffix = assembled.slice(production.length);
   const webNote = process.env.OLLAMA_ENABLE_TOOLS === "true"
     ? quiet(() => require("../src/config/web-search").getWebSearchSystemNote(new Date())) : "";
-  const generation = settings(process.env);
+  const generation = settings(process.env, sampling);
   const endpoint = endpointFor(process.env);
   const measure = prompt => ({ characters: prompt.length, estimatedTokens: promptMessageTokens({ role: "system", content: prompt }) });
-  console.log(JSON.stringify({ kind: "plan", generation, endpoint, A: measure(production), [challenger]: measure(prefixes[challenger]),
-    prompts: { A: production + suffix + webNote, [challenger]: prefixes[challenger] + suffix + webNote },
+  console.log(JSON.stringify({ kind: "plan", generation, endpoint, [baseline]: measure(prefixes[baseline]), [challenger]: measure(prefixes[challenger]),
+    prompts: { [baseline]: prefixes[baseline] + suffix + webNote, [challenger]: prefixes[challenger] + suffix + webNote },
+    baseline, samplingOverrides: sampling, productionHistoryBudget,
     scenarios, availableScenarios: availableScenarios.map(s => s.id), repetitions,
     generationRequests: scenarios.reduce((n, s) => n + s.turns.length, 0) * 2 * repetitions,
     configuration: { modelExplicit: !!process.env.OLLAMA_MODEL,
@@ -185,10 +217,10 @@ async function main(args) {
   assertRuntime(runtime.data);
   const temperature = readTemperature();
   console.log(JSON.stringify({ kind: "host_sample", sampledAt: new Date().toISOString(), temperature }));
-  await compare({ generation, suffix, webNote, temperature, challenger, repetitions, scenarios,
+  await compare({ generation, suffix, webNote, temperature, challenger, baseline, repetitions, scenarios, productionHistoryBudget,
     generateAnswer: (request, signal) => generate(request, signal, endpoint), emit: record => console.log(JSON.stringify(record)) });
 }
 
-module.exports = { fixture, production, candidate, candidateC, candidateD, availableScenarios, parseArgs, endpointFor,
+module.exports = { fixture, piRegression, production, candidate, candidateC, candidateD, availableScenarios, parseArgs, endpointFor,
   settings, buildMessages, requestFor, assertRuntime, generate, compare };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });

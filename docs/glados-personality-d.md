@@ -1,5 +1,12 @@
 # GLaDOS D: opt-in implementation, not a demonstrated model win
 
+**Update — real hardware regression:** the user has now confirmed the exact
+Qwen configuration and supplied a failing eleven-turn Pi conversation. D failed
+acceptance. [The measured follow-up investigation](glados-d-hardware-regression.md)
+contains 72 actual 2B generations and supersedes the initial "no model evidence"
+status below. No tested replacement was accepted and PR #2 remains draft. The
+remaining text preserves the original implementation/evaluation record.
+
 2026-11-01. Based on accepted custom branch `tts-pipeline-fix` at
 `9aa0fcfae89f67539bbd6e32b8d8511be490f68a`.
 
