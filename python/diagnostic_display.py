@@ -80,7 +80,7 @@ def preflight():
         except Exception as error:
             checks.append({"resource": name, "ok": False, "error_type": type(error).__name__})
     if os.environ.get("WHISPLAY_UI", "terminal") != "classic":
-        for name in ("whisplay_ui/__init__.py", "whisplay_ui/renderer.py"):
+        for name in ("whisplay_ui/__init__.py", "whisplay_ui/terminal_ui.py"):
             checks.append({"resource": name, "ok": (PYTHON_ROOT / name).is_file()})
         for name in ("JetBrainsMono-Medium.ttf", "JetBrainsMono-SemiBold.ttf", "Silkscreen-Regular.ttf"):
             try:

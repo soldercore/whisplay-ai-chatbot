@@ -61,6 +61,30 @@ class Resources(unittest.TestCase):
         self.assertTrue(any(x["resource"] == "base_font" and not x["ok"] for x in result["checks"]))
         self.assertNotIn("PRIVATE", json.dumps(result))
 
+    def test_terminal_preflight_checks_real_entrypoint_and_rejects_its_absence(self):
+        entrypoint = ROOT / "python/whisplay_ui/terminal_ui.py"
+        self.assertTrue(entrypoint.is_file())
+        actual_import = diagnostic_display.importlib.import_module
+        def import_without_hardware(name):
+            if name in {"gpiod", "spidev"}:
+                return mock.Mock()
+            return actual_import(name)
+        with mock.patch.dict(os.environ, {"WHISPLAY_UI": "terminal"}), \
+             mock.patch.object(diagnostic_display.importlib, "import_module", side_effect=import_without_hardware):
+            result = diagnostic_display.preflight()
+            ui_checks = {x["resource"]: x["ok"] for x in result["checks"]
+                         if x["resource"].startswith("whisplay_ui/")}
+            self.assertIn("whisplay_ui/terminal_ui.py", ui_checks)
+            self.assertTrue(all(ui_checks.values()), ui_checks)
+            actual_is_file = Path.is_file
+            def missing_entrypoint(path):
+                return False if path == entrypoint else actual_is_file(path)
+            with mock.patch.object(Path, "is_file", missing_entrypoint):
+                missing = diagnostic_display.preflight()
+            self.assertFalse(missing["ok"])
+            self.assertTrue(any(x["resource"] == "whisplay_ui/terminal_ui.py" and not x["ok"]
+                                for x in missing["checks"]))
+
     def test_python_failure_retains_type_not_message_or_private_path(self):
         try:
             raise ModuleNotFoundError("password=PRIVATE", name="cairosvg")
