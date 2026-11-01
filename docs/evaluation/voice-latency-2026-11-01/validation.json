@@ -1,0 +1,94 @@
+{
+  "date": "2026-11-01",
+  "base_branch": "tts-pipeline-fix",
+  "base_commit": "9aa0fcfae89f67539bbd6e32b8d8511be490f68a",
+  "branch": "diagnostics/voice-latency",
+  "scope": "Measurement only; independent of personality PR #2",
+  "new_real_model_generations": 0,
+  "new_pi_voice_interactions": 0,
+  "pc_or_cloud_inference": false,
+  "pi_access": "Unavailable: no configured Pi/private-network identity",
+  "current_pi_configuration": "Unverified; intended Qwen+A must not be assumed",
+  "tests": {
+    "command": "node --require ts-node/register/transpile-only --require ./src/test/fixtures/isolate-tests.cjs --test --test-concurrency=1 src/test/voice-latency.spec.ts src/test/ollama-post-tool.spec.ts src/test/ollama-lifecycle.spec.ts src/test/ollama-context-budget.spec.ts src/test/ollama-tool-security.spec.ts src/test/tts-pipeline.spec.ts src/test/speech-sync.spec.ts src/test/memory.spec.ts src/test/upstream-integration.spec.ts src/test/process-lifecycle.spec.ts src/test/app-launcher.spec.ts",
+    "passed": 205,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "duration_ms": 56454.675264,
+    "final_execution": "Serial to avoid observed intermittent existing shell-process fixture failure",
+    "intermediate_findings": [
+      "Strict VM fixtures needed the new pure audio-timing dependency mapped; corrected test fixtures only.",
+      "One parallel launcher ownership test lost its external sleep fixture. Unchanged launcher code passed isolated 9/9 and final serial 205/205. Root cause not established; no launcher optimization/fix made."
+    ],
+    "meaning": "Protocol/fake HTTP and audio boundary tests only; not model/subjective/Pi acceptance"
+  },
+  "checks": {
+    "emitted_app_build": "node_modules/.bin/tsc --incremental false: PASS (no daemon-registration hook)",
+    "spec_typecheck": "node_modules/.bin/tsc --project tsconfig.tests.json --incremental false: PASS",
+    "shell_syntax": "bash -n scripts/pi-latency.sh: PASS",
+    "node_syntax": "node --check scripts/pi-latency.cjs: PASS",
+    "diff_check": "PASS",
+    "persona_memory_permissions_voice_configs": "Unchanged from stable",
+    "dependencies_and_lockfile": "Unchanged; package test command only adds new test file",
+    "real_wrapper_negative_guard": "PASS: check --confirm-idle refused cloud host before metadata/inference or app launch"
+  },
+  "historical_pi_evidence": {
+    "model": "Unidentified, cannot attribute to Qwen/Gemma",
+    "source": "User-supplied earlier Pi log excerpt; not a new captured file",
+    "single_request": {
+      "prompt_tokens": 586,
+      "prompt_eval_ms": 13997,
+      "reported_prompt_tokens_per_second": 41.9,
+      "generated_tokens": 11,
+      "eval_ms": 2548,
+      "reported_decode_tokens_per_second": 4.3,
+      "load_or_scheduling_ms": 18762,
+      "legacy_first_stream_event_ms": 32776,
+      "client_total_ms": 35327
+    },
+    "other_reported_rows": [
+      {
+        "tokens": 82,
+        "decode_tokens_per_second": 4.1,
+        "total_seconds": 21.0
+      },
+      {
+        "tokens": 88,
+        "decode_tokens_per_second": 4.0,
+        "total_seconds": 25.1
+      },
+      {
+        "tokens": 96,
+        "decode_tokens_per_second": 3.8,
+        "total_seconds": 29.6
+      },
+      {
+        "tokens": 96,
+        "decode_tokens_per_second": 3.8,
+        "total_seconds": 27.9
+      },
+      {
+        "tokens": 99,
+        "decode_tokens_per_second": 3.6,
+        "total_seconds": 42.1
+      }
+    ],
+    "first_audible_latency": "Unavailable",
+    "current_thermal_frequency_throttling_ram": "Unavailable"
+  },
+  "remaining": [
+    "Verify actual Pi build/config/model digest and residency without changing it",
+    "Agree brief app interruption before instrumented foreground session",
+    "Collect three real microphone->Whisper->Ollama->Piper->speaker interactions",
+    "Run bounded sequential identical/incremental benchmarks, optional naturally cold run",
+    "External acoustic end-to-first-sound timing optional but required for any physical audible-onset claim",
+    "Diagnose current largest recurring stage only after identified correlated Pi data"
+  ],
+  "optimization": {
+    "implemented": false,
+    "conditional_candidate": "Maintain exclusive residency of already selected voice model during voice sessions, only if identified Pi logs show recurring loading/competition",
+    "expected_qwen_benefit": "Unknown; potentially zero for an already warm/uncontended baseline"
+  },
+  "custom_commits_preserved": 37
+}

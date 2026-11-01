@@ -5,6 +5,7 @@
 ## Custom integration entry point
 
 - Read `docs/CUSTOM_BUILD.md`, `docs/UPSTREAM_UPDATES.md` and `upstream-integration.json` before updating this custom build. Historical phase documents are not proof of deployment or current test results.
+- Voice latency diagnostics are opt-in and measurement-only: read `docs/voice-latency.md` and `docs/pi-latency-procedure.md`. No new Pi measurements exist yet. Keep physical speech end, playback submission, SoX spawn and actual sound distinct. Never infer cache counts/residency from timing thresholds, or run inference on PC/cloud in this diagnostic task. Do not mix PR #2 personality experiments into this stable-based branch.
 - Preserve terminal UI/classic fallback, GLaDOS voice/persona, speech reveal, memory and turn context, Ollama parsing/budgets, owned-process cleanup, launcher lock and startup data preservation.
 - Preserve existing tool restrictions: no shell runner and no enabling unmigrated image/music/skill/plugin tools by merely adding metadata.
 - `npm test` includes the complete custom suite and new integration/data-preservation contracts; real `rsync` is required for deploy tests. Python SDK/model contracts and UI self-tests are separate commands documented in `docs/CUSTOM_BUILD.md`.

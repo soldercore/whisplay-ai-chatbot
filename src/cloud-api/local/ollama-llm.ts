@@ -39,6 +39,7 @@ import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-
 import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../../config/tool-router";
 import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
 import { readOllamaNDJSON } from "./ollama-ndjson";
+import { modelTiming, voiceEvent } from "../../core/audio-timing";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { boundOllamaHistory } from "./ollama-history-limits";
 import { operationDeadline, timeoutSetting, waitForOperation, OperationTimeoutError } from "../../utils/operation-lifecycle";
@@ -131,11 +132,10 @@ const messages: OllamaMessage[] = [
 // ---- Timing diagnostics -------------------------------------------------------
 // One log line per model request, so a slow answer can be attributed on the
 // device: prompt tokens read (prompt_eval_*), tokens generated (eval_*), model
-// load and time to the first streamed token. Ollama counts reused (cached)
-// prompt tokens in prompt_eval_count, so a prompt rate far above the device's
-// usual rate means most of the prompt came from its cache. "kept" tells how many
-// leading parts (system prompt, tool list, then messages) equal the previous
-// request; Ollama has to re-read everything after the first changed part.
+// load and time to the first streamed event. "kept" compares application payloads;
+// it does not prove server KV-cache reuse. Only a server-reported cached count
+// establishes that count. New correlated diagnostics distinguish content from
+// thinking/tool events and retain missing server metrics as null.
 type OllamaStats = {
   prompt_eval_count?: number;
   prompt_eval_duration?: number;
@@ -413,6 +413,7 @@ const answerFromAvailableToolResults = async ({
   pendingAssistant: OllamaMessage;
 }): Promise<void> => {
   let finalAnswer = "";
+  const timing = modelTiming(null);
   let finalThinking = "";
   let responseTextBytes = 0;
   try {
@@ -438,6 +439,7 @@ const answerFromAvailableToolResults = async ({
     const startedAt = Date.now();
     let firstTokenAt = 0;
     let stats: OllamaStats | undefined;
+    timing.submit(ollamaModel, enableThinking);
     const response = await waitForOperation(axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
@@ -468,6 +470,7 @@ const answerFromAvailableToolResults = async ({
         }
         if (parsedData.done) stats = parsedData;
         if (parsedData.message?.content) {
+          timing.content();
           const content = parsedData.message.content;
           partialCallback(content);
           finalAnswer += content;
@@ -482,6 +485,7 @@ const answerFromAvailableToolResults = async ({
       }
     }, budget, signal);
     logOllamaTiming("final-answer", stats, startedAt, firstTokenAt, shape);
+    timing.finish(stats);
 
     if (finalThinking.trim()) {
       console.log(`[Ollama] Final no-tools thinking length: ${finalThinking.length}`);
@@ -496,6 +500,7 @@ const answerFromAvailableToolResults = async ({
       content: finalAnswer,
     });
   } catch (error: any) {
+    timing.finish(undefined, error instanceof OperationTimeoutError ? "timeout" : signal?.aborted ? "aborted" : "error");
     console.error("Error generating final answer from tool results:", error.message);
     if (error instanceof OperationTimeoutError) throw error;
     if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, signal, pendingAssistant);
@@ -513,6 +518,7 @@ const chatWithLLMStreamInternal = async (
   invokeFunctionCallback?: (functionName: string, result?: string) => void,
   toolLoopState: ToolLoopState = { round: 0, signatures: new Set<string>(), budget: createOllamaRequestBudget() },
 ): Promise<void> => {
+  const timing = modelTiming(toolLoopState.round);
   if (toolLoopState.signal?.aborted) {
     endCallback();
     return;
@@ -598,6 +604,7 @@ const chatWithLLMStreamInternal = async (
     const startedAt = Date.now();
     let firstTokenAt = 0;
     let stats: OllamaStats | undefined;
+    timing.submit(ollamaModel, enableThinking);
     const response = await waitForOperation(axios.post(
       `${ollamaEndpoint}/api/chat`,
       {
@@ -633,6 +640,7 @@ const chatWithLLMStreamInternal = async (
 
         // Handle content from Ollama
         if (parsedData.message?.content) {
+          timing.content();
           const content = parsedData.message.content;
           partialAnswer += content;
           if (contentMode === "stream") {
@@ -666,6 +674,7 @@ const chatWithLLMStreamInternal = async (
     }, toolLoopState.budget, toolLoopState.signal).then(async () => {
       console.log("Stream ended");
       logOllamaTiming(`round=${toolLoopState.round}`, stats, startedAt, firstTokenAt, shape);
+      timing.finish(stats);
       if (toolLoopState.signal?.aborted) {
         endResolve();
         endCallback();
@@ -880,6 +889,8 @@ const chatWithLLMStreamInternal = async (
       }
     });
   } catch (error: any) {
+    timing.finish(undefined, error instanceof OperationTimeoutError || toolLoopState.signal?.reason instanceof OperationTimeoutError
+      ? "timeout" : toolLoopState.signal?.aborted ? "aborted" : "error");
     console.error("Error:", error.message);
     if (error instanceof OperationTimeoutError) { endResolve(); throw error; }
     if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, toolLoopState.signal);
@@ -918,6 +929,7 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
   partialThinkingCallback?: (partialThinking: string) => void,
   invokeFunctionCallback?: (functionName: string, result?: string) => void,
 ): Promise<void> => {
+  voiceEvent("llm_answer_start");
   if (activeAnswer) {
     console.warn("[Ollama] New question before the previous answer finished; cancelling the previous answer.");
     cancelActiveRequest();
@@ -957,6 +969,7 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       { round: 0, signatures: new Set<string>(), signal: deadline.signal, budget: createOllamaRequestBudget(), pending },
     );
   } catch (error) {
+    voiceEvent("llm_answer_error", { outcome: error instanceof OperationTimeoutError ? "timeout" : "error" });
     if (activeAnswer === answer) {
       if (error instanceof OllamaResourceLimitError) {
         reportResourceFailure(error, partialCallback);
@@ -992,6 +1005,8 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       }
     } finally {
       deadline.dispose();
+      voiceEvent("llm_answer_end", { outcome: deadline.signal.reason instanceof OperationTimeoutError
+        ? "timeout" : deadline.signal.aborted ? "aborted" : "completed" });
       if (activeAnswer === answer) activeAnswer = null;
       endCallback();
     }

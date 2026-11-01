@@ -9,6 +9,7 @@ import os from "os";
 import path from "path";
 import childProcess from "child_process";
 import type { Socket } from "net";
+import { beginVoiceTiming, finishVoiceTiming, withVoiceTiming } from "../core/audio-timing";
 
 const FAKE_SOX = path.join(__dirname, "fixtures", "fake-sox.js");
 const soxLog = path.join(os.tmpdir(), `whisplay-fake-sox-${process.pid}.log`);
@@ -175,6 +176,30 @@ after(() => {
 
 const newTempFiles = (): string[] =>
   fs.readdirSync(ttsDir).filter((file) => !filesBefore.has(file) && !file.endsWith("_converted.wav"));
+
+test("correlated segments reach Piper, conversion and SoX without exposing speech text", async t => {
+  const old = process.env.WHISPLAY_LATENCY_DIAGNOSTICS;
+  process.env.WHISPLAY_LATENCY_DIAGNOSTICS = "true";
+  t.after(() => { if (old === undefined) delete process.env.WHISPLAY_LATENCY_DIAGNOSTICS; else process.env.WHISPLAY_LATENCY_DIAGNOSTICS = old; });
+  const rows: any[] = [], parse = require("../../scripts/pi-latency.cjs").parseEvent;
+  t.mock.method(console, "log", (line: string) => { const r = typeof line === "string" ? parse(line) : null; if (r) rows.push(r); });
+  mode = "ok"; firstSynthDelayMs = 0; piper18 = false;
+  const trace = beginVoiceTiming("text");
+  await withVoiceTiming(trace, async () => {
+    const responder = new StreamResponser(piperHttpTTS);
+    responder.partial("The first supplied sentence is sufficiently long to form a separate speech segment. ");
+    responder.partial("The second supplied sentence is also long enough to form its own speech segment. ");
+    responder.endPartial(); await responder.getPlayEndPromise();
+  });
+  finishVoiceTiming(trace, "completed");
+  assert.equal(new Set(rows.map(r => r.id)).size, 1);
+  for (const segment of [1, 2]) {
+    const events = rows.filter(r => r.segment === segment).map(r => r.event);
+    for (const name of ["speakable_segment", "tts_start", "piper_http_start", "piper_http_complete", "piper_file_available", "piper_wav_ready", "tts_audio_ready", "playback_submit", "sox_spawn", "sox_close"]) assert.ok(events.includes(name), `${segment}: ${name}`);
+    assert.ok(events.indexOf("piper_wav_ready") < events.indexOf("playback_submit"));
+  }
+  assert.equal(JSON.stringify(rows).includes("supplied sentence"), false);
+});
 
 test("successful Piper response is converted and returned with its duration", async () => {
   mode = "ok";
