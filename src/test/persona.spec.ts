@@ -10,6 +10,7 @@ import { execFileSync } from "child_process";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import { memoryReply, personaName, personaPrompt } from "../config/persona";
+import { ollamaDraftOptions } from "../cloud-api/local/ollama-generation-options";
 
 const ORIGINAL_PROMPT =
   "You are a young and cheerful girl who loves to talk, chat, help others, and learn new things. You enjoy using emoji expressions. Never answer longer than 200 words. Always keep your answers concise and to the point.";
@@ -561,4 +562,98 @@ test("Pi comparison controls preserve default workload and require explicit expe
   for (const args of [["--presence-penalty="], ["--temperature=NaN"], ["--seed=-1"], ["--baseline=B"]]) {
     assert.throws(() => comparison.parseArgs(args));
   }
+});
+
+test("test-only model selection preserves Qwen defaults and never edits production environment", () => {
+  const env = { OLLAMA_MODEL: comparison.fixture.model, ENABLE_THINKING: "false", OLLAMA_PREDICT_NUM: "300" };
+  const before = JSON.stringify(env);
+  assert.equal(comparison.settings(env).model, comparison.fixture.model);
+  const gemma = comparison.settings(env, { temperature: 1, seed: 42 }, comparison.gemma.model);
+  assert.equal(gemma.model, comparison.gemma.model);
+  assert.deepEqual(gemma.options, { temperature: 1, num_predict: 300, seed: 42 });
+  assert.equal(gemma.think, false); assert.equal(JSON.stringify(env), before);
+  assert.equal("num_ctx" in gemma.options, false);
+  assert.equal("presence_penalty" in gemma.options, false, "do not copy Qwen model defaults into Gemma");
+  assert.throws(() => comparison.settings(env, {}, "unverified-model"), /Unsupported/);
+});
+
+test("Gemma runtime guards require only the selected model already loaded at 4096", () => {
+  const selected = { name: comparison.gemma.model, context_length: 4096, digest: comparison.gemma.digest };
+  assert.equal(comparison.assertRuntime({ models: [selected] }, comparison.gemma.model), selected);
+  for (const models of [[], [{ ...selected, context_length: 8192 }],
+    [selected, { name: comparison.fixture.model, context_length: 4096 }]]) {
+    assert.throws(() => comparison.assertRuntime({ models }, comparison.gemma.model), /already be loaded/);
+  }
+});
+
+test("runtime identity records exact artifact/native settings with metadata-only local requests", async () => {
+  const axios = require("axios"), originalGet = axios.get, originalPost = axios.post;
+  const model = comparison.gemma.model, digest = comparison.gemma.digest, calls: string[] = [];
+  let wrongDigest = false, wrongVersion = false;
+  axios.get = async (url: string, options: any) => {
+    calls.push(url); assert.equal(options.proxy, false); assert.equal(options.maxRedirects, 0);
+    if (url.endsWith("/api/ps")) return { data: { models: [{ name: model, context_length: 4096, digest, size: 123 }] } };
+    if (url.endsWith("/api/tags")) return { data: { models: [{ name: model, digest: wrongDigest ? "a".repeat(64) : digest, size: 456 }] } };
+    if (url.endsWith("/api/version")) return { data: { version: wrongVersion ? "0.40.0" : "0.34.4" } };
+    throw Error("Unexpected metadata URL");
+  };
+  axios.post = async (url: string, body: any, options: any) => {
+    calls.push(url); assert.ok(url.endsWith("/api/show")); assert.deepEqual(body, { model });
+    assert.equal(options.proxy, false); assert.equal(options.maxRedirects, 0);
+    return { data: { details: { family: "gemma4" }, capabilities: ["completion", "tools"], parameters: "top_k 64\ntemperature 1\ndraft_num_predict 3" } };
+  };
+  try {
+    const r = await comparison.runtimeIdentity("http://localhost:8000", model);
+    assert.equal(r.digest, digest); assert.equal(r.context, 4096);
+    assert.equal(r.ollamaVersion, "0.34.4"); assert.equal(r.reportedLoadedBytes, 123);
+    assert.equal(r.installedBytes, 456); assert.match(r.modelParameters, /draft_num_predict 3/);
+    assert.equal(calls.some(url => /\/chat|\/pull|\/generate/.test(url)), false);
+    wrongDigest = true; await assert.rejects(comparison.runtimeIdentity("http://localhost:8000", model), /identity differ/);
+    wrongDigest = false; wrongVersion = true;
+    await assert.rejects(comparison.runtimeIdentity("http://localhost:8000", model), /differs from/);
+    const count = calls.length;
+    await assert.rejects(comparison.runtimeIdentity("http://remote.example", model), /loopback/);
+    assert.equal(calls.length, count, "remote endpoint rejected before any request");
+  } finally { axios.get = originalGet; axios.post = originalPost; }
+});
+
+test("Gemma evaluation retains the requested eight-turn order and separate fresh histories", () => {
+  const scenario = comparison.availableScenarios.find((s: any) => s.id === "gemma_conversation");
+  assert.equal(scenario.turns.length, 8);
+  assert.equal(scenario.turns[2], "I'm sorry, I didn't mean to offend you.");
+  assert.equal(scenario.turns[7], "Are you still upset about what I said earlier?");
+  const fresh = comparison.availableScenarios.find((s: any) => s.id === "gemma_fresh_phone");
+  assert.deepEqual(fresh.turns, [scenario.turns[4]]); assert.equal(fresh.prior, undefined);
+  const generation = comparison.settings({ ENABLE_THINKING: "false" }, {}, comparison.gemma.model);
+  for (const variant of ["A", "B", "C", "D"]) {
+    const messages = comparison.buildMessages(variant, fresh, [{ role: "user", content: fresh.turns[0] }], SPEECH_PROMPT);
+    assert.deepEqual(comparison.requestFor(messages, generation).messages, messages);
+  }
+});
+
+test("Gemma CLI plan selects a pinned test model without changing inherited Qwen selection", () => {
+  const plan = JSON.parse(execFileSync(process.execPath,
+    ["--require", "ts-node/register/transpile-only", "scripts/persona-comparison.cjs", "--plan", "--model=" + comparison.gemma.model,
+      "--candidate=D", "--repetitions=1", "--scenarios=gemma_conversation", "--temperature=1"], {
+      cwd: path.resolve(__dirname, "../.."), encoding: "utf8", timeout: 10000,
+      env: { ...process.env, OLLAMA_MODEL: comparison.fixture.model, ENABLE_THINKING: "false" },
+    }));
+  assert.equal(plan.generation.model, comparison.gemma.model); assert.equal(plan.generation.options.temperature, 1);
+  assert.equal(plan.generationRequests, 16); assert.equal(plan.configuration.modelExplicit, true);
+  assert.equal(plan.prompts.A.slice(comparison.production.length), plan.prompts.D.slice(comparison.candidateD.length));
+  assert.throws(() => comparison.parseArgs(["--model=unverified-model"]), /Unsupported/);
+  assert.throws(() => comparison.parseArgs(["--candidate=G"]), /Use/, "rejected experimental prompts remain raw evidence only");
+});
+
+test("optional drafting is explicit, preserves zero and rejects invalid configured values", () => {
+  assert.deepEqual(ollamaDraftOptions({}), {});
+  assert.deepEqual(ollamaDraftOptions({ OLLAMA_DRAFT_NUM_PREDICT: " " }), {});
+  assert.deepEqual(ollamaDraftOptions({ OLLAMA_DRAFT_NUM_PREDICT: "0" }), { draft_num_predict: 0 });
+  assert.deepEqual(ollamaDraftOptions({ OLLAMA_DRAFT_NUM_PREDICT: " 3 " }), { draft_num_predict: 3 });
+  for (const text of ["-1", "1.5", "17", "NaN", "false"]) {
+    assert.throws(() => ollamaDraftOptions({ OLLAMA_DRAFT_NUM_PREDICT: text }), /integer between/);
+  }
+  const p = comparison.parseArgs(["--model=" + comparison.gemma.model, "--draft-tokens=0"]);
+  assert.equal(comparison.settings({}, p.sampling, p.model).options.draft_num_predict, 0);
+  assert.throws(() => comparison.parseArgs(["--draft-tokens=0"]), /restricted/);
 });

@@ -1,5 +1,9 @@
 # GLaDOS D: opt-in implementation, not a demonstrated model win
 
+**Latest follow-up:** [Gemma 4 compatibility and measured comparison](gemma4-evaluation.md)
+adds 83 completed generations without accepting a replacement. Qwen + A remains
+the user's selected fallback; the chronological records below are retained.
+
 **Update — real hardware regression:** the user has now confirmed the exact
 Qwen configuration and supplied a failing eleven-turn Pi conversation. D failed
 acceptance. [The measured follow-up investigation](glados-d-hardware-regression.md)

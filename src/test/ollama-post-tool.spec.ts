@@ -61,7 +61,7 @@ function evaluate(file: string, dependencies: Record<string, any>) {
 // ChatFlow display callbacks and StreamResponser. Only OS/model/audio edges
 // are simulated; the model's actual Pi output is not inferred from this fixture.
 async function run(t: TestContext, script: any[][], options: { rounds?: number; outcome?: string | Error; cancelLast?: boolean;
-  question?: string; enabled?: boolean; healthOutput?: string | Error; omitHealth?: boolean; cancelHealth?: boolean; context?: boolean } = {}) {
+  question?: string; enabled?: boolean; healthOutput?: string | Error; omitHealth?: boolean; cancelHealth?: boolean; context?: boolean; draft?: string } = {}) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_700_000_000_000 });
   // Let Node deliver its one-time experimental-API warning before capturing
   // application errors; no application operation has started yet.
@@ -96,6 +96,13 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
   t.after(() => Object.defineProperty(process, "platform", platform));
   process.env.OLLAMA_MAX_TOOL_ROUNDS = String(options.rounds ?? 4);
   process.env.OLLAMA_ENABLE_TOOLS = String(options.enabled ?? true);
+  const oldDraft = process.env.OLLAMA_DRAFT_NUM_PREDICT;
+  if (options.draft === undefined) delete process.env.OLLAMA_DRAFT_NUM_PREDICT;
+  else process.env.OLLAMA_DRAFT_NUM_PREDICT = options.draft;
+  t.after(() => {
+    if (oldDraft === undefined) delete process.env.OLLAMA_DRAFT_NUM_PREDICT;
+    else process.env.OLLAMA_DRAFT_NUM_PREDICT = oldDraft;
+  });
   const registry = require("../config/llm-tools");
   let healthCalls = 0;
   const realHealth = registry.llmFuncMap.getSystemHealth;
@@ -276,6 +283,18 @@ for (const thinking of [false, true]) test(`final no-tools path reports ${thinki
 test("normal round-0 visible streaming remains unchanged", async t => {
   const result = await run(t, [visible()]);
   assertDelivered(result, ANSWER); assert.equal(requests.length, 1); assert.equal(result.samples, 0);
+});
+
+test("optional draft override reaches native rounds and final no-tools completion without changing delivery", async t => {
+  const result = await run(t, [[probeCall("first")], [probeCall("second")], visible()], { rounds: 1, draft: "0" });
+  assertDelivered(result, ANSWER); assert.equal(requests.length, 3);
+  for (const request of requests) assert.equal(request.options.draft_num_predict, 0);
+  assert.equal(requests[2].tools, undefined);
+});
+
+test("unset draft override leaves model-default sampling untouched", async t => {
+  await run(t, [visible()]);
+  assert.equal("draft_num_predict" in requests[0].options, false);
 });
 
 test("empty round-0 completion also cannot silently appear successful", async t => {
