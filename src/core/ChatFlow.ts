@@ -23,10 +23,13 @@ import { playWakeupChime } from "../device/audio";
 import { stopMusicPlayback, isMusicPlaying } from "../device/music-player";
 import type { Status } from "../device/display";
 import { appSignal } from "../utils/app-lifecycle";
+import { beginVoiceTiming, finishVoiceTiming, voiceEvent, VoiceTiming, withVoiceTiming } from "./audio-timing";
 
 dotEnv.config();
 
 class ChatFlow implements ChatFlowContext {
+  private voiceTiming?: VoiceTiming;
+  finishTiming = (): void => finishVoiceTiming(this.voiceTiming, "completed");
   currentFlowName: FlowName = "sleep";
   recordingsDir: string = "";
   currentRecordFilePath: string = "";
@@ -214,12 +217,16 @@ class ChatFlow implements ChatFlowContext {
   }
 
   async recognizeAudio(path: string, isFromAutoListening?: boolean): Promise<string> {
+    const timing = this.voiceTiming;
+    voiceEvent("asr_precheck_start", {}, timing);
     if (!isFromAutoListening && (await getRecordFileDurationMs(path)) < 500) {
       console.log("Record audio too short, skipping recognition.");
       return Promise.resolve("");
     }
     console.time(`[ASR time]`);
+    voiceEvent("asr_start", {}, timing);
     const result = await recognizeAudio(path);
+    voiceEvent("asr_complete", {}, timing);
     console.timeEnd(`[ASR time]`);
     return result;
   }
@@ -242,6 +249,14 @@ class ChatFlow implements ChatFlowContext {
   };
 
   transitionTo = (flowName: FlowName): void => {
+    if (flowName === "listening" || flowName === "wake_listening" ||
+      (flowName === "answer" && this.currentFlowName !== "asr")) {
+      finishVoiceTiming(this.voiceTiming, "interrupted");
+      this.voiceTiming = beginVoiceTiming(flowName === "listening" ? "manual" : flowName === "wake_listening" ? "vad" : "text");
+    } else if (!["asr", "answer"].includes(flowName)) {
+      finishVoiceTiming(this.voiceTiming, this.currentFlowName === "answer" ? "interrupted" : "no_answer");
+    }
+    if (flowName === "answer") voiceEvent("prompt_prepare_start", {}, this.voiceTiming);
     if (this.currentFlowName === "answer" && flowName !== "answer") cancelLLMRequest();
     if (flowName !== "music" && isMusicPlaying()) {
       stopMusicPlayback();
@@ -250,7 +265,7 @@ class ChatFlow implements ChatFlowContext {
       void this.wakeWordListener?.stop();
     }
     console.log(`[${getCurrentTimeTag()}] switch to:`, flowName);
-    this.stateMachine.transitionTo(flowName);
+    withVoiceTiming(this.voiceTiming, () => this.stateMachine.transitionTo(flowName));
     if (flowName === "sleep") {
       this.wakeWordListener?.start();
     }

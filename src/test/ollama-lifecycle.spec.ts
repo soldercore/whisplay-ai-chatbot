@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { getEventListeners } from "node:events";
 import axios from "axios";
+import { beginVoiceTiming, withVoiceTiming } from "../core/audio-timing";
 
 const originalPost = axios.post;
 const requests: any[] = [], streams: PassThrough[] = [], signals: AbortSignal[] = [];
@@ -68,6 +69,22 @@ test("total request deadline aborts an HTTP operation waiting for headers", asyn
   assert.equal(running.result.text, "The request timed out. Completion was not verified.");
   assert.equal(running.result.ends, 1);
   assert.equal(effects, 0);
+});
+
+test("timed-out model requests retain their interaction ID and report missing metrics without invented content", async t => {
+  const old = process.env.WHISPLAY_LATENCY_DIAGNOSTICS;
+  process.env.WHISPLAY_LATENCY_DIAGNOSTICS = "true";
+  t.after(() => { if (old === undefined) delete process.env.WHISPLAY_LATENCY_DIAGNOSTICS; else process.env.WHISPLAY_LATENCY_DIAGNOSTICS = old; });
+  const rows: any[] = [], parse = require("../../scripts/pi-latency.cjs").parseEvent;
+  t.mock.method(console, "log", (line: string) => { const r = typeof line === "string" ? parse(line) : null; if (r) rows.push(r); });
+  t.mock.timers.enable({ apis: ["setTimeout"] }); plans = ["headers"];
+  const trace = beginVoiceTiming("text"), running = withVoiceTiming(trace, () => ask());
+  await flush(); t.mock.timers.tick(100); await running.done;
+  const done = rows.find(r => r.event === "llm_complete");
+  assert.equal(done.id, trace!.turn.id); assert.equal(done.outcome, "timeout");
+  assert.equal(done.prompt_eval_cached_count, null); assert.equal(done.eval_count, null);
+  assert.equal(rows.some(r => r.event === "llm_first_content"), false);
+  assert.equal(rows.find(r => r.event === "llm_answer_end").outcome, "timeout");
 });
 
 test("late HTTP responses after cancellation are destroyed, not parsed", async t => {

@@ -127,6 +127,7 @@ test("leaving the real ChatFlow answer state invokes provider cancellation", () 
   const exported: any = {}; let cancels = 0; const noop = () => {};
   class Machine { constructor(private ctx: any) {} transitionTo(state: string) { this.ctx.currentFlowName = state; } }
   const modules: Record<string, any> = {
+    "./audio-timing": require("../core/audio-timing"),
     dotenv: { config: noop }, "./../utils/index": { getCurrentTimeTag: () => "test" },
     "../utils": {}, "../device/display": { display: noop }, "../cloud-api/server": {},
     "../cloud-api/llm": { isImMode: false, cancelLLMRequest: () => cancels++ },

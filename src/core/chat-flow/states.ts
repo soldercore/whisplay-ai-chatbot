@@ -473,6 +473,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         }
       });
     llmDonePromise.then(() => getPlayEndPromise()).then(() => {
+      if (isCurrentAnswer()) ctx.finishTiming?.();
       if (isCurrentAnswer()) ctx.revealAllAnswerText();
       if (ctx.currentFlowName === "answer") {
         autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder ? undefined : summaryTextWithLLM);

@@ -8,6 +8,7 @@ import threading
 import signal
 import re
 import traceback
+from runtime_resources import font_path as resolve_font_path
 
 from camera import CameraThread
 from utils import ColorUtils, ImageUtils, TextUtils, EmojiUtils
@@ -1131,35 +1132,35 @@ def start_socket_server(render_thread, host='0.0.0.0', port=12345):
         server_socket.close()
 
 
-if __name__ == "__main__":
-    whisplay = create_whisplay_hardware()
-    print(f"[LCD] Initialization finished: {whisplay.LCD_WIDTH}x{whisplay.LCD_HEIGHT}")
-    if hasattr(whisplay, "on_exit_request"):
-        whisplay.on_exit_request(on_app_exit_requested)
-    
-    # read CUSTOM_FONT_PATH from environment variable
-    custom_font_path = os.getenv("CUSTOM_FONT_PATH", None)
-    
-    # start render thread
-    render_thread = RenderThread(whisplay, custom_font_path or "NotoSansSC-Bold.ttf", fps=30)
-    render_thread.start()
-    start_socket_server(render_thread, host='0.0.0.0', port=12345)
-    
-    def cleanup_and_exit(signum, frame):
-        print("[System] Exiting...")
-        render_thread.stop()
-        whisplay.cleanup()
-        sys.exit(0)
-        
-    signal.signal(signal.SIGTERM, cleanup_and_exit)
-    signal.signal(signal.SIGINT, cleanup_and_exit)
-    signal.signal(signal.SIGKILL, cleanup_and_exit)
-    signal.signal(signal.SIGQUIT, cleanup_and_exit)
-    signal.signal(signal.SIGSTOP, cleanup_and_exit)
+def main():
+    global whisplay, render_thread
+    whisplay = None
+    render_thread = None
+
+    def stop_signal(signum, frame):
+        raise SystemExit(128 + signum)
+
+    # Install before initialization/the blocking accept loop; SIGKILL/SIGSTOP
+    # cannot be caught. Diagnostic Ctrl+Z requests cleanup rather than suspension.
+    signals = [signal.SIGTERM, signal.SIGINT, signal.SIGQUIT, signal.SIGHUP]
+    if os.getenv("WHISPLAY_LATENCY_DIAGNOSTICS") == "true":
+        signals.append(signal.SIGTSTP)
+    for signum in signals:
+        signal.signal(signum, stop_signal)
     try:
-        # Keep the main thread alive
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        cleanup_and_exit(None, None)
-    
+        whisplay = create_whisplay_hardware()
+        print(f"[LCD] Initialization finished: {whisplay.LCD_WIDTH}x{whisplay.LCD_HEIGHT}")
+        if hasattr(whisplay, "on_exit_request"):
+            whisplay.on_exit_request(on_app_exit_requested)
+        render_thread = RenderThread(whisplay, str(resolve_font_path()), fps=30)
+        render_thread.start()
+        start_socket_server(render_thread, host="0.0.0.0", port=12345)
+    finally:
+        if render_thread is not None:
+            render_thread.stop()
+        if whisplay is not None:
+            whisplay.cleanup()
+
+
+if __name__ == "__main__":
+    main()

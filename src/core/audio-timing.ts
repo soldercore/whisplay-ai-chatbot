@@ -11,6 +11,84 @@
  * and drain). lead/trail is the silence inside the WAV before/after the speech.
  */
 import { performance } from "perf_hooks";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+
+/** Opt-in correlation of the existing timing boundaries. Never pass text here. */
+export type VoiceTiming = { turn: { id: string; start: number; closed: boolean; calls: number }; segment?: number };
+const voiceTiming = new AsyncLocalStorage<VoiceTiming | undefined>();
+export const currentVoiceTiming = (): VoiceTiming | undefined => voiceTiming.getStore();
+export const withVoiceTiming = <T>(context: VoiceTiming | undefined, work: () => T): T =>
+  !context && !voiceTiming.getStore() ? work() : voiceTiming.run(context, work);
+const numericFields = new Set(["segment", "call", "duration_ms", "chars", "code", "round",
+  "prompt_eval_count", "prompt_eval_cached_count", "prompt_eval_duration", "eval_count",
+  "eval_duration", "load_duration", "total_duration", "temperature"]);
+const stringFields = new Set(["origin", "outcome", "model", "build", "persona", "variant", "done_reason", "asr", "tts"]);
+export const voiceEvent = (
+  event: string, fields: Record<string, unknown> = {}, context = currentVoiceTiming(),
+): void => {
+  if (!context || context.turn.closed) return;
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (numericFields.has(key) && (value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0))) safe[key] = value;
+    if (stringFields.has(key) && typeof value === "string" && /^[a-zA-Z0-9_.:/-]{1,120}$/.test(value)) safe[key] = value;
+    if (["thinking", "custom_prompt_present"].includes(key) && typeof value === "boolean") safe[key] = value;
+  }
+  // Fixed event names only; no paths, transcripts, errors, tool arguments or audio.
+  if (!/^[a-z_]{1,48}$/.test(event)) return;
+  try {
+    console.log("[AudioTiming] interaction " + JSON.stringify({ ...safe, id: context.turn.id,
+      event, at_ms: Math.round((performance.now() - context.turn.start) * 1000) / 1000,
+      ...(event === "interaction_start" ? { wall_time: new Date().toISOString() } : {}),
+      ...(context.segment === undefined ? {} : { segment: context.segment }) }));
+  } catch { /* Diagnostics must never fail the interaction. */ }
+};
+export const beginVoiceTiming = (origin: "manual" | "vad" | "text"): VoiceTiming | undefined => {
+  if (process.env.WHISPLAY_LATENCY_DIAGNOSTICS !== "true") return undefined;
+  const context = { turn: { id: `${process.pid}-${randomUUID()}`, start: performance.now(), closed: false, calls: 0 } };
+  voiceEvent("interaction_start", { origin, build: process.env.WHISPLAY_DIAGNOSTIC_BUILD }, context);
+  voiceEvent("runtime_config", { persona: process.env.ASSISTANT_PERSONA || "default",
+    variant: "A", asr: process.env.ASR_SERVER, tts: process.env.TTS_SERVER,
+    custom_prompt_present: Boolean(process.env.SYSTEM_PROMPT) }, context);
+  return context;
+};
+export const finishVoiceTiming = (context: VoiceTiming | undefined, outcome: "completed" | "interrupted" | "no_answer"): void => {
+  voiceEvent("interaction_end", { outcome }, context);
+  if (context) context.turn.closed = true;
+};
+export const segmentVoiceTiming = (segment: number): VoiceTiming | undefined => {
+  const context = currentVoiceTiming();
+  return context ? { turn: context.turn, segment } : undefined;
+};
+
+/** Server durations remain nanoseconds; missing fields are null, never invented zeroes. */
+export const modelTiming = (round: number | null) => {
+  const context = currentVoiceTiming();
+  const call = context ? ++context.turn.calls : 0;
+  let first = false, submitted = false, ended = false;
+  voiceEvent("llm_prepare_start", { call, round }, context);
+  return {
+    submit(model: string, thinking: boolean) {
+      submitted = true;
+      voiceEvent("llm_submit", { call, round, model, thinking, temperature: 0.7 }, context);
+    },
+    content() {
+      if (first) return;
+      first = true; voiceEvent("llm_first_content", { call, round }, context);
+    },
+    finish(stats?: Record<string, unknown>, outcome = "completed") {
+      if (ended) return;
+      ended = true;
+      const fields: Record<string, unknown> = { call, round, outcome, done_reason: stats?.done_reason };
+      for (const key of ["prompt_eval_count", "prompt_eval_cached_count", "prompt_eval_duration",
+        "eval_count", "eval_duration", "load_duration", "total_duration"]) {
+        const value = stats?.[key];
+        fields[key] = typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+      }
+      voiceEvent(submitted ? "llm_complete" : "llm_prepare_failed", fields, context);
+    },
+  };
+};
 
 export type ChunkTiming = {
   queuedAt: number;
@@ -18,6 +96,7 @@ export type ChunkTiming = {
   readyAt?: number;
   playStartAt?: number;
   playEndAt?: number;
+  diagnostic?: VoiceTiming;
 };
 
 export const now = (): number => performance.now();

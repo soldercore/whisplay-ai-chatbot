@@ -16,6 +16,7 @@ export type FlowName =
 export type FlowStateHandler = (ctx: ChatFlowContext) => void;
 
 export interface ChatFlowContext {
+  finishTiming?: () => void;
   currentFlowName: FlowName;
   recordingsDir: string;
   currentRecordFilePath: string;

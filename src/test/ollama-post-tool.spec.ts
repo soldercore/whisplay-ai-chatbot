@@ -51,6 +51,7 @@ function evaluate(file: string, dependencies: Record<string, any>) {
   vm.runInNewContext(compiled.get(file)!, { exports: exported, process, console, Date, setTimeout, clearTimeout,
     setInterval, clearInterval, require: (name: string) => {
       if (Object.prototype.hasOwnProperty.call(dependencies, name)) return dependencies[name];
+      if (name === "./audio-timing") return require("../core/audio-timing");
       if (["lodash", "moment", "dotenv"].includes(name)) return require(name);
       throw new Error(`Unexpected production dependency: ${name}`);
     } });
@@ -61,7 +62,14 @@ function evaluate(file: string, dependencies: Record<string, any>) {
 // ChatFlow display callbacks and StreamResponser. Only OS/model/audio edges
 // are simulated; the model's actual Pi output is not inferred from this fixture.
 async function run(t: TestContext, script: any[][], options: { rounds?: number; outcome?: string | Error; cancelLast?: boolean;
-  question?: string; enabled?: boolean; healthOutput?: string | Error; omitHealth?: boolean; cancelHealth?: boolean; context?: boolean } = {}) {
+  question?: string; enabled?: boolean; healthOutput?: string | Error; omitHealth?: boolean; cancelHealth?: boolean; context?: boolean; diagnostic?: boolean } = {}) {
+  const oldDiagnostic = process.env.WHISPLAY_LATENCY_DIAGNOSTICS;
+  if (options.diagnostic) process.env.WHISPLAY_LATENCY_DIAGNOSTICS = "true";
+  else delete process.env.WHISPLAY_LATENCY_DIAGNOSTICS;
+  t.after(() => {
+    if (oldDiagnostic === undefined) delete process.env.WHISPLAY_LATENCY_DIAGNOSTICS;
+    else process.env.WHISPLAY_LATENCY_DIAGNOSTICS = oldDiagnostic;
+  });
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1_700_000_000_000 });
   // Let Node deliver its one-time experimental-API warning before capturing
   // application errors; no application operation has started yet.
@@ -147,6 +155,7 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
   class Machine {
     constructor(private ctx: any) {}
     transitionTo(state: string) { const wasAnswer = this.ctx.currentFlowName === "answer"; this.ctx.currentFlowName = state;
+      if (state === "answer") states.answer(this.ctx);
       if (wasAnswer && state === "sleep") completed = true; }
   }
   const Flow = evaluate("core/ChatFlow.ts", {
@@ -166,11 +175,11 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
   // Exercise ordinary model-driven calls independently of mandatory local-state
   // routing; explicit health requests are covered separately below.
   ctx.asrText = options.question ?? "Explain CPU temperature in general.";
-  ctx.currentFlowName = "answer";
+  ctx.currentFlowName = options.diagnostic ? "sleep" : "answer";
   const historyDir = require("../utils/dir").chatHistoryDir;
   const previousHistoryFile = fs.readdirSync(historyDir)[0];
   const historyBefore = previousHistoryFile ? JSON.parse(fs.readFileSync(path.join(historyDir, previousHistoryFile), "utf8")) : [];
-  states.answer(ctx);
+  if (options.diagnostic) ctx.transitionTo("answer"); else states.answer(ctx);
   for (let i = 0; i < 80 && !completed; i++) {
     await new Promise<void>(resolve => setImmediate(resolve));
     if (options.cancelHealth && samples === 1) provider.cancelActiveRequest();
@@ -193,6 +202,32 @@ function assertDelivered(result: Awaited<ReturnType<typeof run>>, text: string) 
   assert.ok(result.displayed.some(payload => payload.status === "answering" && payload.text?.includes(text)), "actual ChatFlow display receives the answer");
   assert.equal(result.synthesized.join(" ").includes(PRIVATE_THINKING), false);
 }
+
+test("opt-in timings correlate actual answer/tool/final-no-tools/TTS boundaries without private text", async t => {
+  const result = await run(t, [[{ message: { thinking: PRIVATE_THINKING } }, probeCall("first")],
+    [probeCall("second")], visible()], { rounds: 1, diagnostic: true });
+  assertDelivered(result, ANSWER);
+  const prefix = "[AudioTiming] interaction ";
+  const rows = result.logs.filter(line => line.startsWith(prefix)).map(line => JSON.parse(line.slice(prefix.length)));
+  assert.ok(rows.length > 10);
+  assert.equal(new Set(rows.map(r => r.id)).size, 1);
+  assert.equal(rows.filter(r => r.event === "llm_submit").length, 3);
+  const content = rows.filter(r => r.event === "llm_first_content");
+  assert.equal(content.length, 1); assert.equal(content[0].call, 3, "thinking and proposals are not generated text");
+  assert.ok(rows.some(r => r.event === "speakable_segment" && r.segment === 1));
+  assert.ok(rows.some(r => r.event === "tts_audio_ready" && r.segment === 1));
+  assert.ok(rows.some(r => r.event === "playback_submit" && r.segment === 1));
+  assert.equal(rows.at(-1).event, "interaction_end"); assert.equal(rows.at(-1).outcome, "completed");
+  for (const r of rows.filter(r => r.event === "llm_complete")) assert.equal(r.prompt_eval_cached_count, null);
+  assert.equal(JSON.stringify(rows).includes(PRIVATE_THINKING), false);
+  assert.equal(JSON.stringify(rows).includes(ANSWER), false);
+});
+
+test("diagnostics disabled adds no correlated events or model options", async t => {
+  const result = await run(t, [visible()]);
+  assert.equal(result.logs.some(line => line.startsWith("[AudioTiming] interaction ")), false);
+  assert.deepEqual(requests[0].options, { temperature: 0.7 });
+});
 
 test("answer state marks fresh memory and repeated RAG as turn context through native tool rounds", async t => {
   const result = await run(t, [[probeCall("context")], [{ message: { content: "Answer." }, done: true }]], { context: true });

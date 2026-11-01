@@ -8,6 +8,7 @@ import type { ASRPlugin, TTSPlugin, AudioFormat } from "../plugin";
 import { ASRServer, TTSResult, TTSServer } from "../type";
 import { alsaInputDevice, alsaOutputDevice, soundCardRef } from "./audio-device";
 import { webAudioBridge } from "./web-audio-bridge";
+import { currentVoiceTiming, voiceEvent } from "../core/audio-timing";
 
 export { getDynamicVoiceDetectLevel } from "./voice-detect";
 
@@ -164,6 +165,8 @@ const recordAudio = async (
   duration: number = 10,
   voiceDetectLevel: number = 30,
 ): Promise<string> => {
+  const diagnostic = currentVoiceTiming();
+  voiceEvent("capture_start", {}, diagnostic);
   // Delegate to browser microphone when web audio is enabled and a client is connected.
   if (webAudioBridge.isAvailable()) {
     console.log(`[WebAudio] Starting browser recording, max ${duration} seconds...`);
@@ -213,6 +216,7 @@ const recordAudio = async (
     });
 
     recordingProcess.on("exit", (code) => {
+      voiceEvent("capture_finalized", { code }, diagnostic);
       removeRecordingProcess(recordingProcess);
       if (code && code !== 0) {
         reject(code);
@@ -235,6 +239,8 @@ const recordAudio = async (
 const recordAudioManually = (
   outputPath: string
 ): { result: Promise<string>; stop: () => void } => {
+  const diagnostic = currentVoiceTiming();
+  voiceEvent("capture_start", {}, diagnostic);
   // Delegate to browser microphone when web audio is enabled and a client is connected.
   if (webAudioBridge.isAvailable()) {
     console.log(`[WebAudio] Starting manual browser recording...`);
@@ -267,9 +273,11 @@ const recordAudioManually = (
     });
     recordingProcessList.push(recordingProcess);
     stopFunc = () => {
+      voiceEvent("capture_stop_requested", {}, diagnostic);
       killRecordingProcess(recordingProcess);
     };
     recordingProcess.on("exit", () => {
+      voiceEvent("capture_finalized", {}, diagnostic);
       removeRecordingProcess(recordingProcess);
       resolve(outputPath);
     });
@@ -310,6 +318,7 @@ setTimeout(() => {
 }, 5000);
 
 const playAudioData = (params: TTSResult): Promise<void> => {
+  const diagnostic = currentVoiceTiming();
   // Delegate to browser speaker when web audio is enabled and a client is connected.
   if (webAudioBridge.isAvailable()) {
     console.log("[WebAudio] Sending audio to browser for playback.");
@@ -328,6 +337,7 @@ const playAudioData = (params: TTSResult): Promise<void> => {
       new Promise<void>((resolve) => {
         setTimeout(() => {
           if (!soxExited) {
+            voiceEvent("playback_wait_timeout", {}, diagnostic);
             console.warn(
               `[TTS-DIAG][audio] playback timeout won after ${Math.round(audioDuration + 1000)}ms; sox has not exited (${filePath})`
             );
@@ -342,8 +352,12 @@ const playAudioData = (params: TTSResult): Promise<void> => {
         const spawnAt = performance.now();
         let startedAt: number | undefined;
         const process = spawn("sox", ["-q", filePath, "-t", "alsa", alsaOutputDevice]);
-        process.on("spawn", () => (startedAt = performance.now()));
-        process.on("close", () => {
+        process.on("spawn", () => {
+          startedAt = performance.now();
+          voiceEvent("sox_spawn", {}, diagnostic);
+        });
+        process.on("close", (code) => {
+          voiceEvent("sox_close", { code }, diagnostic);
           const end = performance.now();
           const ran = Math.round(end - (startedAt ?? spawnAt));
           console.log(

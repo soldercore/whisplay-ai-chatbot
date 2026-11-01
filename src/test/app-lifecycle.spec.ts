@@ -21,6 +21,7 @@ function load(file: string, dependencies: Record<string, unknown>, globals: Reco
     console: { log() {}, error() {} }, process, setTimeout, clearTimeout, setInterval, clearInterval,
     require(name: string) {
       if (name in dependencies) return dependencies[name];
+      if (["./utils/diagnostic-events", "../utils/diagnostic-events"].includes(name)) return require("../utils/diagnostic-events");
       throw new Error(`Unexpected dependency: ${name}`);
     }, ...globals });
   return exports;

@@ -62,6 +62,7 @@ test("wake listening waits for chime and cannot start after changed state, ended
     const noop = () => {};
     class Machine { constructor(private ctx: any) {} transitionTo(state: string) { this.ctx.currentFlowName = state; } }
     const Flow = load("src/core/ChatFlow.ts", {
+      "./audio-timing": require("../core/audio-timing"),
       "./../utils/index": { getCurrentTimeTag: () => "test" }, "../utils": {},
       "../device/display": { display: noop }, "../cloud-api/server": {},
       "../cloud-api/llm": { isImMode: false },

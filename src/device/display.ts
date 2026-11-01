@@ -7,6 +7,7 @@ import { getCurrentTimeTag } from "../utils";
 import { WebDisplayServer } from "./web-display";
 import { webAudioBridge } from "./web-audio-bridge";
 import dotEnv from "dotenv";
+import { diagnosticEvent } from "../utils/diagnostic-events";
 
 dotEnv.config();
 
@@ -119,7 +120,8 @@ export class WhisplayDisplay {
     if (this.deviceEnabled) {
       this.isReady = this.startPythonProcess()
         .then(() => this.connectWithRetry(15, () => {}))
-        .catch(error => { console.error("[Lifecycle] Display startup failed:", error); shutdownApplication(1); });
+        .then(() => diagnosticEvent("display_ready"))
+        .catch(error => { diagnosticEvent("display_failure", "display_not_ready"); console.error("[Lifecycle] Display startup failed:", error); shutdownApplication(1); });
     } else {
       this.isReady = Promise.resolve();
     }
@@ -170,7 +172,7 @@ export class WhisplayDisplay {
   startPythonProcess(): Promise<void> {
     // No shell child: track the actual Python PID and connect only after our
     // own child confirms its bind, never to another process on the same port.
-    const child = spawnOwned("python3", ["-u", "chatbot-ui.py"], {
+    const child = spawnOwned("python3", ["-u", process.env.WHISPLAY_LATENCY_DIAGNOSTICS === "true" ? "diagnostic_display.py" : "chatbot-ui.py"], {
       cwd: resolve(__dirname, "../../python"), stdio: ["ignore", "pipe", "pipe"],
     });
     this.pythonProcess = child;

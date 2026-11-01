@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import { ttsDir } from "../../utils/dir";
 import { TTSResult } from "../../type";
 import { defaultPortMap } from "./common";
+import { currentVoiceTiming, voiceEvent } from "../../core/audio-timing";
 
 dotenv.config();
 
@@ -75,6 +76,7 @@ const removeFile = (file: string): void => {
 const piperHttpTTS = async (
   text: string
 ): Promise<TTSResult> => {
+  const diagnostic = currentVoiceTiming();
   return new Promise((resolve, reject) => {
     // Several sentences can start synthesizing in the same millisecond, so the
     // file name also carries a per-process sequence number.
@@ -91,6 +93,7 @@ const piperHttpTTS = async (
 
     // [AudioTiming]: Piper HTTP request, SoX conversion and duration probe, in ms.
     const requestAt = performance.now();
+    voiceEvent("piper_http_start", {}, diagnostic);
     let convertAt = requestAt;
     let probeAt = requestAt;
     const piperProcess = spawn(
@@ -122,6 +125,7 @@ const piperHttpTTS = async (
     piperProcess.stderr?.on("data", (data) => (curlErr += data.toString()));
 
     piperProcess.on("close", async (code: number) => {
+      voiceEvent("piper_http_complete", { code }, diagnostic);
       convertAt = performance.now();
       const [httpStatus = "", bytes = "", contentType = ""] = curlOut.trim().split(" ");
       console.log(
@@ -154,6 +158,7 @@ const piperHttpTTS = async (
       }
 
       try {
+        voiceEvent("piper_file_available", {}, diagnostic);
         // The Whisplay ES8389 ALSA device rejects Piper's 22050 Hz mono output
         // when opened directly through hw:*, so normalize to the codec format.
         await new Promise<void>((res, rej) => {
@@ -189,6 +194,7 @@ const piperHttpTTS = async (
 
         probeAt = performance.now();
         const duration = (await getAudioDurationInSeconds(convertedWavFile)) * 1000;
+        voiceEvent("piper_wav_ready", { duration_ms: duration }, diagnostic);
         // Clean up temp file
         // fs.unlinkSync(convertedWavFile);
         console.log(`[TTS-DIAG][piper-http] ${convertedWavFile} duration ${Math.round(duration)}ms`);

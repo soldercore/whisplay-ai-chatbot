@@ -4,7 +4,7 @@ import { playAudioData, stopPlaying } from "../device/audio";
 import { TTSResult } from "../type";
 import fs from "fs";
 import { RevealStep, revealPlan, SpeechTiming, speechTimingFromWav } from "./speech-timing";
-import { ChunkTiming, formatChunkReport, now } from "./audio-timing";
+import { ChunkTiming, formatChunkReport, now, segmentVoiceTiming, voiceEvent, withVoiceTiming } from "./audio-timing";
 
 dotenv.config();
 
@@ -70,9 +70,13 @@ export class StreamResponser {
   ) {
     this.ttsFunc = async (text) => {
       console.time("[TTS time]");
+      voiceEvent("tts_start");
       try {
-        return await this.synthesizeWithRetry(ttsFunc, text);
+        const result = await this.synthesizeWithRetry(ttsFunc, text);
+        voiceEvent(this.hasPlayableAudio(result) ? "tts_audio_ready" : "tts_no_audio");
+        return result;
       } finally {
+        voiceEvent("tts_end");
         console.timeEnd("[TTS time]");
       }
     };
@@ -182,11 +186,13 @@ export class StreamResponser {
           const waiting = this.speakQueue.slice(currentIndex + 1);
           // Start playback first: measuring the audio adds no audio latency.
           item.timing.playStartAt = now();
-          const playing = playAudioData(playParams);
+          voiceEvent("playback_submit", {}, item.timing.diagnostic);
+          const playing = withVoiceTiming(item.timing.diagnostic, () => playAudioData(playParams));
           const speech = durationMs > 0 ? this.measureSpeech(playParams) : undefined;
           announce(durationMs, durationMs > 0 ? revealPlan(item.sentence, durationMs, speech) : undefined);
           await playing;
           item.timing.playEndAt = now();
+          voiceEvent("playback_wait_end", {}, item.timing.diagnostic);
           if (durationMs > 0) {
             console.log(
               formatChunkReport({
@@ -251,7 +257,7 @@ export class StreamResponser {
       const task = ready(
         this.ttsChain.then(() => {
           if (timing) timing.synthStartAt = now();
-          return this.ttsFunc(text);
+          return withVoiceTiming(timing?.diagnostic, () => this.ttsFunc(text));
         }),
       );
       this.ttsChain = task.then(
@@ -288,7 +294,7 @@ export class StreamResponser {
       }
       this.activeTTSCount++;
       if (item.timing) item.timing.synthStartAt = now();
-      this.ttsFunc(item.text)
+      withVoiceTiming(item.timing?.diagnostic, () => this.ttsFunc(item.text))
         .then(item.resolve, item.reject)
         .finally(() => {
           this.activeTTSCount = Math.max(0, this.activeTTSCount - 1);
@@ -326,7 +332,8 @@ export class StreamResponser {
           console.warn("[TTS-DIAG] nothing left to speak after purifyTextForTTS:", JSON.stringify(sentence));
           return;
         }
-        const timing: ChunkTiming = { queuedAt: now() };
+        const timing: ChunkTiming = { queuedAt: now(), diagnostic: segmentVoiceTiming(startIndex + index + 1) };
+        voiceEvent("speakable_segment", { chars: purified.length }, timing.diagnostic);
         const ttsPromise = this.enqueueTTS(purified, timing);
         queueItems.push({
           sentenceIndex: startIndex + index,
@@ -358,7 +365,8 @@ export class StreamResponser {
       }
       if (text) {
         const length = this.speakQueue.length;
-        const timing: ChunkTiming = { queuedAt: now() };
+        const timing: ChunkTiming = { queuedAt: now(), diagnostic: segmentVoiceTiming(this.displaySentences.length) };
+        voiceEvent("speakable_segment", { chars: text.length }, timing.diagnostic);
         this.speakQueue.push({
           sentenceIndex: this.displaySentences.length - 1,
           sentence: this.displaySentences[this.displaySentences.length - 1],
