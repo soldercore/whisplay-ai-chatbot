@@ -1,5 +1,10 @@
 # GLaDOS personality: evidence and controlled A/B comparison
 
+New opt-in candidate D and the preserved A/B/C comparison are documented in
+[glados-personality-d.md](glados-personality-d.md). A remains the production
+default. The record below is retained as historical evidence, including its
+original test counts and unverified physical comparisons.
+
 ## Final evaluation-only candidate C
 
 The user subsequently reported physical Qwen3.5 2B results: A had better dry

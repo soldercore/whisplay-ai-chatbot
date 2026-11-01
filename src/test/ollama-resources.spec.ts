@@ -90,6 +90,45 @@ async function nextHistory() {
 const result = (label: string) => ({ role: "tool", tool_name: "budgetProbe", content: `[success]${label}` });
 const assistantCalls = (...labels: string[]) => ({ role: "assistant", content: "", tool_calls: labels.map(label => call(label)) });
 
+test("load-only warmup forwards optional draft tuning without changing the default payload", async t => {
+  const oldServer = process.env.LLM_SERVER, oldDraft = process.env.OLLAMA_DRAFT_NUM_PREDICT;
+  t.after(() => {
+    if (oldServer === undefined) delete process.env.LLM_SERVER; else process.env.LLM_SERVER = oldServer;
+    if (oldDraft === undefined) delete process.env.OLLAMA_DRAFT_NUM_PREDICT; else process.env.OLLAMA_DRAFT_NUM_PREDICT = oldDraft;
+  });
+  t.mock.method(console, "log", () => {});
+  for (const value of [undefined, "0", "3"]) {
+    process.env.LLM_SERVER = "ollama";
+    if (value === undefined) delete process.env.OLLAMA_DRAFT_NUM_PREDICT; else process.env.OLLAMA_DRAFT_NUM_PREDICT = value;
+    requests.length = 0; client();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].messages, []);
+    assert.equal(requests[0].stream, false);
+    if (value === undefined) assert.equal("options" in requests[0], false);
+    else assert.deepEqual(requests[0].options, { draft_num_predict: Number(value) });
+  }
+});
+
+test("memory summaries keep explicit draft tuning across the chat/generate boundary", async t => {
+  const oldDraft = process.env.OLLAMA_DRAFT_NUM_PREDICT;
+  t.after(() => {
+    if (oldDraft === undefined) delete process.env.OLLAMA_DRAFT_NUM_PREDICT; else process.env.OLLAMA_DRAFT_NUM_PREDICT = oldDraft;
+  });
+  process.env.OLLAMA_DRAFT_NUM_PREDICT = "0";
+  const bodies: any[] = [];
+  t.mock.method(axios, "post", async (url: string, body: any) => {
+    assert.ok(url.endsWith("/api/generate")); bodies.push(body);
+    return { data: { response: "The user repaired the sensor." } };
+  });
+  const selected = client();
+  assert.equal(await selected.summaryTextWithLLM("I repaired the sensor.", "Summarize the supplied facts."),
+    "The user repaired the sensor.");
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0].options, { num_predict: 160, draft_num_predict: 0 });
+  assert.equal(bodies[0].think, false);
+});
+
 test("tool response limits admit three and four calls, reject five atomically", async () => {
   for (const size of [3, 4, 5]) {
     client(); effects.length = 0; requests.length = 0;

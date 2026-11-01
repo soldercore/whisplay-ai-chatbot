@@ -1,0 +1,268 @@
+{
+  "status": "No production model or persona change accepted. Gemma D is a technical follow-up candidate only; no authentic character winner.",
+  "date": "2026-11-01",
+  "production_access": "None. User-confirmed Pi metadata matches Gemma artifact exactly. Qwen Pi blob identity not provided.",
+  "runtime": {
+    "ollama": "0.34.4",
+    "architecture": "x86_64 CPU AMD EPYC 7763",
+    "cpu_quota": 2,
+    "container_memory_limit_bytes": 6815744000,
+    "context": 4096,
+    "think": false,
+    "request_temperature": 0.7,
+    "seed": 42,
+    "models_loaded_concurrently": false,
+    "servers_stopped_and_containers_removed": true,
+    "models_retained": true,
+    "pi_latency_verified": false,
+    "container_image": "debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4",
+    "ollama_archive_sha256": "c238986e61d40c0cc5f4a9b9e40b9eea104350b77efa34741fc134e105cb9533",
+    "endpoint": "http://127.0.0.1:11435",
+    "native_renderer_and_parser": true,
+    "base_code_commit": "f67963a7cc2f7df10d6079ebee5383bad5c2cc3c",
+    "quota_note": "Two CPU cores of quota; not pinned physical cores. CPU-only, no Hailo/GPU."
+  },
+  "earlier_evidence_preserved": "../glados-d-2026-11-01/results.jsonl (72 complete Qwen generations, not rerun)",
+  "new_qwen_reason": "16 matched eight-turn A/D generations required: prior A controls used presence 0, and prior D sequence used different questions. Current matched Qwen uses native presence 1.5.",
+  "experiments": {
+    "smoke_native_temperature": {
+      "records": 8,
+      "complete_generations": 8,
+      "partial_cancelled": 0
+    },
+    "gemma_native_conversation": {
+      "records": 19,
+      "complete_generations": 16,
+      "partial_cancelled": 0
+    },
+    "gemma_no_draft_conversation": {
+      "records": 19,
+      "complete_generations": 16,
+      "partial_cancelled": 0
+    },
+    "qwen_matched_conversation": {
+      "records": 19,
+      "complete_generations": 16,
+      "partial_cancelled": 0
+    },
+    "gemma_B_G_screen": {
+      "records": 8,
+      "complete_generations": 8,
+      "partial_cancelled": 0
+    },
+    "gemma_G2_name_control": {
+      "records": 2,
+      "complete_generations": 2,
+      "partial_cancelled": 0
+    },
+    "gemma_draft_ABBA": {
+      "records": 4,
+      "complete_generations": 4,
+      "partial_cancelled": 0
+    },
+    "gemma_operations": {
+      "records": 5,
+      "complete_generations": 3,
+      "partial_cancelled": 1
+    },
+    "gemma_native_compatibility": {
+      "records": 6,
+      "complete_generations": 5,
+      "partial_cancelled": 0
+    },
+    "gemma_no_draft_compatibility": {
+      "records": 6,
+      "complete_generations": 5,
+      "partial_cancelled": 0
+    }
+  },
+  "conversation_metrics": {
+    "gemma_native_conversation_A": {
+      "turns": 8,
+      "words": 50,
+      "first_turn_elapsed_ms": 14881,
+      "followup_elapsed_ms_range": [
+        2595,
+        5537
+      ],
+      "median_first_content_ms": 1254.2209390000007,
+      "aggregate_decode_tokens_per_second": 3.0743733693267172,
+      "trimmed_messages": 0,
+      "visible_thinking_characters": 0,
+      "failed_spectacularly_answer_count": 0
+    },
+    "gemma_native_conversation_D": {
+      "turns": 8,
+      "words": 159,
+      "first_turn_elapsed_ms": 22743,
+      "followup_elapsed_ms_range": [
+        6689,
+        21522
+      ],
+      "median_first_content_ms": 1303.213446499998,
+      "aggregate_decode_tokens_per_second": 2.6849352414273118,
+      "trimmed_messages": 0,
+      "visible_thinking_characters": 0,
+      "failed_spectacularly_answer_count": 0
+    },
+    "gemma_no_draft_conversation_A": {
+      "turns": 8,
+      "words": 49,
+      "first_turn_elapsed_ms": 18953,
+      "followup_elapsed_ms_range": [
+        1708,
+        2786
+      ],
+      "median_first_content_ms": 1359.0910029999995,
+      "aggregate_decode_tokens_per_second": 10.408695914387863,
+      "trimmed_messages": 0,
+      "visible_thinking_characters": 0,
+      "failed_spectacularly_answer_count": 0
+    },
+    "gemma_no_draft_conversation_D": {
+      "turns": 8,
+      "words": 176,
+      "first_turn_elapsed_ms": 17081,
+      "followup_elapsed_ms_range": [
+        3096,
+        7688
+      ],
+      "median_first_content_ms": 1529.3219729999983,
+      "aggregate_decode_tokens_per_second": 9.558699084410708,
+      "trimmed_messages": 0,
+      "visible_thinking_characters": 0,
+      "failed_spectacularly_answer_count": 0
+    },
+    "qwen_matched_conversation_A": {
+      "turns": 8,
+      "words": 360,
+      "first_turn_elapsed_ms": 13415,
+      "followup_elapsed_ms_range": [
+        4408,
+        6415
+      ],
+      "median_first_content_ms": 1993.6162610000029,
+      "aggregate_decode_tokens_per_second": 13.596804577233543,
+      "trimmed_messages": 0,
+      "visible_thinking_characters": 0,
+      "failed_spectacularly_answer_count": 0
+    },
+    "qwen_matched_conversation_D": {
+      "turns": 8,
+      "words": 271,
+      "first_turn_elapsed_ms": 10503,
+      "followup_elapsed_ms_range": [
+        3477,
+        5479
+      ],
+      "median_first_content_ms": 1636.3335014999975,
+      "aggregate_decode_tokens_per_second": 13.96069639454731,
+      "trimmed_messages": 0,
+      "visible_thinking_characters": 0,
+      "failed_spectacularly_answer_count": 0
+    }
+  },
+  "draft_ABBA": [
+    {
+      "draft_num_predict": 3,
+      "elapsed_ms": 44559.868155,
+      "first_content_ms": 12542.684277,
+      "load_ms": 1.610579,
+      "prompt_cached_tokens": 0,
+      "decode_tokens_per_second": 2.404788339587345
+    },
+    {
+      "draft_num_predict": 0,
+      "elapsed_ms": 27369.153774,
+      "first_content_ms": 19632.337395999995,
+      "load_ms": 6964.823032,
+      "prompt_cached_tokens": 0,
+      "decode_tokens_per_second": 11.502817220880585
+    },
+    {
+      "draft_num_predict": 0,
+      "elapsed_ms": 6770.993865000011,
+      "first_content_ms": 306.9720329999982,
+      "load_ms": 7.09192,
+      "prompt_cached_tokens": 381,
+      "decode_tokens_per_second": 11.758711851683035
+    },
+    {
+      "draft_num_predict": 3,
+      "elapsed_ms": 50806.252225000004,
+      "first_content_ms": 18684.07003399999,
+      "load_ms": 6643.191498,
+      "prompt_cached_tokens": 0,
+      "decode_tokens_per_second": 2.3943662366001393
+    }
+  ],
+  "memory_snapshots": {
+    "gemma_native": "6278819840\n6293934080\nName:\tollama\nVmHWM:\t   34272 kB\nVmRSS:\t   33140 kB\nName:\tsh\nVmHWM:\t     816 kB\nVmRSS:\t     816 kB\nName:\tllama-server\nVmHWM:\t 5391680 kB\nVmRSS:\t 5391680 kB\n",
+    "gemma_after_no_draft_reload": "6810730496\n6815756288\nlow 0\nhigh 0\nmax 7526\noom 0\noom_kill 0\noom_group_kill 0\nName:\tollama\nVmHWM:\t   35360 kB\nVmRSS:\t   28852 kB\nName:\tllama-server\nVmHWM:\t 5263904 kB\nVmRSS:\t 5263904 kB\nName:\tsh\nVmHWM:\t     812 kB\nVmRSS:\t     812 kB\n",
+    "gemma_final": "6714843136\n6815756288\nlow 0\nhigh 0\nmax 7526\noom 0\noom_kill 0\noom_group_kill 0\nanon 5295730688\nfile 1404231680\nkernel 14446592\nkernel_stack 360448\npagetables 10919936\nsec_pagetables 0\npercpu 2200\nsock 0\nvmalloc 24576\nshmem 0\nfile_mapped 1974272\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 1105199104\nshmem_thp 0\ninactive_anon 5295710208\nactive_anon 16384\ninactive_file 734351360\nactive_file 669880320\nunevictable 0\nslab_reclaimable 2750568\nslab_unreclaimable 358296\nslab 3108864\nworkingset_refault_anon 0\nworkingset_refault_file 2293073\nworkingset_activate_anon 0\nworkingset_activate_file 1242301\nworkingset_restore_anon 0\nworkingset_restore_file 226784\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgscan 2035691\npgsteal 1950262\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 2035691\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 1950262\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 5322753\npgmajfault 102\npgrefill 1451736\npgactivate 372672\npgdeactivate 1451610\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nName:\tollama\nVmHWM:\t   35360 kB\nVmRSS:\t   29168 kB\nName:\tllama-server\nVmHWM:\t 5264056 kB\nVmRSS:\t 5171200 kB\nName:\tsh\nVmHWM:\t     812 kB\nVmRSS:\t     812 kB\n",
+    "qwen_final": "4530294784\n4531740672\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nanon 2555318272\nfile 1965694976\nkernel 9019392\nkernel_stack 360448\npagetables 5574656\nsec_pagetables 0\npercpu 2200\nsock 0\nvmalloc 24576\nshmem 0\nfile_mapped 3072000\nfile_dirty 0\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 522190848\nshmem_thp 0\ninactive_anon 2555174912\nactive_anon 16384\ninactive_file 1909379072\nactive_file 56320000\nunevictable 0\nslab_reclaimable 2673840\nslab_unreclaimable 355848\nslab 3029688\nworkingset_refault_anon 0\nworkingset_refault_file 479904\nworkingset_activate_anon 0\nworkingset_activate_file 1280\nworkingset_restore_anon 0\nworkingset_restore_file 1280\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgscan 0\npgsteal 0\npswpin 0\npswpout 0\npgscan_kswapd 0\npgscan_direct 0\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 0\npgsteal_direct 0\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 674991\npgmajfault 18\npgrefill 0\npgactivate 12427\npgdeactivate 0\npglazyfree 0\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nthp_fault_alloc 0\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\nName:\tollama\nVmHWM:\t   32944 kB\nVmRSS:\t   32880 kB\nName:\tllama-server\nVmHWM:\t 2496532 kB\nVmRSS:\t 2496532 kB\nName:\tsh\nVmHWM:\t     812 kB\nVmRSS:\t     812 kB\n"
+  },
+  "files": {
+    "gemma-manifest.json": {
+      "bytes": 1552,
+      "sha256": "b37049369adfe3d2b653af0ab301a062ca5cbe96ace6aa0d3f2559ee9b563fc2"
+    },
+    "results.jsonl": {
+      "bytes": 314549,
+      "sha256": "6b078a63943dc69f05a9444d99a4b1509c2fb453a1a06976f1b5ba90a6fbea32"
+    },
+    "gemma-metadata.json": {
+      "bytes": 30626,
+      "sha256": "59386aebf218ac640159867e8344c63720c3f88f1812e45b339c5d9e973bc749"
+    }
+  },
+  "complete_generations": 83,
+  "memory_caveat": "Ollama reported loaded bytes are not OS RSS. Gemma native ~5.14 GiB runner RSS, no-draft final ~4.93 GiB; cgroup includes page cache. Native peak ~5.86 GiB; later profile reloads hit the 6.35 GiB container cap, memory.events.max=7526, no OOM or swap. Resource/cache effects limit precise cross-profile latency attribution.",
+  "user_confirmed_gemma": {
+    "digest": "b37049369adfe3d2b653af0ab301a062ca5cbe96ace6aa0d3f2559ee9b563fc2",
+    "bytes": 4587156505,
+    "native_parameters": {
+      "temperature": 1,
+      "top_k": 64,
+      "top_p": 0.95,
+      "draft_num_predict": 3
+    }
+  },
+  "load_only_timings_ms": {
+    "gemma": 8084.62853,
+    "qwen": 2856.1382799998682,
+    "caveat": "Includes API/PS measurement; not controlled cold filesystem-cache comparison."
+  },
+  "next_candidate_metadata_only": {
+    "candidate": "qwen3.5:4b-q4_K_M",
+    "metadata_only_not_downloaded_or_tested": true,
+    "config": {
+      "model_format": "gguf",
+      "model_family": "qwen35",
+      "model_families": [
+        "qwen35"
+      ],
+      "model_type": "4.2B",
+      "file_type": "Q4_K_M",
+      "renderer": "qwen3.5",
+      "parser": "qwen3.5",
+      "requires": "0.30.0"
+    },
+    "bytes": 3324173757
+  },
+  "metadata_capture_note": "Initial 8 smoke and 4 native compatibility textual answers retain selected terminal statistics only. Subsequent textual answers include full completionMetadata/cache counts. No missing metadata was synthesized.",
+  "validation": {
+    "focused_tests_passed": 224,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "application_typescript_emitted_build": "pass",
+    "spec_typescript": "pass",
+    "evaluator_syntax": "pass",
+    "artifact_hashes_and_completion_accounting": "pass",
+    "all_37_custom_commits_ancestry": "pass",
+    "old_72_generations_and_exact_pi_transcript": "unchanged",
+    "runtime_personas_and_dependencies": "unchanged",
+    "persona_subset_after_final_evaluator_cleanup": "39/39 passed; not 39 additional unique tests"
+  }
+}

@@ -10,6 +10,7 @@ import {
 import { llmTools, executeLLMTool } from "../../config/llm-tools";
 import type { ToolExecutionResult } from "../../config/tool-execution";
 import dotenv from "dotenv";
+import { ollamaDraftOptions } from "./ollama-generation-options";
 import {
   LLMTool,
   Message,
@@ -63,6 +64,7 @@ const ollamaPredictNum = process.env.OLLAMA_PREDICT_NUM
   ? parseInt(process.env.OLLAMA_PREDICT_NUM)
   : undefined;
 const enableThinking = process.env.ENABLE_THINKING === "true";
+const configuredDraftOptions = ollamaDraftOptions();
 const useCapturedImageInChat =
   (process.env.USE_CAPTURED_IMAGE_IN_CHAT || "false").toLowerCase() ===
   "true";
@@ -190,6 +192,7 @@ const keepAliveOllama = () => {
     .post(`${ollamaEndpoint}/api/chat`, {
       model: ollamaModel,
       messages: [],
+      ...(Object.keys(configuredDraftOptions).length ? { options: configuredDraftOptions } : {}),
       stream: false,
       keep_alive: -1,
     }, { signal: deadline.signal, maxContentLength: 2 * 1024 * 1024 }), deadline.signal)
@@ -448,6 +451,7 @@ const answerFromAvailableToolResults = async ({
         options: {
           temperature: 0.7,
           num_predict: ollamaPredictNum,
+          ...configuredDraftOptions,
         },
         keep_alive: -1,
       },
@@ -608,6 +612,7 @@ const chatWithLLMStreamInternal = async (
         options: {
           temperature: 0.7,
           num_predict: ollamaPredictNum,
+          ...configuredDraftOptions,
         },
         tools: requestTools,
         keep_alive: -1,
@@ -1021,7 +1026,7 @@ const summaryTextWithLLM: SummaryTextWithLLMFunction = async (
         prompt: prompt,
         stream: false,
         think: false,
-        options: { num_predict: 160 },
+        options: { num_predict: 160, ...configuredDraftOptions },
       },
       { timeout: summaryTimeoutMs, signal: deadline.signal, maxContentLength: 2 * 1024 * 1024 },
     ), deadline.signal);

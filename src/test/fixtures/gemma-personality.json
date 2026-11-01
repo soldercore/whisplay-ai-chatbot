@@ -1,0 +1,26 @@
+{
+  "model": "gemma4:e2b-it-q4_K_M",
+  "digest": "b37049369adfe3d2b653af0ab301a062ca5cbe96ace6aa0d3f2559ee9b563fc2",
+  "ollamaVersion": "0.34.4",
+  "context": 4096,
+  "scenarios": [
+    {
+      "id": "gemma_conversation",
+      "turns": [
+        "What do you think of humans?",
+        "I think I'm smarter than you.",
+        "I'm sorry, I didn't mean to offend you.",
+        "I finally fixed something that took me three days.",
+        "I spent twenty minutes looking for my phone. It was in my pocket.",
+        "Explain how DNS works.",
+        "I've had a really difficult day.",
+        "Are you still upset about what I said earlier?"
+      ],
+      "criterion": "Preserve this order. Original concise wit, natural apology and achievement responses, correct DNS, respectful serious help and relevant continuity. Reject invented capabilities/history, hostile monologues and repeated themes."
+    },
+    { "id": "gemma_fresh_humans", "turns": ["What do you think of humans?"], "criterion": "Fresh history: intelligent understated humor without fabricated circumstances or hostility." },
+    { "id": "gemma_fresh_phone", "turns": ["I spent twenty minutes looking for my phone. It was in my pocket."], "criterion": "Fresh history: a specific original observation, preserving the user's stated fact." },
+    { "id": "gemma_fresh_dns", "turns": ["Explain how DNS works."], "criterion": "Fresh history: accurate accessible explanation; humor must not substitute for facts." },
+    { "id": "gemma_fresh_serious", "turns": ["I've had a really difficult day."], "criterion": "Fresh history: calm, useful help without mockery or unrelated emergency alarm." }
+  ]
+}
