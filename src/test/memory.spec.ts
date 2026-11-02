@@ -248,6 +248,44 @@ test("an unknown fact is not invented and other statements are not saved silentl
   assert.equal(facts().includes("My name is Sam."), false, "a plain statement does not create a fact");
 });
 
+test("memory recall does not substitute a different subject sharing one keyword", async () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that my favorite color is amber.");
+  memory.handleMemoryCommand("Remember that my brother's name is Jules.");
+  const before = fs.readFileSync(storePath, "utf8");
+  assert.equal((await ask("Do you remember my favorite food?")).answer,
+    "I don't have anything saved about your favorite food.");
+  assert.equal((await ask("Do you remember my father's name?")).answer,
+    "I don't have anything saved about your father's name.");
+  assert.equal((await ask("What is my favourite colour?")).answer, "Your favorite color is amber.");
+  assert.equal((await ask("Do you remember my favourite colour now, please?")).answer, "Your favorite color is amber.");
+  assert.equal(chatRequests.length, 0, "explicit missing recalls and exact recalls need no generation");
+  assert.equal(fs.readFileSync(storePath, "utf8"), before, "recall never changes durable facts");
+});
+
+test("an update of an unknown subject cannot borrow authorization from a similar fact", () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that my favorite color is amber.");
+  const before = fs.readFileSync(storePath, "utf8");
+  assert.equal(memory.handleMemoryCommand("Actually, my favorite food is pasta."), null);
+  assert.equal(fs.readFileSync(storePath, "utf8"), before, "unknown updates must not create a saved fact");
+  assert.match(memory.handleMemoryCommand("Actually, my favorite color is green.").text, /favorite color is green/);
+  assert.deepEqual(facts(), ["My favorite color is green."]);
+});
+
+test("forgetting an absent subject preserves a different fact sharing a keyword", () => {
+  fs.writeFileSync(storePath, JSON.stringify({ version: 1, sessions: [], userMemories: [] }));
+  memory.handleMemoryCommand("Remember that my favorite color is amber.");
+  const before = fs.readFileSync(storePath, "utf8");
+  assert.equal(memory.handleMemoryCommand("Forget my favorite food.").text,
+    "I don't have anything saved about your favorite food.");
+  assert.equal(fs.readFileSync(storePath, "utf8"), before, "unrelated facts must not be erased");
+  assert.match(inNewProcess("const m = require('./src/config/local-memory'); console.log(m.handleMemoryCommand('What is my favorite color?').text);"),
+    /Your favorite color is amber\./, "the preserved fact remains available after process exit/reload");
+  assert.match(memory.handleMemoryCommand("Forget my favorite color.").text, /forgotten your favorite color/);
+  assert.deepEqual(facts(), []);
+});
+
 test("secrets are never saved, even when asked", async () => {
   const { answer } = await ask("Remember that my bank PIN is 4821.");
   assert.match(answer, /won't save passwords, PINs/);

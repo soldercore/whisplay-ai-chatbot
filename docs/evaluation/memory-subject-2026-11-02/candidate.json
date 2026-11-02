@@ -1,0 +1,43 @@
+{
+  "variant": "candidate",
+  "generatedBy": "host-memory-command; no LLM",
+  "results": [
+    {
+      "operation": "recall",
+      "command": "Do you remember my favorite food?",
+      "reply": {
+        "text": "There's nothing in your file about your favorite food.",
+        "contextChanged": false
+      },
+      "bytesUnchanged": true,
+      "facts": [
+        "My favorite color is amber."
+      ]
+    },
+    {
+      "operation": "update",
+      "command": "Actually, my favorite food is pasta.",
+      "reply": null,
+      "bytesUnchanged": true,
+      "facts": [
+        "My favorite color is amber."
+      ]
+    },
+    {
+      "operation": "forget",
+      "command": "Forget my favorite food.",
+      "reply": {
+        "text": "I have nothing on your favorite food. You never told me. I would remember.",
+        "contextChanged": false
+      },
+      "bytesUnchanged": true,
+      "facts": [
+        "My favorite color is amber."
+      ]
+    }
+  ],
+  "restartedRecall": {
+    "text": "Your favorite color is amber.",
+    "contextChanged": false
+  }
+}

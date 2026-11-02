@@ -402,6 +402,7 @@ const STOPWORDS = new Set([
   "that", "your", "i", "me", "do", "you", "it", "how", "which", "did", "does",
   "should", "could", "would", "can", "for", "this", "use", "today", "tonight",
   "earlier", "mention", "mentioned", "remember", "recall", "tell", "like",
+  "please", "now", "again", "currently", "still",
 ]);
 
 const topicWords = (topic: string): string[] =>
@@ -423,8 +424,9 @@ const findFacts = (store: MemoryStore, topic: string): UserMemory[] => {
     // A mention or a liking is not evidence of a favorite. Preserve the saved
     // wording; never upgrade an ambiguous statement during deterministic recall.
     if (words.includes("favorite") && !containsWord(haystack, "favorite")) return false;
-    const hits = words.filter((word) => containsWord(haystack, word)).length;
-    return hits > 0 && hits >= Math.ceil(words.length / 2);
+    // Commands may recall, update or delete facts. A shared word such as
+    // "favorite" or "name" cannot stand in for the rest of the requested topic.
+    return words.every((word) => containsWord(haystack, word));
   });
 };
 
