@@ -90,6 +90,8 @@ async function main() {
       prepared = memory.prepareMemoryPrompt(question); return prepared;
     } },
     "../../config/unsupported-reminder": require("../../config/unsupported-reminder"),
+    "../../device/whisplay-control": require("../../device/whisplay-control"),
+    "../../utils/operation-lifecycle": require("../../utils/operation-lifecycle"),
   };
   const exported = {};
   vm.runInNewContext(compiled, { exports: exported, process, console, Date, setTimeout, clearTimeout,

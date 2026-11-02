@@ -4,6 +4,8 @@
 
 ## Custom integration entry point
 
+- Whisplay conversational control is an isolated, opt-in paired candidate (`WHISPLAY_VOICE_CONTROL_ENABLED=true`), not proof of deployment. Read `docs/whisplay-voice-control.md` before enabling it. Preserve the foreground process authorization, speech/memory-before-exit handoff and existing physical Cancel-first confirmation. Text Qwen/mixer demonstrations do not establish deployed voice or risky-action hardware acceptance.
+
 - Read `docs/CUSTOM_BUILD.md`, `docs/UPSTREAM_UPDATES.md` and `upstream-integration.json` before updating this custom build. Historical phase documents are not proof of deployment or current test results.
 - GLaDOS A remains default; `GLADOS_PERSONA_VARIANT=D` is an explicit opt-in candidate only with `ASSISTANT_PERSONA=glados`. Read `docs/glados-personality-d.md`; deterministic tests do not establish model quality, and A/B/C evaluation history must be preserved.
 - D failed actual Pi acceptance. Read `docs/glados-d-hardware-regression.md` and its summary before raw evaluation JSONL. The 72 measured generations did not establish a replacement; keep A available and PR #2 open. Never equate completed inference or unit-test passes with personality acceptance.

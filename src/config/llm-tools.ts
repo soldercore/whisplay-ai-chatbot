@@ -11,6 +11,7 @@ import { pluginRegistry } from "../plugin";
 import { BLOCKED_TOOL_NAMES, executeToolCall } from "./tool-execution";
 import type { ToolExecutionResult } from "./tool-execution";
 import { systemHealthTool } from "./system-health";
+import { whisplayTool, whisplayVoiceControlEnabled } from "./whisplay-tools";
 
 // ── Collect tools from all llm-tools plugins ────────────────
 const pluginTools: LLMTool[] = [];
@@ -55,11 +56,13 @@ addLocalMemoryTools(pluginTools);
 addMemPalaceTools(pluginTools);
 addHarnessCommandTools(pluginTools);
 pluginTools.push(systemHealthTool);
+if (whisplayVoiceControlEnabled()) pluginTools.push(whisplayTool);
 
 // ── Exported aggregated tool lists ──────────────────────────
 // Activation/registration is application-owned. External plugins remain trusted
 // code, but cannot restore reserved shell tools through the model registry.
-const registeredTools = pluginTools.filter((tool) => !BLOCKED_TOOL_NAMES.has(tool.function.name));
+const registeredTools = pluginTools.filter((tool) => !BLOCKED_TOOL_NAMES.has(tool.function.name)
+  && !(whisplayVoiceControlEnabled() && ["setVolume", "increaseVolume", "decreaseVolume"].includes(tool.function.name)));
 const rawHandlers: Record<string, (params: any) => Promise<string>> = Object.create(null);
 const toolsEnabled = (): boolean => (process.env.LLM_SERVER || "").toLowerCase() !== "ollama"
   || process.env.OLLAMA_ENABLE_TOOLS === "true";

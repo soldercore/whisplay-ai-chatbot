@@ -1,0 +1,99 @@
+{
+  "before": {
+    "speaker_percent": 80,
+    "mic_gain": 80,
+    "glados_recording_enabled": true,
+    "input_mode": "Push-to-talk configured",
+    "sound_card": "2",
+    "hardware_mic_mute": false
+  },
+  "interactions": [
+    {
+      "question": "Describe Whisplay's available controls.",
+      "calls": [
+        {
+          "name": "whisplay",
+          "result": "[success]{\"api\":1,\"push_to_talk\":true,\"continuous_capture_added\":false,\"actions\":{\"brightness\":{\"supported\":false,\"physical_confirmation\":false,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"volume\":{\"supported\":true,\"physical_confirmation\":false},\"home\":{\"supported\":false,\"physical_confirmation\":false,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"lock\":{\"supported\":false,\"physical_confirmation\":false,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"recording\":{\"supported\":false,\"physical_confirmation\":true,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"wifi\":{\"supported\":false,\"physical_confirmation\":true,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"bluetooth\":{\"supported\":false,\"physical_confirmation\":true,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"service\":{\"supported\":false,\"physical_confirmation\":true,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"reboot\":{\"supported\":false,\"physical_confirmation\":true,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"},\"shutdown\":{\"supported\":false,\"physical_confirmation\":true,\"reason\":\"Not enabled in isolated demonstration; paired deployment required\"}},\"readable\":[\"capabilities\",\"apps\",\"audio\",\"network\",\"services\"],\"notes\":[\"Recording lock affects GLaDOS only, not other programs or hardware microphone gain.\",\"Services report systemd/process state, not remote connectivity or backend readiness.\",\"CPU/RAM/temperature/storage are supplied by the existing getSystemHealth tool.\",\"Radio authorization is checked by the existing operations; no hardware power-on is promised.\"],\"demonstration\":\"Real existing mixer and status operations; temporary candidate API, not deployed\",\"scope\":\"capabilities\"}"
+        }
+      ],
+      "answer": "I can read running applications, audio status, network status, service status, and actual CPU, RAM, temperature and storage. Available controls are speaker volume. Not available through this connection: screen brightness, Home navigation, screen locking, GLaDOS recording lock, Wi-Fi, Bluetooth, service start or restart, reboot, shutdown. The recording lock affects GLaDOS only; it is not a hardware microphone mute.",
+      "started_at": "2026-11-02T16:41:13.703Z",
+      "finished_at": "2026-11-02T16:41:27.880Z",
+      "tool_calls": [
+        {
+          "function": {
+            "index": 0,
+            "name": "whisplay",
+            "arguments": {
+              "action": "capabilities"
+            }
+          }
+        }
+      ],
+      "system_health_prefetch": false
+    },
+    {
+      "question": "Tell me how hot you are, how much RAM is free and how much room is left on storage.",
+      "calls": [
+        {
+          "name": "getSystemHealth",
+          "result": "[success]{\"sampledAt\":\"2026-11-02T16:41:40.606Z\",\"platform\":\"linux\",\"cpu\":{\"utilization\":{\"value\":2.5,\"unit\":\"%\"},\"sampleWindowMs\":101,\"loadAverage\":[1.34,1.42,1.21]},\"memory\":{\"total\":{\"value\":15.628,\"unit\":\"GiB\"},\"available\":{\"value\":11.513,\"unit\":\"GiB\"},\"free\":{\"value\":7.473,\"unit\":\"GiB\"},\"used\":{\"value\":4.115,\"unit\":\"GiB\"},\"swapTotal\":{\"value\":2,\"unit\":\"GiB\"},\"swapFree\":{\"value\":2,\"unit\":\"GiB\"}},\"disk\":{\"scope\":\"assistant data filesystem\",\"total\":{\"value\":114.144,\"unit\":\"GiB\"},\"free\":{\"value\":52.869,\"unit\":\"GiB\"},\"available\":{\"value\":47.027,\"unit\":\"GiB\"},\"used\":{\"value\":61.275,\"unit\":\"GiB\"}},\"temperature\":{\"value\":56.75,\"unit\":\"°C\"},\"uptimeSeconds\":3920.33,\"services\":{\"available\":true,\"units\":[{\"unit\":\"chatbot.service\",\"load\":\"not-found\",\"active\":\"inactive\",\"sub\":\"dead\"},{\"unit\":\"whisplay-daemon.service\",\"load\":\"loaded\",\"active\":\"active\",\"sub\":\"running\"},{\"unit\":\"ollama.service\",\"load\":\"loaded\",\"active\":\"active\",\"sub\":\"running\"},{\"unit\":\"whisplay-whisper.service\",\"load\":\"loaded\",\"active\":\"active\",\"sub\":\"running\"},{\"unit\":\"whisplay-piper.service\",\"load\":\"loaded\",\"active\":\"active\",\"sub\":\"running\"}]},\"healthAssessment\":\"not_assessed\",\"note\":\"Report measurements using their supplied units. No health thresholds were evaluated: do not infer warm, healthy, unhealthy or running smoothly from numeric measurements. Null metrics are unavailable; service status does not prove backend health.\"}"
+        }
+      ],
+      "answer": "CPU usage is 2.5 percent. CPU temperature is 56.75 degrees Celsius. RAM used is 4.115 gibibytes, and RAM available is 11.513 gibibytes. Storage available is 47.027 gibibytes.",
+      "started_at": "2026-11-02T16:41:27.881Z",
+      "finished_at": "2026-11-02T16:41:40.611Z",
+      "tool_calls": [
+        {
+          "function": {
+            "index": 0,
+            "name": "getSystemHealth",
+            "arguments": {}
+          }
+        }
+      ],
+      "system_health_prefetch": false
+    },
+    {
+      "question": "Please make your speaker a little quieter.",
+      "calls": [
+        {
+          "name": "whisplay",
+          "result": "[success]{\"status\":\"completed\",\"action\":\"volume\",\"previous\":80,\"actual\":70,\"unit\":\"%\",\"verification\":\"mixer_readback\"}"
+        }
+      ],
+      "answer": "Speaker volume is set to 70 percent.",
+      "started_at": "2026-11-02T16:41:40.611Z",
+      "finished_at": "2026-11-02T16:41:53.935Z",
+      "tool_calls": [
+        {
+          "function": {
+            "index": 0,
+            "name": "whisplay",
+            "arguments": {
+              "action": "volume",
+              "change": -10
+            }
+          }
+        }
+      ],
+      "system_health_prefetch": false
+    }
+  ],
+  "after": {
+    "speaker_percent": 70,
+    "mic_gain": 80,
+    "glados_recording_enabled": true,
+    "input_mode": "Push-to-talk configured",
+    "sound_card": "2",
+    "hardware_mic_mute": false
+  },
+  "restored": {
+    "status": "completed",
+    "action": "volume",
+    "previous": 70,
+    "actual": 80,
+    "unit": "%",
+    "verification": "mixer_readback"
+  }
+}

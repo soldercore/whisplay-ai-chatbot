@@ -41,6 +41,8 @@ import { DEFAULT_EMOJI } from "../../utils";
 import { isMusicPlaying, getCurrentTrackTitle, stopMusicPlayback, startPendingMusicPlayback, onMusicTrackChange, onMusicPlaybackEnd } from "../../device/music-player";
 import { autoSaveExchange, prepareMemoryPrompt } from "../../config/local-memory";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
+import { whisplayHandoffTicket, presentWhisplayHandoff, cancelWhisplayHandoff } from "../../device/whisplay-control";
+import { operationDeadline, waitForOperation } from "../../utils/operation-lifecycle";
 
 export const flowStates: Record<FlowName, FlowStateHandler> = {
   sleep: (ctx: ChatFlowContext) => {
@@ -354,6 +356,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       // The screen shows the answer as it is spoken (see SpokenTextReveal).
       partial(text);
     };
+    let deviceHandoff: string | undefined;
     let resolveLlmDone: () => void = () => {};
     const llmDonePromise = new Promise<void>((resolve) => {
       resolveLlmDone = resolve;
@@ -411,6 +414,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
             ctx.partialThinkingCallback(partialThinking),
           (functionName: string, result?: string) => {
             if (!isCurrentAnswer()) return;
+            if (functionName === "whisplay") {
+              const ticket = whisplayHandoffTicket(result);
+              if (ticket) deviceHandoff = ticket;
+            }
             if (
               functionName === "endConversation" &&
               result?.startsWith("[success]")
@@ -472,12 +479,32 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
           ctx.transitionTo("sleep");
         }
       });
-    llmDonePromise.then(() => getPlayEndPromise()).then(() => {
+    llmDonePromise.then(() => getPlayEndPromise()).then(async () => {
+      if (deviceHandoff && !isCurrentAnswer()) cancelWhisplayHandoff(deviceHandoff);
       if (isCurrentAnswer()) ctx.revealAllAnswerText();
       if (ctx.currentFlowName === "answer") {
-        autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder ? undefined : summaryTextWithLLM);
+        const savedExchange = autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder || deviceHandoff ? undefined : summaryTextWithLLM);
         clearPendingCapturedImgForChat();
         display({ image_icon_visible: false });
+        if (deviceHandoff && isCurrentAnswer()) {
+          const deadline = operationDeadline(5000);
+          try {
+            await waitForOperation(Promise.resolve(savedExchange), deadline.signal);
+          } catch {
+            cancelWhisplayHandoff(deviceHandoff);
+            display({ text: "Device handoff cancelled: conversation saving was not confirmed." });
+            ctx.transitionTo("sleep");
+            return;
+          } finally { deadline.dispose(); }
+          if (!isCurrentAnswer()) { cancelWhisplayHandoff(deviceHandoff); return; }
+          // Speech has finished. Daemon cleanup owns the actual focus/mic handoff.
+          void presentWhisplayHandoff(deviceHandoff).catch(error => {
+            console.error("[Whisplay] Handoff failed:", error.message);
+            display({ text: "Device handoff failed. Use the physical Home gesture." });
+          });
+          ctx.transitionTo("sleep");
+          return;
+        }
         if (ctx.wakeSessionActive || ctx.endAfterAnswer) {
           if (ctx.endAfterAnswer) {
             ctx.endWakeSession();

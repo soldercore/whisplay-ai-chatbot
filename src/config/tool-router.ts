@@ -26,6 +26,8 @@ export const mentionsImage = (text: string): boolean => MENTIONS_IMAGE.test(text
 // Offering a tool is broader than requiring it. Only explicit requests for
 // current local measurements are routed before the model; concepts stay chat.
 export const needsSystemHealth = (text: string): boolean => {
+  // Leave device/service intent to the model with both grounded tools available.
+  if (process.env.WHISPLAY_VOICE_CONTROL_ENABLED === "true" && /\b(services?|ssh|wi-?fi|bluetooth|capabilit\w*|functions?)\b/i.test(text)) return false;
   if (/\b(explain|define|definition|joke|story|pretend|imagine)\b|\bhow (do|does|can|should|would)\b/i.test(text)) return false;
   const subject = /\b(system|device|cpu|processor|ram|memory|swap|disk|storage|temperature|uptime|services?)\b/i.test(text);
   const measurement = /\b(health|status|doing|running|usage|using|utili[sz]ation|load|temperature|swap|space|uptime)\b/i.test(text);
@@ -86,12 +88,13 @@ export const toolsRelevantTo = <T extends { function: { name: string } }>(
   // Keep ordering and all other tool eligibility unchanged. Native/JSON calls
   // still pass through the existing exact offered-list authorization boundary.
   const casual = isCasualConversation(request);
-  const always = tools.filter((tool) => !RULES.has(tool.function.name)
+  const groundedHealth = (name: string) => process.env.WHISPLAY_VOICE_CONTROL_ENABLED === "true" && name === "getSystemHealth";
+  const always = tools.filter((tool) => (!RULES.has(tool.function.name) || groundedHealth(tool.function.name))
     && !(casual && tool.function.name === "web_search"));
   const gated = tools
     .filter((tool) => {
       const relevant = RULES.get(tool.function.name);
-      return relevant && (relevant(request) || (!casual && isFollowUp(request) && relevant(previousRequest)));
+      return !groundedHealth(tool.function.name) && relevant && (relevant(request) || (!casual && isFollowUp(request) && relevant(previousRequest)));
     })
     .sort((a, b) => GATED_ORDER.get(a.function.name)! - GATED_ORDER.get(b.function.name)!);
   return [...always, ...gated];

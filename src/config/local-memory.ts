@@ -298,10 +298,11 @@ const writeStore = (store: MemoryStore): void => {
   fs.renameSync(tempPath, memoryStorePath);
 };
 
-const enqueueWrite = (fn: () => void | Promise<void>): void => {
-  writeQueue = writeQueue
-    .then(() => fn())
+const enqueueWrite = (fn: () => void | Promise<void>): Promise<void> => {
+  const operation = writeQueue.then(() => fn());
+  writeQueue = operation
     .catch((error) => console.error(`[Memory] Write failed: ${error.message}`));
+  return operation;
 };
 
 const buildSessionSummary = async (
@@ -736,7 +737,7 @@ export function autoSaveExchange(
   userText: string,
   assistantText: string,
   summaryText?: (text: string, promptPrefix: string) => Promise<string>,
-): void {
+): void | Promise<void> {
   if (!memoryAutoSave) return;
   if (!userText.trim() || !assistantText.trim()) return;
   // Memory commands are already stored as facts; saving the exchange too would
@@ -747,7 +748,7 @@ export function autoSaveExchange(
     return;
   }
 
-  enqueueWrite(async () => {
+  return enqueueWrite(async () => {
     // Step 1: append the exchange (synchronous read-modify-write).
     const store = readStore();
     const session = getActiveSession(store, userText);

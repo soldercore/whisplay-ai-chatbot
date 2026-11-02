@@ -188,6 +188,8 @@ for (const ragEnabled of [false, true]) test(`recognized text uses existing TTS/
         saved.push([user, answer]); summarize?.("Fixture transcript.", "Summarize.");
       } },
     "../../config/unsupported-reminder": require("../config/unsupported-reminder"),
+    "../../device/whisplay-control": require("../device/whisplay-control"),
+    "../../utils/operation-lifecycle": require("../utils/operation-lifecycle"),
   };
   const source = fs.readFileSync(path.join(__dirname, "../core/chat-flow/states.ts"), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText;

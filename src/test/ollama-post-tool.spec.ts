@@ -150,6 +150,8 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
     "./camera-mode": {}, "../../utils": utils, "../../device/music-player": {},
     "../../config/local-memory": { prepareMemoryPrompt: () => options.context ? "Current memory" : "", autoSaveExchange: noop },
     "../../config/unsupported-reminder": require("../config/unsupported-reminder"),
+    "../../device/whisplay-control": require("../device/whisplay-control"),
+    "../../utils/operation-lifecycle": require("../utils/operation-lifecycle"),
   }).flowStates;
   class Machine {
     constructor(private ctx: any) {}
