@@ -1,5 +1,10 @@
 import type { LLMTool } from "../type";
 import { whisplayRequest, trackWhisplayHandoff } from "../device/whisplay-control";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { preciseDeviceArguments } from "./device-commands";
+
+const questions = new AsyncLocalStorage<string>();
+export const withWhisplayQuestion = <T>(question: string, work: () => T): T => questions.run(question, work);
 
 export const whisplayVoiceControlEnabled = () => process.env.WHISPLAY_VOICE_CONTROL_ENABLED === "true";
 // This only requires grounding; the model still chooses the operation/parameters.
@@ -24,7 +29,7 @@ export const whisplayTool: LLMTool = {
         action: { type: "string", enum: ["capabilities", "status", "brightness", "volume", "home", "lock", "recording", "wifi", "bluetooth", "service", "reboot", "shutdown"] },
         scope: { type: "string", enum: ["apps", "display", "audio", "network", "services"] },
         level: { type: "integer", minimum: 0, maximum: 100, description: "Absolute percent; use exactly one of level or change." },
-        change: { type: "integer", minimum: -20, maximum: 20, description: "Small adjustment in percentage points. A little means 10; negative is darker/quieter." },
+        change: { type: "integer", minimum: -100, maximum: 100, description: "Requested percentage-point adjustment. Host enforces small/default 10-point steps and explicit values; negative is darker/quieter." },
         enabled: { type: "boolean" },
         service: { type: "string", enum: ["ssh", "ollama", "whisper", "piper"] },
         operation: { type: "string", enum: ["start", "restart"] },
@@ -46,7 +51,20 @@ export const whisplayTool: LLMTool = {
         }
         result = { ...result, scope: action === "capabilities" ? "capabilities" : args.scope };
       } else {
-        result = await whisplayRequest("control.execute", params);
+        if (["volume","brightness"].includes(action)) {
+          if (Object.keys(params).some(key => !["action","level","change"].includes(key))
+            || ("level" in params) === ("change" in params)) throw new Error("Supply exactly one setting level or change");
+        }
+        let request = preciseDeviceArguments(params, questions.getStore());
+        if (typeof request.change === "number" && Math.abs(request.change) > 20) {
+          if (!questions.getStore()) throw new Error("Large adjustments require an explicit user request");
+          const current = await whisplayRequest("control.read", { scope: action === "volume" ? "audio" : "display" });
+          const value = action === "volume" ? current.speaker_percent : current.brightness_percent;
+          if (!Number.isInteger(value)) throw new Error("Current setting unavailable; no change sent");
+          request = {action,level:Math.max(action === "brightness" ? 20 : 0,Math.min(100,value+request.change))};
+        }
+        if (JSON.stringify(request) !== JSON.stringify(params)) console.log(`[Whisplay precision] proposed=${JSON.stringify(params)} applied=${JSON.stringify(request)}`);
+        result = await whisplayRequest("control.execute", request);
         if (!["completed", "awaiting_physical_confirmation", "awaiting_speech_handoff"].includes(result?.status)) {
           throw new Error("Daemon did not confirm an operation state");
         }

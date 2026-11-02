@@ -4,6 +4,8 @@
 
 ## Custom integration entry point
 
+- The latency candidate adds conservative whole-request interpretation and host setting precision before the existing Qwen fallback. Read `docs/whisplay-voice-latency.md`; unit timing is not deployed voice latency. Keep central execution checks, history/memory and speech-before-Home ownership intact.
+
 - Whisplay conversational control is an isolated, opt-in paired candidate (`WHISPLAY_VOICE_CONTROL_ENABLED=true`), not proof of deployment. Read `docs/whisplay-voice-control.md` before enabling it. Preserve the foreground process authorization, speech/memory-before-exit handoff and existing physical Cancel-first confirmation. Text Qwen/mixer demonstrations do not establish deployed voice or risky-action hardware acceptance.
 
 - Read `docs/CUSTOM_BUILD.md`, `docs/UPSTREAM_UPDATES.md` and `upstream-integration.json` before updating this custom build. Historical phase documents are not proof of deployment or current test results.

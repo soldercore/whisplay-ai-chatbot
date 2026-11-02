@@ -39,7 +39,8 @@ import {
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../../config/tool-router";
 import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
-import { needsWhisplayCapabilities, requiresWhisplayTool, deviceCallFormat } from "../../config/whisplay-tools";
+import { needsWhisplayCapabilities, requiresWhisplayTool, deviceCallFormat, withWhisplayQuestion, whisplayVoiceControlEnabled } from "../../config/whisplay-tools";
+import { parseDeviceCommand } from "../../config/device-commands";
 import { deviceResultSpeech } from "../../config/device-result-speech";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
@@ -541,7 +542,25 @@ const chatWithLLMStreamInternal = async (
   if (toolLoopState.round === 0) {
     const latestUser = [...inputMessages].reverse().find(message => message.role === "user");
     const question = typeof latestUser?.content === "string" ? latestUser.content : "";
-    if (needsWhisplayCapabilities(question)) {
+    const direct = whisplayVoiceControlEnabled() ? parseDeviceCommand(question) : undefined;
+    if (direct) {
+      const started = Date.now();
+      const allowedTools = toolsForRequest(toolLoopState) || [];
+      reserveToolAttempts(toolLoopState.budget, 1, false);
+      invokeFunctionCallback?.(direct.name);
+      const result = await executeLLMTool(direct.name, direct.args, {
+        enabled: ollamaEnableTools, allowedTools, signal: toolLoopState.signal,
+      });
+      invokeFunctionCallback?.(direct.name, result.output);
+      if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      const call = { function: { index: 0, name: direct.name, arguments: direct.args } };
+      const reply = deviceResultSpeech(direct.name, result.output)
+        || "I could not verify completion of that device request. No change was confirmed.";
+      messages.push({role:"assistant",content:"",tool_calls:[[call]]},
+        {role:"tool",content:result.output,tool_name:direct.name},{role:"assistant",content:reply});
+      console.log(`[Device fast] tool=${direct.name} args=${JSON.stringify(direct.args)} status=${result.status} llm_requests=0 total_ms=${Date.now()-started}`);
+      partialCallback(reply);endCallback();return;
+    } else if (needsWhisplayCapabilities(question)) {
       reserveToolAttempts(toolLoopState.budget, 1, false);
       const allowedTools = toolsForRequest(toolLoopState) || [];
       invokeFunctionCallback?.("whisplay");
@@ -1036,14 +1055,14 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       emit(refusal);
       return;
     }
-    await chatWithLLMStreamInternal(
+    await withWhisplayQuestion(typeof lastUser?.content === "string" ? lastUser.content : "", () => chatWithLLMStreamInternal(
       inputMessages,
       emit,
       () => {}, // The public boundary ends the response exactly once, after cleanup.
       text => { if (activeAnswer === answer && !deadline.signal.aborted) partialThinkingCallback?.(text); },
       (name, result) => { if (activeAnswer === answer && !deadline.signal.aborted) invokeFunctionCallback?.(name, result); },
       { round: 0, signatures: new Set<string>(), signal: deadline.signal, budget: createOllamaRequestBudget(), pending },
-    );
+    ));
   } catch (error) {
     if (activeAnswer === answer) {
       if (error instanceof OllamaResourceLimitError) {

@@ -48,7 +48,7 @@ for (const succeeds of [true,false]) test(`unexecuted success prose is held; bou
   for(const file of ['../config/llm-tools','../cloud-api/local/ollama-llm'])delete require.cache[require.resolve(file)];
   const provider=require('../cloud-api/local/ollama-llm').default;
   const parts:string[]=[];
-  await provider.chatWithLLMStream([{role:'user',content:'Make your speaker a little quieter.'}],(part:string)=>parts.push(part),()=>{});
+  await provider.chatWithLLMStream([{role:'user',content:'Could you work out how to adjust your speaker so it is a little quieter?'}],(part:string)=>parts.push(part),()=>{});
   assert.equal(rounds,2);
   assert.doesNotMatch(parts.join(''),/already lowered/);
   assert.equal(rpc.length,succeeds?1:0);
