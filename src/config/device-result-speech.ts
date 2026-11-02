@@ -4,15 +4,28 @@ const labels: Record<string,string> = { brightness: "screen brightness", volume:
   lock: "screen locking", recording: "GLaDOS recording lock", wifi: "Wi-Fi", bluetooth: "Bluetooth",
   service: "service start or restart", reboot: "reboot", shutdown: "shutdown",
   apps: "running applications", display: "display status", audio: "audio status", network: "network status", services: "service status" };
+Object.assign(labels,{mute:"speaker mute and restore",wifi_scan:"Wi-Fi scanning",wifi_profile:"saved Wi-Fi connections",
+  wifi_join:"joining visible Wi-Fi networks",bluetooth_scan:"Bluetooth scanning",bluetooth_device:"Bluetooth pairing and device connections"});
 const clean = (value: unknown): string => String(value ?? "unavailable").replace(/[\x00-\x1f\x7f]/g," ").slice(0,100);
 const quantity = (value: any): string => value && typeof value.value === "number" && Number.isFinite(value.value)
   ? `${value.value} ${value.unit === "°C" ? "degrees Celsius" : value.unit === "GiB" ? "gibibytes" : value.unit === "%" ? "percent" : clean(value.unit)}` : "unavailable";
 
-export function deviceResultSpeech(name: string, output: string): string | undefined {
-  if (process.env.WHISPLAY_VOICE_CONTROL_ENABLED !== "true" || !output.startsWith("[success]")) return;
+export function deviceResultSpeech(name: string, output: string, metric?: "temperature"|"memory"|"storage"|"cpu"): string | undefined {
+  if (process.env.WHISPLAY_VOICE_CONTROL_ENABLED !== "true") return;
+  if (name === "whisplay" && output.startsWith("[error]")) {
+    let reason="";try{reason=JSON.parse(output.slice(7)).reason||"";}catch{}
+    if (/fixed privilege helper/i.test(reason)) return "That operation is unavailable: the fixed privileged control helper is missing or not authorized.";
+    if (/closing glados uses home/i.test(reason)) return "Closing GLaDOS returns to Home. A Raspberry Pi power action needs an explicit Pi request and physical confirmation.";
+    return "I could not verify completion of that device request. No change was confirmed.";
+  }
+  if (!output.startsWith("[success]")) return;
   let r: any;
   try { r = JSON.parse(output.slice(9)); } catch { return; }
   if (name === "getSystemHealth") {
+    if (metric === "temperature") return `CPU temperature is ${quantity(r.temperature)}.`;
+    if (metric === "memory") return `RAM available is ${quantity(r.memory?.available)}, and RAM used is ${quantity(r.memory?.used)}.`;
+    if (metric === "storage") return `Storage available is ${quantity(r.disk?.available)}.`;
+    if (metric === "cpu") return `CPU usage is ${quantity(r.cpu?.utilization)}.`;
     return `CPU usage is ${quantity(r.cpu?.utilization)}. CPU temperature is ${quantity(r.temperature)}. `
       + `RAM used is ${quantity(r.memory?.used)}, and RAM available is ${quantity(r.memory?.available)}. `
       + `Storage available is ${quantity(r.disk?.available)}.`;
@@ -21,20 +34,33 @@ export function deviceResultSpeech(name: string, output: string): string | undef
   if (r.api === 1 && r.actions && Array.isArray(r.readable)) {
     const allowed = Object.keys(labels).filter(key => r.actions[key]?.supported === true).map(key => labels[key]);
     const denied = Object.keys(labels).filter(key => r.actions[key]?.supported === false).map(key => labels[key]);
-    const confirmations = Object.keys(labels).filter(key => r.actions[key]?.supported && r.actions[key]?.physical_confirmation).map(key => labels[key]);
+    const confirmations = Object.keys(labels).filter(key => r.actions[key]?.supported && r.actions[key]?.physical_confirmation)
+      .map(key => r.actions[key].immediate_enable ? `disabling ${labels[key]}` : labels[key]);
     return `I can read ${r.readable.filter((key: string) => labels[key]).map((key: string) => labels[key]).join(", ")}, and actual CPU, RAM, temperature and storage. `
       + `Available controls are ${allowed.join(", ") || "none"}. `
       + (confirmations.length ? `${confirmations.join(", ")} require the physical confirmation screen. ` : "")
       + (denied.length ? `Not available through this connection: ${denied.join(", ")}. ` : "")
-      + "The recording lock affects GLaDOS only; it is not a hardware microphone mute.";
+      + "The recording lock affects GLaDOS only; it is not a hardware microphone mute. Screen wake and recording unlock remain available with the physical button and Audio menu.";
   }
   if (r.status === "completed" && ["volume","brightness"].includes(r.action) && typeof r.actual === "number") {
     return `${r.action === "volume" ? "Speaker volume" : "Screen brightness"} is set to ${r.actual} percent.`;
   }
+  if (r.status === "completed" && r.action === "mute") {
+    if (r.enabled && r.requested_enabled === false) return "The speaker is still muted; restoring sound was not confirmed.";
+    return r.enabled ? "Speaker muted. Push-to-talk and the physical Audio controls remain available."
+      : `Speaker sound restored to ${clean(r.actual)} percent.`;
+  }
+  if (r.status === "completed" && ["wifi","bluetooth"].includes(r.action)) return `${labels[r.action]} is enabled.`;
+  if (r.status === "completed" && r.action === "recording") return "GLaDOS recording is already enabled. Push-to-talk remains active only while you press the button.";
+  if (r.status === "completed" && r.action === "wifi_join" && r.already_connected) return `Wi-Fi is already connected to ${clean(r.network)}.`;
+  if (r.status === "completed" && r.action === "wifi_scan") return `Wi-Fi scan completed. Networks reported: ${(r.networks||[]).slice(0,5).map((n:any)=>clean(n.ssid)).join(", ")||"none"}.`;
+  if (r.status === "completed" && r.action === "bluetooth_scan") return `Bluetooth scan completed. Devices reported: ${(r.devices||[]).slice(0,5).map((n:any)=>clean(n.name)).join(", ")||"none"}.`;
   if (["awaiting_physical_confirmation", "awaiting_speech_handoff"].includes(r.status)) {
-    const target = r.requested?.action === "service" ? `${clean(r.requested.operation)} ${clean(r.requested.service)}` : labels[r.action];
+    const target = r.requested?.action === "service" ? `${clean(r.requested.operation)} ${clean(r.requested.service)}`
+      : r.action === "recording" ? `${r.requested?.enabled ? "Enable" : "Lock"} GLaDOS recording`
+      : r.action === "bluetooth_device" ? `${clean(r.requested.operation)} Bluetooth device ${clean(r.requested.device)}` : labels[r.action];
     return r.status === "awaiting_physical_confirmation"
-      ? `${target} is pending. Nothing has changed. After this reply I will stop GLaDOS and show the local Cancel-first confirmation screen. Use the button to confirm or cancel.`
+      ? `${target} is pending. Nothing has changed. After this reply I will stop GLaDOS and show the existing local controls. Cancel is selected first; use the button to continue or cancel.${r.action === "wifi_join" ? " Wi-Fi credentials, if needed, are entered only there." : ""}`
       : r.action === "home" ? "I will return to Home after this reply." : "I will lock the screen after this reply. Press the button to wake it.";
   }
   if (Array.isArray(r.apps)) return r.apps.map((app: any) => `${clean(app.display_name)} is ${app.running ? "running" : "stopped"}${app.foreground ? " in the foreground" : ""}.`).join(" ");
@@ -42,11 +68,13 @@ export function deviceResultSpeech(name: string, output: string): string | undef
     + ` GLaDOS is ${clean(r.glados)}. These service states do not establish remote reachability or backend readiness.`;
   if (r.scope === "audio") return `Speaker volume is ${clean(r.speaker_percent)} percent. GLaDOS recording is ${r.glados_recording_enabled ? "enabled" : "locked"}. ${clean(r.input_mode)}. Hardware microphone mute is not supported.`;
   if (r.scope === "display") return `Screen brightness is set to ${clean(r.brightness_percent)} percent. The screen is ${r.screen_locked ? "locked" : "unlocked"}.`;
-  if (r.scope === "network") {
+  if (["network","wifi","bluetooth"].includes(r.scope)) {
     const wifi = r.wifi?.enabled === true ? "enabled" : r.wifi?.enabled === false ? "disabled" : "unavailable";
     const bt = r.bluetooth?.enabled === true ? "enabled" : r.bluetooth?.enabled === false ? "disabled" : "unavailable";
     const connected = (r.wifi?.connected || []).map((n: any) => `${clean(n.ssid)}, IP ${clean(n.ipv4)}`).join(", ");
-    return `Wi-Fi is ${wifi}${connected ? ", connected to " + connected : ""}. Bluetooth is ${bt}. Internet reachability has not been tested.`;
+    const devices=(r.bluetooth?.devices||[]).slice(0,5).map((n:any)=>`${clean(n.name)}${n.connected?", connected":n.paired?", paired":""}`).join("; ");
+    return (r.scope !== "bluetooth" ? `Wi-Fi is ${wifi}${connected ? ", connected to " + connected : ", no active connection was reported"}. Internet reachability has not been tested. `:"")
+      + (r.scope !== "wifi" ? `Bluetooth is ${bt}.${devices?" Devices: "+devices+".":""}${r.bluetooth?.details_complete===false?" Some device details were unavailable.":""}`:"");
   }
   return;
 }

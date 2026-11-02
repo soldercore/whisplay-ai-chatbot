@@ -89,6 +89,7 @@ async function main() {
     "../../config/local-memory": { ...memory, prepareMemoryPrompt: question => {
       prepared = memory.prepareMemoryPrompt(question); return prepared;
     } },
+    "../../config/whisplay-privacy": require("../../config/whisplay-privacy"),
     "../../config/unsupported-reminder": require("../../config/unsupported-reminder"),
     "../../device/whisplay-control": require("../../device/whisplay-control"),
     "../../utils/operation-lifecycle": require("../../utils/operation-lifecycle"),

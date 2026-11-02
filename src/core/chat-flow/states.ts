@@ -1,4 +1,5 @@
 import moment from "moment";
+import { redactWifiCredentials } from "../../config/whisplay-privacy";
 import { compact, noop } from "lodash";
 import {
   onButtonPressed,
@@ -61,6 +62,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       await ctx.pauseWakeWordListener();
       if (ctx.currentFlowName !== "sleep") return;
       ctx.answerId += 1;
+      text = redactWifiCredentials(text);
       ctx.asrText = text;
       display({ status: "recognizing", text, text_input_enabled: false });
       ctx.transitionTo("answer");
@@ -270,6 +272,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         return;
       }
       if (result) {
+        result = redactWifiCredentials(result);
         console.log("Audio recognized result:", result);
         ctx.asrText = result;
         ctx.endAfterAnswer = ctx.shouldEndAfterAnswer(result);

@@ -149,6 +149,7 @@ async function run(t: TestContext, script: any[][], options: { rounds?: number; 
     "../../utils/dir": require("../utils/dir"), "../../utils/image": images, "../../cloud-api/whisplay-im/whisplay-im": {},
     "./camera-mode": {}, "../../utils": utils, "../../device/music-player": {},
     "../../config/local-memory": { prepareMemoryPrompt: () => options.context ? "Current memory" : "", autoSaveExchange: noop },
+    "../../config/whisplay-privacy": require("../config/whisplay-privacy"),
     "../../config/unsupported-reminder": require("../config/unsupported-reminder"),
     "../../device/whisplay-control": require("../device/whisplay-control"),
     "../../utils/operation-lifecycle": require("../utils/operation-lifecycle"),

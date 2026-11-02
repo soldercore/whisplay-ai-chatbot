@@ -22,17 +22,20 @@ export const whisplayTool: LLMTool = {
   execution: "abortable", type: "function",
   function: {
     name: "whisplay",
-    description: "Discover what you/Whisplay can do; read actual device state or control it. Call capabilities for ability questions. CPU/RAM/temperature/storage use getSystemHealth. Never claim a pending action completed. Handoffs occur after speech; risky actions require the physical Cancel-first screen. Recording is a GLaDOS-only lock, not hardware mute. Never speak ticket IDs.",
+    description: "Discover installed capabilities and live state; control only supported operations. Read capabilities for ability questions and actual wifi/bluetooth status before selecting a discovered target. CPU/RAM/temperature/storage use getSystemHealth. home closes GLaDOS, never the Pi. Safe settings and radio enabling stay in GLaDOS; disconnects, pairing, recording lock, service/power actions require local Cancel-first confirmation after speech. Passwords are entered only locally; never send or repeat credentials or ticket IDs. Screen wake requires the physical button.",
     parameters: {
       type: "object", additionalProperties: false,
       properties: {
-        action: { type: "string", enum: ["capabilities", "status", "brightness", "volume", "home", "lock", "recording", "wifi", "bluetooth", "service", "reboot", "shutdown"] },
-        scope: { type: "string", enum: ["apps", "display", "audio", "network", "services"] },
+        action: { type: "string", enum: ["capabilities", "status", "brightness", "volume", "mute", "home", "lock", "recording", "wifi", "wifi_scan", "wifi_profile", "wifi_join", "bluetooth", "bluetooth_scan", "bluetooth_device", "service", "reboot", "shutdown"] },
+        scope: { type: "string", enum: ["apps", "display", "audio", "network", "wifi", "bluetooth", "services"] },
         level: { type: "integer", minimum: 0, maximum: 100, description: "Absolute percent; use exactly one of level or change." },
         change: { type: "integer", minimum: -100, maximum: 100, description: "Requested percentage-point adjustment. Host enforces small/default 10-point steps and explicit values; negative is darker/quieter." },
         enabled: { type: "boolean" },
         service: { type: "string", enum: ["ssh", "ollama", "whisper", "piper"] },
-        operation: { type: "string", enum: ["start", "restart"] },
+        operation: { type: "string", enum: ["start", "restart", "connect", "disconnect", "pair", "forget"] },
+        device: {type:"string",minLength:1,maxLength:128,description:"Unique Bluetooth device name or address from actual Bluetooth status."},
+        profile: {type:"string",minLength:1,maxLength:128,description:"Saved Wi-Fi profile name or ID from actual Wi-Fi status."},
+        network: {type:"string",minLength:1,maxLength:128,description:"SSID from actual Wi-Fi scan. Passwords are entered only locally; never include credentials."},
       }, required: ["action"],
     },
   },
@@ -51,6 +54,15 @@ export const whisplayTool: LLMTool = {
         }
         result = { ...result, scope: action === "capabilities" ? "capabilities" : args.scope };
       } else {
+        const question = questions.getStore();
+        if (question && (/\b(not|don't|dont|never|if|unless|when|after|before|except|tomorrow|later)\b/i.test(question)
+          || /^\s*(?:how (?:do|can|would)|what (?:if|happens)|(?:can|could) i|(?:tell|write) (?:me )?(?:a )?(?:story|joke)|explain|pretend|imagine)\b/i.test(question))) {
+          throw new Error("Conditional, negated or explanatory requests cannot change the device");
+        }
+        if (["reboot","shutdown"].includes(action)
+          && !/\b((?:raspberry )?pi|device|computer)\b/i.test(question||"")) {
+          throw new Error("Closing GLaDOS uses Home; a Pi power action needs an explicit Pi request");
+        }
         if (["volume","brightness"].includes(action)) {
           if (Object.keys(params).some(key => !["action","level","change"].includes(key))
             || ("level" in params) === ("change" in params)) throw new Error("Supply exactly one setting level or change");
@@ -92,13 +104,16 @@ export function deviceCallFormat(tools: readonly { function: { name: string } }[
   if (names.has("whisplay")) {
     const shapes: [string,string[]][] = [
       ["capabilities",[]], ["status",["scope"]], ["brightness",["level"]], ["brightness",["change"]],
-      ["volume",["level"]], ["volume",["change"]], ["home",[]], ["lock",[]],
+      ["volume",["level"]], ["volume",["change"]], ["mute",["enabled"]], ["home",[]], ["lock",[]],
       ["recording",["enabled"]], ["wifi",["enabled"]], ["bluetooth",["enabled"]],
       ["service",["service","operation"]], ["reboot",[]], ["shutdown",[]],
+      ["wifi_scan",[]], ["wifi_profile",["operation","profile"]], ["wifi_profile",["operation"]], ["wifi_join",["network"]],
+      ["bluetooth_scan",[]], ["bluetooth_device",["operation","device"]],
     ];
     for (const [action, keys] of shapes) variants.push({ type:"object", additionalProperties:false,
       properties:{ name:{type:"string",enum:["whisplay"]}, arguments:{type:"object",additionalProperties:false,
         properties:{action:{type:"string",enum:[action]},...Object.fromEntries(keys.map(key=>[key,
+          key === "operation" ? {...props[key],enum:action === "service"?["start","restart"]:action === "wifi_profile"?(keys.includes("profile")?["connect"]:["disconnect"]):["connect","disconnect","pair","forget"]}:
           action === "brightness" && key === "level" ? {...props[key],minimum:20} : props[key]]))},
         required:["action",...keys]} }, required:["name","arguments"] });
   }

@@ -19,6 +19,8 @@
 - Wake-word and ambient-capture children use application ownership. A queued start must be cancelled by a later stop/shutdown; microphone release requires confirmed child exit.
 - Hailo services are external: missing SDK/model returns unavailable, and client shutdown aborts HTTP without stopping an external server. Actual Hailo inferencing still requires Pi acceptance.
 
+- Whisplay voice revision 2: see `docs/whisplay-voice-complete.md`. Clear app-exit phrases use the zero-inference Home handoff; app exit is never Pi power. Shared Control Center operations supply controls and discovered-target physical confirmations. Missing helper privileges remain unavailable. Wi-Fi credentials are withheld before logs/model/memory and entered only on the existing local screen. Daemon user brightness must survive app redraws. This source candidate is not proof of deployment or physical acceptance.
+
 ## Project Overview
 
 Whisplay AI Chatbot is a pocket-sized AI chatbot device built for Raspberry Pi Zero 2W / Pi 5. It features voice interaction (press button, speak, get spoken responses), an LCD display with emoji/status visualization, RGB LED indicators, and extensible AI backend support.

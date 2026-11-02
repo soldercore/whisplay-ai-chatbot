@@ -1,3 +1,4 @@
+import { redactWifiCredentials, WIFI_PRIVATE, wifiCredentialReply, privateWhisplayCall } from "../../config/whisplay-privacy";
 import axios from "axios";
 import * as fs from "fs";
 import * as path from "path";
@@ -554,7 +555,7 @@ const chatWithLLMStreamInternal = async (
       invokeFunctionCallback?.(direct.name, result.output);
       if (toolLoopState.signal?.aborted) { endCallback(); return; }
       const call = { function: { index: 0, name: direct.name, arguments: direct.args } };
-      const reply = deviceResultSpeech(direct.name, result.output)
+      const reply = deviceResultSpeech(direct.name, result.output, direct.metric)
         || "I could not verify completion of that device request. No change was confirmed.";
       messages.push({role:"assistant",content:"",tool_calls:[[call]]},
         {role:"tool",content:result.output,tool_name:direct.name},{role:"assistant",content:reply});
@@ -760,6 +761,9 @@ const chatWithLLMStreamInternal = async (
           partialAnswer = held.spoken;
           if (partialAnswer) partialCallback(partialAnswer);
         }
+      }
+      for (let i = 0; i < functionCallsPackages.length; i++) {
+        functionCallsPackages[i] = functionCallsPackages[i].map(privateWhisplayCall);
       }
       const functionCalls = functionCallsPackages.flat().map((call, index) => ({
         id: `call_${Date.now()}_${Math.random()}_${index}`,
@@ -1045,7 +1049,9 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       throw new OllamaResourceLimitError("user input exceeds 262144 UTF-8 bytes");
     }
     const lastUser = [...inputMessages].reverse().find(message => message.role === "user");
-    const refusal = typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
+    const privateWifi = typeof lastUser?.content === "string" && redactWifiCredentials(lastUser.content) === WIFI_PRIVATE;
+    if (privateWifi && lastUser) lastUser.content = WIFI_PRIVATE;
+    const refusal = privateWifi ? wifiCredentialReply : typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
     if (refusal) {
       // No generation, prefetch or tool dispatch. Retain the actual exchange so
       // the next turn sees the refusal, rather than an unfulfilled action.

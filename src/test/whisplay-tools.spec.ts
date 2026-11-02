@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import path from "node:path";
 import os from "node:os";
-import { whisplayTool } from "../config/whisplay-tools";
+import { withWhisplayQuestion, whisplayTool } from "../config/whisplay-tools";
 import { executeToolCall } from "../config/tool-execution";
 import { withToolSignal } from "../utils/operation-lifecycle";
 import { toolsRelevantTo } from "../config/tool-router";
@@ -45,6 +45,19 @@ test("voice bridge uses validated RPC, always offers grounded tools, cancels pen
     assert.match((await invoke(args)).output, /^\[(error|rejected)\]/);
   }
   assert.equal(requests.length, count, "invalid arguments never reach the daemon");
+  for (const [question,args] of [
+    ["Don't enable Bluetooth",{action:"bluetooth",enabled:true}],
+    ["Enable Bluetooth if I ask",{action:"bluetooth",enabled:true}],
+    ["How can I mute you?",{action:"mute",enabled:true}],
+    ["Turn off GLaDOS",{action:"shutdown"}],
+    ["Close GLaDOS please",{action:"reboot"}],
+    ["Shutdown",{action:"shutdown"}],
+  ] as [string,any][]) {
+    assert.match((await withWhisplayQuestion(question,()=>invoke(args))).output,/\[error\]/);
+  }
+  assert.equal(requests.length,count,"host denies negation, hypotheticals and app/power confusion before IPC");
+  assert.equal((await withWhisplayQuestion("Restart Pi",()=>invoke({action:"reboot"}))).status,"success",
+    "an explicit Pi request may reach daemon physical-confirmation validation");
   const names = toolsRelevantTo("How much RAM is left?", [whisplayTool, { function: { name: "getSystemHealth" } }]).map(t => t.function.name);
   assert.deepEqual(names, ["whisplay", "getSystemHealth"]);
   const controller = new AbortController();

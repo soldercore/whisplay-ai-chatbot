@@ -28,6 +28,7 @@ for (const interrupted of [false,true]) test(`device handoff waits for speech an
     '../../cloud-api/whisplay-im/whisplay-im':{},'./camera-mode':{},'../../utils':{},'../../device/music-player':{},
     '../../config/local-memory':{prepareMemoryPrompt:()=>'',autoSaveExchange:(_user:string,_answer:string,summarize:unknown)=>{
       assert.equal(summarize,undefined);saved++;return save;}},
+    "../../config/whisplay-privacy": require("../config/whisplay-privacy"),
     '../../config/unsupported-reminder':{unsupportedReminderReply:()=>null},
     '../../device/whisplay-control':{whisplayHandoffTicket,presentWhisplayHandoff:async()=>{shown++;},cancelWhisplayHandoff:()=>{cancelled++;}},
     '../../utils/operation-lifecycle':lifecycle,

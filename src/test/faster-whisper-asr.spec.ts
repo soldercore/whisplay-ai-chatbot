@@ -81,3 +81,19 @@ test("both real Python HTTP handlers forward the hint to their model call", () =
   });
   assert.match(output, /\[INIT\] Model loaded/);
 });
+
+
+test("ASR error diagnostics never print response bodies, credentials or audio payloads",async t=>{
+  const logs:unknown[][]=[];
+  t.mock.method(console,"error",(...args:unknown[])=>logs.push(args));
+  const recognize=client("GLaDOS").recognizeAudio;
+  const previous=axios.post;
+  try {
+    axios.post=(async()=>({data:{error:"Wi-Fi password SyntheticDiagnosticSecret99"}})) as any;
+    assert.equal(await recognize("fixture.wav"),"");
+    axios.post=(async()=>{throw {message:"SyntheticDiagnosticSecret99",response:{status:503,data:"SyntheticDiagnosticSecret99"},config:{data:"SyntheticAudioPayload99"}};}) as any;
+    assert.equal(await recognize("fixture.wav"),"");
+    assert.ok(!JSON.stringify(logs).includes("SyntheticDiagnosticSecret99"));
+    assert.ok(!JSON.stringify(logs).includes("SyntheticAudioPayload99"));
+  } finally {axios.post=previous;}
+});

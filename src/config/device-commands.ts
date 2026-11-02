@@ -1,6 +1,6 @@
 // Whole, simple requests only. Anything conditional, compound or conversational
 // stays on the existing Qwen path; this parser never grants execution permission.
-export type DeviceCommand = { name: "whisplay" | "getSystemHealth"; args: Record<string, any> };
+export type DeviceCommand = { name: "whisplay" | "getSystemHealth"; args: Record<string, any>; metric?: "temperature" | "memory" | "storage" | "cpu" };
 
 const ones = ["zero","one","two","three","four","five","six","seven","eight","nine","ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"];
 const tens = ["twenty","thirty","forty","fifty","sixty","seventy","eighty","ninety"];
@@ -40,9 +40,35 @@ export function parseDeviceCommand(text: string): DeviceCommand | undefined {
     return { name:"whisplay", args:{action:"status",scope:"services"} };
   }
   if (/\b(?:not|don't|dont|never|if|unless|when|after|before|and|then|or|except)\b/.test(q)) return;
-  if (match(q,"(?:take me (?:back )?to|go (?:back )?to|return (?:me )?to|open) (?:the )?home(?: (?:screen|menu))?")) {
+  if (match(q,"(?:(?:go|bring me|take me|return)(?: back)?(?: to)?|return me to|open) (?:the )?home(?: (?:screen|menu))?|(?:exit|close|quit) (?:glados|the chatbot)|(?:turn|switch) off (?:glados|yourself)|(?:turn|switch) (?:glados|yourself) off|shut (?:down glados|glados down)")) {
     return {name:"whisplay",args:{action:"home"}};
   }
+  if (match(q,"(?:show|list|tell me) (?:your|whisplay's|the device's) (?:functions|features|capabilities)")) return {name:"whisplay",args:{action:"capabilities"}};
+  if (match(q,"how hot are you|what(?: is|'s) (?:your|the cpu) temperature")) return {name:"getSystemHealth",args:{},metric:"temperature"};
+  if (match(q,"(?:how much (?:ram|memory) (?:is available|is free|do you have)|(?:show|check) (?:available |free )?ram)")) return {name:"getSystemHealth",args:{},metric:"memory"};
+  if (match(q,"(?:how much (?:disk |storage )?space (?:is left|is available|is free|do you have)|(?:show|check) (?:free |available )?(?:storage|disk space))")) return {name:"getSystemHealth",args:{},metric:"storage"};
+  if (match(q,"(?:are you connected to (?:wi-?fi|the network)|(?:what(?: is|'s)|show|check) (?:your |the )?(?:wi-?fi|network)(?: (?:status|connection))?)")) return {name:"whisplay",args:{action:"status",scope:"wifi"}};
+  if (match(q,"(?:is bluetooth (?:on|off|enabled)|(?:what(?: is|'s)|show|check) (?:your |the )?bluetooth(?: status)?)")) return {name:"whisplay",args:{action:"status",scope:"bluetooth"}};
+  if (match(q,"(?:what(?: is|'s) (?:currently )?running|which services are running|show (?:running )?services)")) return {name:"whisplay",args:{action:"status",scope:"services"}};
+  if (match(q,"(?:which apps are running|show (?:running )?(?:apps|applications))")) return {name:"whisplay",args:{action:"status",scope:"apps"}};
+  if (match(q,"(?:show|check) (?:your |the )?(?:screen|display)(?: status)?")) return {name:"whisplay",args:{action:"status",scope:"display"}};
+  if (match(q,"(?:mute|silence)(?: (?:yourself|your speaker|the speaker|your volume))?")) return {name:"whisplay",args:{action:"mute",enabled:true}};
+  if (match(q,"(?:unmute|restore)(?: (?:yourself|your speaker|the speaker|your volume|the volume|sound))?")) return {name:"whisplay",args:{action:"mute",enabled:false}};
+  if (match(q,"(?:lock|turn off|switch off) (?:your |the )?screen|lock (?:your |the )?display")) return {name:"whisplay",args:{action:"lock"}};
+  let extra = match(q,"(enable|disable|lock|unlock) (?:glados )?recording|turn (on|off) (?:glados )?recording");
+  if (extra) return {name:"whisplay",args:{action:"recording",enabled:["enable","unlock","on"].includes(extra[1]||extra[2])}};
+  extra = match(q,"(enable|disable|turn on|turn off|switch on|switch off) (?:your |the )?(wi-?fi|bluetooth)");
+  if (extra) return {name:"whisplay",args:{action:extra[2]==="bluetooth"?"bluetooth":"wifi",enabled:["enable","turn on","switch on"].includes(extra[1])}};
+  if (match(q,"(?:scan|look|search) for (?:wi-?fi|networks|wi-?fi networks)")) return {name:"whisplay",args:{action:"wifi_scan"}};
+  if (match(q,"(?:scan|look|search) for bluetooth(?: devices)?")) return {name:"whisplay",args:{action:"bluetooth_scan"}};
+  extra = match(q,"(start|restart) (?:the )?(ssh|ollama|whisper|faster whisper|piper)(?: service)?");
+  if (extra) return {name:"whisplay",args:{action:"service",operation:extra[1],service:extra[2]==="faster whisper"?"whisper":extra[2]}};
+  if (match(q,"(?:restart|reboot) (?:the )?(?:raspberry pi|pi|device)")) return {name:"whisplay",args:{action:"reboot"}};
+  if (match(q,"(?:shut down|shutdown|turn off) (?:the )?(?:raspberry pi|pi|device)")) return {name:"whisplay",args:{action:"shutdown"}};
+  extra = match(q,"(?:your|the) (?:screen|display) is too (bright|dark)");
+  if (extra) return {name:"whisplay",args:{action:"brightness",change:extra[1]==="bright"?-10:10}};
+  extra = match(q,"make (?:yourself|your voice) (?:(?:a little|a bit|slightly) )?(quieter|louder)");
+  if (extra) return {name:"whisplay",args:{action:"volume",change:extra[1]==="quieter"?-10:10}};
   if (match(q,"(?:show(?: me)?|report|check|tell me|what is|what's|give me) (?:your |the |current |actual )?(?:system (?:status|health|info|information)|cpu(?: usage| temperature)?|ram(?: usage)?|temperature|storage(?: space)?|disk space)")) {
     return {name:"getSystemHealth",args:{}};
   }

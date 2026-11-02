@@ -29,7 +29,7 @@ const commands: [string,Record<string,unknown>][] = [
 for (const [text,args] of commands) test(`whole device command: ${text}`,()=>{
   assert.deepEqual(parseDeviceCommand(text),{name:"whisplay",args});
 });
-for (const text of ["Report system status","What is your temperature?","Show me current CPU usage","Check RAM usage"]) {
+for (const text of ["Report system status","Show me current CPU usage","Check RAM usage"]) {
   test(`actual measurements: ${text}`,()=>assert.deepEqual(parseDeviceCommand(text),{name:"getSystemHealth",args:{}}));
 }
 for (const text of [
@@ -39,7 +39,7 @@ for (const text of [
   "What happens when you lower your volume?", "I remember that you set volume to 80",
   "Remember that I like volume at 40", "Turn volume down by -5", "Set volume to 10.5%",
   "Set volume to 101", "Set brightness to 0", "Turn volume down by one hundred five percent",
-  "Set volume to 40; shutdown", "run rm -rf", "SSH is down; restart it", "Restart SSH",
+  "Set volume to 40; shutdown", "run rm -rf", "SSH is down; restart it",
   "Could you work out how to adjust your speaker so it is a little quieter?",
 ]) test(`uncertain or unsafe stays with Qwen: ${text}`,()=>assert.equal(parseDeviceCommand(text),undefined));
 
@@ -59,4 +59,39 @@ test("host precision overrides model size, preserves explicit values and refuses
   assert.throws(()=>preciseDeviceArguments({action:"volume",change:20},"I would like the screen brighter by 10 percent"));
   assert.throws(()=>preciseDeviceArguments({action:"volume",level:10},"Turn volume down a little at 10"));
   assert.throws(()=>preciseDeviceArguments({action:"volume",change:-20},"Turn volume down a little in ten minutes"));
+});
+
+
+test("voice exit variants close only GLaDOS; unsafe and conversational variants stay undecided", () => {
+  for (const text of ["Go Home.","Bring me Home.","Exit GLaDOS.","Close GLaDOS.","Turn off GLaDOS.",
+    "GLaDOS, take me back to Home.","Could you please close GLaDOS?","Turn GLaDOS off","Switch yourself off"]) {
+    assert.deepEqual(parseDeviceCommand(text),{name:"whisplay",args:{action:"home"}},text);
+  }
+  for (const text of ["Don't go Home","If I say go Home, close GLaDOS","Tell me a story about going Home",
+    "Remember that I go Home at five","Go Home and shut down the Pi","What does exit GLaDOS mean?","Could you close something?"]) {
+    assert.equal(parseDeviceCommand(text),undefined,text);
+  }
+  assert.deepEqual(parseDeviceCommand("Shutdown the Raspberry Pi"),{name:"whisplay",args:{action:"shutdown"}});
+});
+
+test("ordinary installed controls have natural zero-inference interpretations", () => {
+  const variants: [string,object][] = [
+    ["Your screen is too bright",{action:"brightness",change:-10}],
+    ["Can you make yourself quieter?",{action:"volume",change:-10}],
+    ["Are you connected to Wi-Fi?",{action:"status",scope:"wifi"}],
+    ["Check Bluetooth status",{action:"status",scope:"bluetooth"}],
+    ["Enable Bluetooth",{action:"bluetooth",enabled:true}],
+    ["Turn off WiFi",{action:"wifi",enabled:false}],
+    ["Mute yourself",{action:"mute",enabled:true}], ["Unmute",{action:"mute",enabled:false}],
+    ["Lock your screen",{action:"lock"}], ["Lock GLaDOS recording",{action:"recording",enabled:false}],
+    ["What's currently running?",{action:"status",scope:"services"}],
+    ["Restart SSH",{action:"service",service:"ssh",operation:"restart"}],
+    ["Scan for Bluetooth devices",{action:"bluetooth_scan"}], ["Scan for Wi-Fi networks",{action:"wifi_scan"}],
+  ];
+  for(const [text,args] of variants) assert.deepEqual(parseDeviceCommand(text),{name:"whisplay",args},text);
+  assert.deepEqual(parseDeviceCommand("How hot are you?"),{name:"getSystemHealth",args:{},metric:"temperature"});
+  assert.deepEqual(parseDeviceCommand("What is your temperature?"),{name:"getSystemHealth",args:{},metric:"temperature"});
+  for(const text of ["Enable Bluetooth if I ask","Don't mute yourself","Restart SSH tomorrow","Remember that I dislike bright screens"]) {
+    assert.equal(parseDeviceCommand(text),undefined,text);
+  }
 });
