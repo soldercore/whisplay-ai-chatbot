@@ -1,6 +1,6 @@
 // Whole, simple requests only. Anything conditional, compound or conversational
 // stays on the existing Qwen path; this parser never grants execution permission.
-export type DeviceCommand = { name: "whisplay" | "getSystemHealth"; args: Record<string, any>; metric?: "temperature" | "memory" | "storage" | "cpu" };
+export type DeviceCommand = { name: "whisplay" | "getSystemHealth"; args: Record<string, any>; metric?: "temperature" | "memory" | "storage" | "cpu" | "ip" };
 
 const ones = ["zero","one","two","three","four","five","six","seven","eight","nine","ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"];
 const tens = ["twenty","thirty","forty","fifty","sixty","seventy","eighty","ninety"];
@@ -35,9 +35,21 @@ export function parseDeviceCommand(text: string): DeviceCommand | undefined {
   const q = deviceCommandText(text);
   if (!q) return;
   // Read-only checks accept "check if", but not an extra requested operation.
-  const service = "(?:ssh|ollama|piper|whisper|faster whisper|whisplay daemon|the daemon)";
-  if (match(q,`(?:is ${service} (?:working|running|available|up|on)|(?:check (?:whether |if )?|tell me whether )${service} is (?:working|running|available|up|on)|(?:show|check|report)(?: me)? (?:the |your )?service (?:status|availability))`)) {
+  const service = "(?:(?:the |your )?(?:ssh|ollama|piper|whisper|faster[- ]whisper|whisplay daemon|daemon)(?: service)?)";
+  if (match(q,`(?:is ${service} (?:working|running|available|up|on)|(?:check (?:whether |if )?|tell me whether )${service} is (?:working|running|available|up|on)|(?:show|check|report)(?: me)? (?:the |your )?service (?:status|availability)|what(?: is|'s) (?:the )?status of ${service})`)) {
     return { name:"whisplay", args:{action:"status",scope:"services"} };
+  }
+  // These whole requests are read-only, including "check if". Never interpret
+  // public/user/other-device addresses or an extra requested action as local IP.
+  const ip = "(?:(?:your|whisplay's|this (?:device|pi|raspberry pi)'s) (?:(?:local|wi-?fi) )?(?:ip|ipv4)(?: address)?|the (?:(?:local|wi-?fi) )?(?:ip|ipv4) address (?:of|for) (?:this|the) (?:device|pi|raspberry pi|whisplay))";
+  if (match(q,`(?:(?:what(?: is|'s)|which is) ${ip}|(?:show|tell|give)(?: me)? ${ip}|(?:check|read|report|get|find)(?: me)? ${ip}|tell me (?:what|which) ${ip} is|(?:what|which) (?:(?:local|wi-?fi) )?(?:ip|ipv4) address (?:are you using|do you have))`)) {
+    return {name:"whisplay",args:{action:"status",scope:"wifi"},metric:"ip"};
+  }
+  if (match(q,"(?:are you (?:connected to|on) (?:wi-?fi|the network)|do you have a wi-?fi connection|is (?:your |the )?wi-?fi (?:connected|on|off|enabled|disabled)|check (?:if |whether )?(?:your |the )?wi-?fi is (?:connected|on|off|enabled|disabled)|(?:show|check|report|read)(?: me)? (?:your |the |current )?(?:wi-?fi|network)(?: (?:status|connection))?|what(?: is|'s) (?:your |the )?(?:wi-?fi|network) (?:status|connection)|what(?: is|'s) your (?:wi-?fi|network))")) {
+    return {name:"whisplay",args:{action:"status",scope:"wifi"}};
+  }
+  if (match(q,"(?:is (?:your |the )?bluetooth (?:on|off|enabled|disabled|connected)|check (?:if |whether )?(?:your |the )?bluetooth is (?:on|off|enabled|disabled|connected)|(?:show|check|report|read)(?: me)? (?:your |the |current )?bluetooth(?: status)?|what(?: is|'s) (?:your |the )?bluetooth status|what(?: is|'s) your bluetooth|which bluetooth devices are connected)")) {
+    return {name:"whisplay",args:{action:"status",scope:"bluetooth"}};
   }
   if (/\b(?:not|don't|dont|never|if|unless|when|after|before|and|then|or|except)\b/.test(q)) return;
   if (match(q,"(?:(?:go|bring me|take me|return)(?: back)?(?: to)?|return me to|open) (?:the )?home(?: (?:screen|menu))?|(?:exit|close|quit) (?:glados|the chatbot)|(?:turn|switch) off (?:glados|yourself)|(?:turn|switch) (?:glados|yourself) off|shut (?:down glados|glados down)")) {
@@ -47,8 +59,6 @@ export function parseDeviceCommand(text: string): DeviceCommand | undefined {
   if (match(q,"how hot are you|what(?: is|'s) (?:your|the cpu) temperature")) return {name:"getSystemHealth",args:{},metric:"temperature"};
   if (match(q,"(?:how much (?:ram|memory) (?:is available|is free|do you have)|(?:show|check) (?:available |free )?ram)")) return {name:"getSystemHealth",args:{},metric:"memory"};
   if (match(q,"(?:how much (?:disk |storage )?space (?:is left|is available|is free|do you have)|(?:show|check) (?:free |available )?(?:storage|disk space))")) return {name:"getSystemHealth",args:{},metric:"storage"};
-  if (match(q,"(?:are you connected to (?:wi-?fi|the network)|(?:what(?: is|'s)|show|check) (?:your |the )?(?:wi-?fi|network)(?: (?:status|connection))?)")) return {name:"whisplay",args:{action:"status",scope:"wifi"}};
-  if (match(q,"(?:is bluetooth (?:on|off|enabled)|(?:what(?: is|'s)|show|check) (?:your |the )?bluetooth(?: status)?)")) return {name:"whisplay",args:{action:"status",scope:"bluetooth"}};
   if (match(q,"(?:what(?: is|'s) (?:currently )?running|which services are running|show (?:running )?services)")) return {name:"whisplay",args:{action:"status",scope:"services"}};
   if (match(q,"(?:which apps are running|show (?:running )?(?:apps|applications))")) return {name:"whisplay",args:{action:"status",scope:"apps"}};
   if (match(q,"(?:show|check) (?:your |the )?(?:screen|display)(?: status)?")) return {name:"whisplay",args:{action:"status",scope:"display"}};
@@ -69,7 +79,7 @@ export function parseDeviceCommand(text: string): DeviceCommand | undefined {
   if (extra) return {name:"whisplay",args:{action:"brightness",change:extra[1]==="bright"?-10:10}};
   extra = match(q,"make (?:yourself|your voice) (?:(?:a little|a bit|slightly) )?(quieter|louder)");
   if (extra) return {name:"whisplay",args:{action:"volume",change:extra[1]==="quieter"?-10:10}};
-  if (match(q,"(?:show(?: me)?|report|check|tell me|what is|what's|give me) (?:your |the |current |actual )?(?:system (?:status|health|info|information)|cpu(?: usage| temperature)?|ram(?: usage)?|temperature|storage(?: space)?|disk space)")) {
+  if (match(q,"(?:show(?: me)?|report|check|tell me|what is|what's|give me) (?:your |the |current |actual )?(?:system (?:status|health|info|information)|cpu(?: usage| temperature)?|ram(?: usage)?|temperature|storage(?: space)?|disk space)|how(?: is|'s) (?:your|the) system doing")) {
     return {name:"getSystemHealth",args:{}};
   }
   for (const [action, target, lower, higher] of [

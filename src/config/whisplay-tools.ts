@@ -1,7 +1,7 @@
 import type { LLMTool } from "../type";
 import { whisplayRequest, trackWhisplayHandoff } from "../device/whisplay-control";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { preciseDeviceArguments } from "./device-commands";
+import { parseDeviceCommand, preciseDeviceArguments } from "./device-commands";
 
 const questions = new AsyncLocalStorage<string>();
 export const withWhisplayQuestion = <T>(question: string, work: () => T): T => questions.run(question, work);
@@ -10,8 +10,11 @@ export const whisplayVoiceControlEnabled = () => process.env.WHISPLAY_VOICE_CONT
 // This only requires grounding; the model still chooses the operation/parameters.
 export const requiresWhisplayTool = (text: string): boolean => whisplayVoiceControlEnabled()
   && !/\b(joke|poem|story|pretend|imagine)\b|^\s*(explain|define|how does)\b/i.test(text)
+  && !/^\s*what(?: is|'s) (?:an? )?(?:ip(?:v[46])? address|wi-?fi|bluetooth)[?.!\s]*$/i.test(text)
   && (/\b(whisplay|device|hardware|controls?|functions?|features?|capabilit\w*|screen|brightness|darker|brighter|speaker|volume|louder|quieter|microphone|recording|wi-?fi|bluetooth|ssh|services?|cpu|ram|storage|temperature|connection|home|reboot|shutdown)\b/i.test(text)
-    || /\bwhat[\s\S]*\brunning\b/i.test(text));
+    || /\bwhat[\s\S]*\brunning\b/i.test(text) || parseDeviceCommand(text)?.metric === "ip"
+    || /\b(what|which|show|check|tell|give|find|read|report)\b/i.test(text)
+      && /\b(?:your|whisplay's|this (?:device|pi|raspberry pi)'s) (?:(?:current|local|wi-?fi) )*(?:ip|ipv4)(?: address)?\b/i.test(text));
 export const needsWhisplayCapabilities = (text: string): boolean => whisplayVoiceControlEnabled()
   && !/\b(please|now|set|make|take|disable|enable|restart|shutdown)\b/i.test(text)
   && (/\b(what|which)\b[\s\S]*\b(capabilit\w*|functions?|features?|turn on or off)\b/i.test(text)

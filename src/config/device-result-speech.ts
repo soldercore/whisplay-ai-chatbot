@@ -1,5 +1,6 @@
 // Operating facts are rendered from validated tool results, like memory replies.
 // A small model chooses intent; it cannot rewrite measurements or claim pending work completed.
+import { isIPv4 } from "node:net";
 const labels: Record<string,string> = { brightness: "screen brightness", volume: "speaker volume", home: "Home navigation",
   lock: "screen locking", recording: "GLaDOS recording lock", wifi: "Wi-Fi", bluetooth: "Bluetooth",
   service: "service start or restart", reboot: "reboot", shutdown: "shutdown",
@@ -10,17 +11,19 @@ const clean = (value: unknown): string => String(value ?? "unavailable").replace
 const quantity = (value: any): string => value && typeof value.value === "number" && Number.isFinite(value.value)
   ? `${value.value} ${value.unit === "°C" ? "degrees Celsius" : value.unit === "GiB" ? "gibibytes" : value.unit === "%" ? "percent" : clean(value.unit)}` : "unavailable";
 
-export function deviceResultSpeech(name: string, output: string, metric?: "temperature"|"memory"|"storage"|"cpu"): string | undefined {
+export function deviceResultSpeech(name: string, output: string, metric?: "temperature"|"memory"|"storage"|"cpu"|"ip"): string | undefined {
   if (process.env.WHISPLAY_VOICE_CONTROL_ENABLED !== "true") return;
   if (name === "whisplay" && output.startsWith("[error]")) {
+    if (metric === "ip") return "The network lookup failed. Local Wi-Fi IP information is unavailable.";
     let reason="";try{reason=JSON.parse(output.slice(7)).reason||"";}catch{}
     if (/fixed privilege helper/i.test(reason)) return "That operation is unavailable: the fixed privileged control helper is missing or not authorized.";
     if (/closing glados uses home/i.test(reason)) return "Closing GLaDOS returns to Home. A Raspberry Pi power action needs an explicit Pi request and physical confirmation.";
     return "I could not verify completion of that device request. No change was confirmed.";
   }
-  if (!output.startsWith("[success]")) return;
+  if (!output.startsWith("[success]")) return metric === "ip" ? "Local Wi-Fi IP information is unavailable: the network lookup did not return a verified result." : undefined;
   let r: any;
-  try { r = JSON.parse(output.slice(9)); } catch { return; }
+  try { r = JSON.parse(output.slice(9)); } catch { return metric === "ip" ? "Local Wi-Fi IP information is unavailable: the network tool returned no usable result." : undefined; }
+  if (!r || typeof r !== "object" || Array.isArray(r)) return metric === "ip" ? "Local Wi-Fi IP information is unavailable: the network tool returned no usable result." : undefined;
   if (name === "getSystemHealth") {
     if (metric === "temperature") return `CPU temperature is ${quantity(r.temperature)}.`;
     if (metric === "memory") return `RAM available is ${quantity(r.memory?.available)}, and RAM used is ${quantity(r.memory?.used)}.`;
@@ -31,6 +34,16 @@ export function deviceResultSpeech(name: string, output: string, metric?: "tempe
       + `Storage available is ${quantity(r.disk?.available)}.`;
   }
   if (name !== "whisplay") return;
+  if (metric === "ip") {
+    const wifi = r.wifi;
+    if (!wifi || wifi.available === false) return "Local Wi-Fi IP information is unavailable.";
+    const iface = typeof wifi.device === "string" && /^[a-zA-Z0-9_.:-]{1,32}$/.test(wifi.device) ? wifi.device : undefined;
+    const addresses = (Array.isArray(wifi.connected) ? wifi.connected : [])
+      .filter((n:any) => n?.active === true && typeof n.ipv4 === "string" && isIPv4(n.ipv4) && n.ipv4 !== "0.0.0.0")
+      .slice(0,4).map((n:any) => n.ipv4);
+    if (!addresses.length) return `No local Wi-Fi IPv4 address was reported${iface ? " for " + iface : ""}. Other interfaces and public IP addresses were not checked.`;
+    return `Local Wi-Fi IPv4 address is ${addresses.join(", ")}${iface ? " on " + iface : "; the interface was not reported"}.`;
+  }
   if (r.api === 1 && r.actions && Array.isArray(r.readable)) {
     const allowed = Object.keys(labels).filter(key => r.actions[key]?.supported === true).map(key => labels[key]);
     const denied = Object.keys(labels).filter(key => r.actions[key]?.supported === false).map(key => labels[key]);
