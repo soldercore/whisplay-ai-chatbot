@@ -377,7 +377,7 @@ const prefetchSystemHealth = async (
     partialCallback(reply);
     return false;
   }
-  const deviceReply = deviceResultSpeech("getSystemHealth", execution.output);
+  const deviceReply = deviceResultSpeech("getSystemHealth", execution.output, undefined, question);
   if (deviceReply) {
     messages.push({ role: "assistant", content: deviceReply });
     partialCallback(deviceReply);
@@ -555,7 +555,7 @@ const chatWithLLMStreamInternal = async (
       invokeFunctionCallback?.(direct.name, result.output);
       if (toolLoopState.signal?.aborted) { endCallback(); return; }
       const call = { function: { index: 0, name: direct.name, arguments: direct.args } };
-      const reply = deviceResultSpeech(direct.name, result.output, direct.metric)
+      const reply = deviceResultSpeech(direct.name, result.output, direct.metric, question)
         || "I could not verify completion of that device request. No change was confirmed.";
       messages.push({role:"assistant",content:"",tool_calls:[[call]]},
         {role:"tool",content:result.output,tool_name:direct.name},{role:"assistant",content:reply});
@@ -580,7 +580,7 @@ const chatWithLLMStreamInternal = async (
       messages.push({ role: "assistant", content: "", tool_calls: [[call]] },
         { role: "tool", content: result.output, tool_name: "whisplay" });
       toolLoopState.signatures.add(toolCallSignature(call));
-      const reply = deviceResultSpeech("whisplay", result.output);
+      const reply = deviceResultSpeech("whisplay", result.output, undefined, question);
       if (reply) {
         messages.push({ role: "assistant", content: reply });
         partialCallback(reply);
@@ -899,7 +899,7 @@ const chatWithLLMStreamInternal = async (
         }
 
         // Directly extract and return the tool result if available
-        const deviceReplies = results.map(([name, result]) => deviceResultSpeech(name, result));
+        const deviceReplies = results.map(([name, result]) => deviceResultSpeech(name, result, undefined, typeof deviceQuestion === "string" ? deviceQuestion : ""));
         if (deviceReplies.length && deviceReplies.every(Boolean)) {
           const reply = deviceReplies.join(" ");
           messages.push(...newMessages, { role: "assistant", content: reply });

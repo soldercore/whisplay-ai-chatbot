@@ -48,7 +48,7 @@ test("simple commands execute centrally with zero inference, accurate history an
   await ask("Turn volume down by 30%");
   assert.equal(volume,40,"explicit relative amount uses live state and absolute daemon setting");
   await ask("Set volume to 73 percent");assert.equal(volume,73);
-  assert.match(await ask("Can you check whether SSH is working?"),/ssh is Running/);
+  assert.match(await ask("Can you check whether SSH is working?"),/SSH is running/);
   assert.match(await ask("Take me back to Home."),/Home after this reply/);
   for (const phrase of ["Go Home.","Bring me Home.","Exit GLaDOS.","Close GLaDOS.","Turn off GLaDOS."]) {
     const start=requests.length;

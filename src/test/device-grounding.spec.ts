@@ -10,12 +10,12 @@ import { deviceResultSpeech } from "../config/device-result-speech";
 test("operating speech never promotes unavailable capabilities or changes metric labels", () => {
   process.env.WHISPLAY_VOICE_CONTROL_ENABLED = "true";
   const caps = deviceResultSpeech("whisplay", '[success]' + JSON.stringify({ api:1, readable:['audio'],
-    actions:{volume:{supported:true},recording:{supported:false},shutdown:{supported:false}} }))!;
+    actions:{volume:{supported:true},recording:{supported:false},shutdown:{supported:false}} }),undefined,"List all capabilities in detail.")!;
   assert.match(caps,/Available controls are speaker volume/);
   assert.match(caps,/Not available through this connection: GLaDOS recording lock, shutdown/);
   const health = deviceResultSpeech("getSystemHealth", '[success]'+JSON.stringify({
     cpu:{utilization:{value:7.5,unit:'%'}},temperature:{value:33.1,unit:'°C'},
-    memory:{used:{value:1.11,unit:'GiB'},available:{value:14.52,unit:'GiB'}},disk:{available:{value:47.58,unit:'GiB'}} }))!;
+    memory:{used:{value:1.11,unit:'GiB'},available:{value:14.52,unit:'GiB'}},disk:{available:{value:47.58,unit:'GiB'}} }),undefined,"Give the full system health details.")!;
   assert.match(health,/RAM used is 1.11 gibibytes, and RAM available is 14.52 gibibytes/);
   assert.match(health,/Storage available is 47.58 gibibytes/);
   assert.doesNotMatch(health,/healthy|adequate|partition|73/);

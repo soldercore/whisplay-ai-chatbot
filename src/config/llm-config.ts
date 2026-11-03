@@ -6,7 +6,7 @@ const baseSystemPrompt = personaPrompt();
 console.log(`[Persona] ${personaName()}`);
 
 const speechFriendlyPrompt =
-  " Format your replies for spoken text-to-speech. Do not use Markdown formatting that sounds awkward when read aloud, such as tables, code blocks, headings, bullet lists, numbered lists, inline links, footnote markers, or decorative separators. Use natural conversational sentences and plain punctuation instead.";
+  " Format your replies for spoken text-to-speech. Simple questions: one or two natural sentences, usually 25 to 40 words; shorter when sufficient. Expand for requested detail, accuracy or safety. Omit needless implementation details. Use plain conversational prose without Markdown.";
 
 const wakeWordEnabled =
   (process.env.WAKE_WORD_ENABLED || "").toLowerCase() === "true";
