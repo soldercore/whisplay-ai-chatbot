@@ -12,7 +12,7 @@ def _hex(value):
 
 
 # ---- Palette -------------------------------------------------------------
-VOID = _hex("000000")
+VOID = _hex("080C08")  # Approved Home charcoal (RGB565-exact).
 RAISED = _hex("080C08")
 PANEL = _hex("101810")
 LINE = _hex("182821")
@@ -54,14 +54,14 @@ DIVIDER_Y = 26
 PANE_Y = 27               # content top: first row under the status bar
 CONTENT_SAFE_BOTTOM = 264 # = HEIGHT - 16
 
-STAGE_H = 104             # stage image: visual rows 0..79, caption rows 80..103 (pane coords)
-STAGE_VISUAL_H = 80
-STAGE_MID_Y = 40          # visual centre line (pane coords)
-CAPTION_MID_Y = 93        # caption centre line (pane coords)
+STAGE_H = 48              # Stable compact pane in all ordinary voice states.
+STAGE_VISUAL_H = 28
+STAGE_MID_Y = 14          # visual centre line (pane coords)
+CAPTION_MID_Y = 39        # caption centre line (pane coords)
 BODY_TOP_STAGE = PANE_Y + STAGE_H
-BODY_TOP_CONSOLE = PANE_Y + 26     # 26 px answer strip
+BODY_TOP_CONSOLE = PANE_Y + STAGE_H
 BODY_TOP_TERMINAL = PANE_Y + 71    # 71 px command-output pane
-STRIP_MID_Y = 12          # strip centre line (pane coords)
+STRIP_MID_Y = 14          # strip centre line (pane coords)
 CHROME_LEFT = 14
 CHROME_RIGHT = 226
 TEXT_LEFT = 12
@@ -153,9 +153,9 @@ class Flags:
 
     def __init__(self, env=None):
         env = os.environ if env is None else env
-        self.rain = _env_bool(env, "WHISPLAY_UI_RAIN", True)
-        self.scanlines = _env_bool(env, "WHISPLAY_UI_SCANLINES", True)
-        self.decode = _env_bool(env, "WHISPLAY_UI_DECODE", True)
+        self.rain = _env_bool(env, "WHISPLAY_UI_RAIN", False)
+        self.scanlines = _env_bool(env, "WHISPLAY_UI_SCANLINES", False)
+        self.decode = _env_bool(env, "WHISPLAY_UI_DECODE", False)
         self.speech_focus = _env_bool(env, "WHISPLAY_UI_SPEECH_FOCUS", True)
         emoji = str(env.get("WHISPLAY_UI_EMOJI", "strip") or "strip").strip().lower()
         self.emoji = emoji if emoji in ("strip", "off") else "strip"

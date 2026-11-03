@@ -29,12 +29,8 @@ from .panes import (
 )
 from .rgb565 import to_rgb565
 from .stage import (
-    ERROR_GLITCH,
-    IDLE_RAIN_SECONDS,
     StageInfo,
     caption_parts,
-    next_blink_edge,
-    rain_active,
     render_caption,
     render_visual,
     visual_fps,
@@ -53,9 +49,9 @@ STATE_LABELS = {
     vs.BOOT: "BOOT",
     vs.IDLE: "IDLE",
     vs.CALIBRATE: "CALIBRATE",
-    vs.LISTEN: "LISTEN",
-    vs.TRANSCRIBE: "STT",
-    vs.THINK: "THINK",
+    vs.LISTEN: "LISTENING",
+    vs.TRANSCRIBE: "RECOGNIZE",
+    vs.THINK: "THINKING",
     vs.TOOL: "TOOL",
     vs.ANSWER: "REPLY",
     vs.ERROR: "ERROR",
@@ -108,6 +104,8 @@ class TerminalUI:
         self.text_changed = False
         # region caches
         self.status_key = None
+        self.aux_key = None
+        self.aux_image = None
         self.pane_kind = None
         self.pane_h = 0
         self.visual_key = None
@@ -173,9 +171,11 @@ class TerminalUI:
             self.pane_kind = kind
             self.visual_key = self.caption_key = self.side_key = None
             self.xfade_from = None
-        elif state_changed and kind == KIND_STAGE and self.pane_img is not None and not self.full:
+        elif state_changed and state not in (vs.LISTEN, vs.ERROR, vs.APPROVAL) and kind == KIND_STAGE and self.pane_img is not None and not self.full:
             self.xfade_from = self.pane_img.copy()
             self.xfade_at = now
+        if state_changed and state in (vs.LISTEN, vs.ERROR, vs.APPROVAL):
+            self.xfade_from = None  # Recording and safety feedback must be immediate.
         morph_p = (now - self.morph_at) / theme.MORPH
         morphing = 0.0 <= morph_p < 1.0
         if morphing:
@@ -209,6 +209,11 @@ class TerminalUI:
 
         # ---- status bar
         model = self._status_model(snapshot, state)
+        auxiliary_key = self.statusbar.extras_key(model)
+        auxiliary_changed = auxiliary_key != self.aux_key
+        if auxiliary_changed:
+            self.aux_key = auxiliary_key
+            self.aux_image = self.statusbar.render_extras(model)
         key = self.statusbar.key(model)
         if key != self.status_key:
             self.status_key = key
@@ -219,7 +224,7 @@ class TerminalUI:
         geometry = (self.pane_h, body_top, body_bottom)
         geometry_changed = geometry != self.geometry
         self.geometry = geometry
-        dirty.extend(self._render_pane(kind, state, t, now, snapshot, morphing or geometry_changed, xfading, xfade_p))
+        dirty.extend(self._render_pane(kind, state, t, now, snapshot, morphing or geometry_changed or auxiliary_changed, xfading, xfade_p))
 
         # ---- body
         if self.body.changed(now, body_h) or geometry_changed:
@@ -255,6 +260,12 @@ class TerminalUI:
     def _ingest_text(self, snapshot, state, now):
         text = _snap(snapshot, "text", "")
         text = text if isinstance(text, str) else str(text)
+        # Status instructions belong in the compact pane, not duplicated as a
+        # large body paragraph. Transcripts and all answer text remain intact.
+        if state == vs.IDLE and (text.startswith("Long Press the button") or text.startswith("Hold the button")):
+            text = ""
+        elif state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK) and text.strip().lower() in ("listening...", "recognizing...", "thinking..."):
+            text = ""
         transaction = snapshot.get("transaction_id")
         tx_changed = (
             transaction is not None
@@ -330,7 +341,7 @@ class TerminalUI:
     def _status_model(self, snapshot, state):
         hour, minute, _ = clock.wall_hms()
         speaking = state == vs.ANSWER and self.body.speaking(self.last_now)
-        label = "SPEAK" if speaking else STATE_LABELS.get(state)
+        label = "SPEAKING" if speaking else STATE_LABELS.get(state)
         if label is None:
             if state == vs.RESULT:
                 label = (self.info.raw_status or "").strip().upper()
@@ -377,11 +388,9 @@ class TerminalUI:
 
         if kind == KIND_STRIP:
             mode = self._strip_mode(now)
-            emoji = self._emoji_image(_snap(snapshot, "emoji", ""))
+            emoji = None  # Text owns the answer pane; no decorative emoji loading.
             progress = snapshot.get("music_progress")
-            animated = mode in (STRIP_SPEAKING, STRIP_RECEIVING)
-            bucket = int(t * (theme.SPEAKING_FPS if mode == STRIP_SPEAKING else 6)) if animated else -1
-            key = (mode, bucket, id(emoji) if emoji is not None else None, progress)
+            key = (mode, progress)
             if key != self.side_key or force:
                 self.side_key = key
                 self.pane_img = render_strip(self.fonts, mode, t, emoji, progress)
@@ -400,6 +409,9 @@ class TerminalUI:
 
     def _paste_pane(self, pane, full_h):
         h = self.pane_h
+        if self.aux_image is not None and self.pane_kind != KIND_TERMINAL:
+            pane = pane.copy()
+            pane.paste(self.aux_image, (0, 0), self.aux_image)
         y0 = theme.PANE_Y
         if h >= full_h:
             self.frame.paste(pane, (0, y0))
@@ -416,18 +428,15 @@ class TerminalUI:
         if fps > 0:
             fps = min(fps, self._fps_cap())
         bucket = int(t * fps) if fps > 0 else -1
-        cursor = None
-        if state == vs.IDLE:
-            cursor = (t % theme.BLINK_PERIOD) < theme.BLINK_ON
         static_key = (state, info.quality, info.raw_status if state in (vs.GENERIC, vs.RESULT) else "", info.tool_label if state == vs.TOOL else "")
-        key = (static_key, bucket, cursor)
+        key = (static_key, bucket)
         changed = False
         if self.visual_key is None or key != self.visual_key:
             self.visual_img, _ = render_visual(state, t, info)
             self.visual_key = key
             changed = True
         parts = caption_parts(state, t, info)
-        pulse = int(t * 10) if state == vs.LISTEN else -1
+        pulse = int(t) if state == vs.LISTEN else -1
         caption_key = (state, parts, pulse)
         self._caption_changed = caption_key != self.caption_key
         if self._caption_changed:
@@ -529,25 +538,13 @@ class TerminalUI:
             fps = 30
         if kind == KIND_STAGE:
             fps = max(fps, visual_fps(state, t, self.info))
-            if state == vs.LISTEN:
-                fps = max(fps, 10)
-        elif kind == KIND_STRIP:
-            mode = self._strip_mode(now)
-            if mode == STRIP_SPEAKING:
-                fps = max(fps, theme.SPEAKING_FPS)
-            elif mode == STRIP_RECEIVING:
-                fps = max(fps, 6)
         fps = max(fps, self.body.fps_needed(now))
         self._animating = fps > 0
         if fps > 0:
             return 1.0 / min(fps, self._fps_cap())
         waits = [clock.seconds_to_next_minute() + 0.05]
-        if kind == KIND_STAGE and state == vs.IDLE:
-            waits.append(next_blink_edge(t))
-            if rain_active(state, t, self.info):
-                waits.append(IDLE_RAIN_SECONDS - t)
-        if kind == KIND_STAGE and state == vs.ERROR and t < ERROR_GLITCH:
-            waits.append(ERROR_GLITCH - t)
+        if kind == KIND_STAGE and state == vs.LISTEN:
+            waits.append(1.0 - (t % 1.0))
         if self.tracker.latch_until > now:
             waits.append(self.tracker.latch_until - now)
         body_wait = self.body.next_event(now)

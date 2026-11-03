@@ -129,7 +129,7 @@ def safe_area_violations(fb):
     radius = theme.SAFE_CHECK_RADIUS
     ys, xs = np.mgrid[0:radius, 0:radius]
     curve = (radius - xs) ** 2 + (radius - ys) ** 2 > radius ** 2
-    lit = fb.any(axis=2)
+    lit = np.any(fb != np.asarray(theme.VOID), axis=2)
     corners = {
         "top-left": (slice(0, radius), slice(0, radius), False, False),
         "top-right": (slice(0, radius), slice(W - radius, W), False, True),
@@ -314,7 +314,7 @@ def scenario(session):
     s.shot("error_released")
 
     s.send(status="Confirm", emoji="🔐", approval_mode=True, scroll_speed=2, image="",
-           text="[shell] Run command\n\nrm -rf ~/.cache/whisplay/tmp")
+           text="Review requested action.\n\nHold to cancel; tap to allow.")
     wait(0.6)
     s.shot("approval")
     s.send(status="Allowed", emoji="✅", text="Operation allowed.", approval_mode=False, scroll_speed=0)
@@ -417,7 +417,7 @@ def selftest():
         check(s.lcd.fb.any(), "frames reached the LCD")
         for name, image in s.shots:
             problems = safe_area_violations(np.asarray(image))
-            if name != "approval" and np.asarray(image)[theme.CONTENT_SAFE_BOTTOM:].any():
+            if name != "approval" and np.any(np.asarray(image)[theme.CONTENT_SAFE_BOTTOM:] != np.asarray(theme.VOID)):
                 problems.append("content below CONTENT_SAFE_BOTTOM")
             check(not problems, f"safe area respected: {name}" + (f" {problems[:3]}" if problems else ""))
     finally:
@@ -602,6 +602,56 @@ def selftest():
     finally:
         s.close()
 
+    print("[selftest] compact states and truthful essential header")
+    s = Session()
+    try:
+        ui = s.rt.terminal_ui
+        state = {'wifi': {'enabled': True, 'connected': True, 'signal': 83},
+                 'bluetooth': {'enabled': False}}
+        s.lcd.wireless_status = state
+        s.send(status="idle", text="Long Press the button to say something.", battery_level=55)
+        s.wait(0.5)
+        check(ui.text == "", "idle guidance is shown once in the compact pane")
+        header = s.lcd.fb[:theme.STATUS_H].copy()
+        heights = []
+        for status in ("listening", "recognizing", "Thinking", "answering"):
+            s.send(status=status, text="" if status == "answering" else "Listening...")
+            s.wait(0.5)
+            heights.append(ui.geometry[1])
+            check(np.array_equal(header[:,104:], s.lcd.fb[:theme.STATUS_H,104:]),
+                  "clock, radio and percentage stay fixed: " + status)
+        check(len(set(heights)) == 1 and heights[0] == theme.BODY_TOP_STAGE,
+              "ordinary voice states keep a fixed text origin")
+        s.send(status="listening", text="Listening...")
+        s.wait(0.5)
+        visual = s.lcd.fb[theme.PANE_Y:theme.PANE_Y+theme.STAGE_VISUAL_H].copy()
+        s.wait(2)
+        check(np.array_equal(visual, s.lcd.fb[theme.PANE_Y:theme.PANE_Y+theme.STAGE_VISUAL_H]),
+              "recording indicator never invents audio amplitude")
+        s.send(status="answering", text="Listening...")
+        s.wait(0.5)
+        check(ui.text == "Listening...", "answer text resembling a status is preserved")
+        from whisplay_ui import visual_state as visual_states
+        model = ui._status_model(s.rt.terminal_snapshot(), visual_states.IDLE)
+        images = []
+        for radio in ({'wifi': {'enabled':False}, 'bluetooth': {'enabled':False}},
+                      {'wifi': {'enabled':True,'connected':False}, 'bluetooth': {'enabled':True}},
+                      {'wifi': {}, 'bluetooth': {}}):
+            model['wireless_status'] = radio
+            images.append(ui.statusbar.render(model).tobytes())
+        check(len(set(images)) == 3, "disabled, disconnected and unavailable radio states differ")
+        for level in (None, -1, 101, True, 0, 9, 30, 55, 100):
+            model['battery_level'] = level
+            image = ui.statusbar.render(model)
+            frame = np.tile(np.asarray(theme.VOID,dtype=np.uint8),(H,W,1))
+            frame[:theme.STATUS_H] = np.asarray(image)
+            check(not safe_area_violations(frame), "header safe area at battery " + str(level))
+        model.update(vpn=True, rag=True, image=True)
+        check(ui.statusbar.render_extras(model).getbbox() is not None,
+              "optional application badges remain available outside the essential header")
+    finally:
+        s.close()
+
     print("[selftest] real RenderThread.run() loop on the wall clock (WHISPLAY_UI_RAIN=false)")
     s = Session(env={"WHISPLAY_UI_RAIN": "false"})
     try:
@@ -619,7 +669,7 @@ def selftest():
         s.rt.stop()
         s.rt.join(timeout=2.0)
         print(f"         listening: {listen_pushes} pushes in 1 s, idle: {idle_pushes} pushes in 2 s")
-        check(listen_pushes >= 15, "listening animates in the threaded loop")
+        check(1 <= listen_pushes <= 5, "recording is immediate and calm; no synthetic level animation")
         check(idle_pushes <= 8, "idle loop sleeps between blink edges")
         check(not s.rt.is_alive(), "render thread stops cleanly")
         check(s.rt.terminal_ui is not None, "no fallback in the threaded loop")

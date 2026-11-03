@@ -1,138 +1,75 @@
-"""Status bar: state badge, clock, and battery / Wi-Fi / VPN / RAG / image
-indicators, plus any plugin status icons registered with chatbot-ui.py."""
+"""Home-matched essential header; optional badges stay in the content pane."""
 from PIL import Image, ImageDraw
-
 from . import theme
-from wireless_icons import draw_wireless
 from .draw_util import draw_text, fit_text
+from .status_icons import draw_home_wireless
 
 CENTER_Y = theme.STATUS_CENTER_Y
 GAP = 6
 
 
 def battery_color(level):
-    # Same thresholds Node uses for battery_color (src/status/battery-status.ts).
-    if level <= 10:
-        return theme.RED
-    if level <= 30:
-        return theme.AMBER
-    return theme.GREEN
+    return theme.RED if level <= 10 else theme.AMBER if level <= 30 else theme.GREEN
 
 
 class StatusBar:
     def __init__(self, fonts, icon_factories=None, icon_context=None):
         self.fonts = fonts
         self.icon_factories = icon_factories if icon_factories is not None else []
-        self.icon_context = icon_context  # callable(model) -> classic icon context
+        self.icon_context = icon_context
 
     def key(self, model):
-        return (
-            model["label"],
-            model["color"],
-            model["clock"],
-            model["battery_level"],
-            model.get("wireless_status"),
-            model["wifi_level"],
-            model["network_connected"],
-            bool(model["vpn"]),
-            bool(model["rag"]),
-            bool(model["image"]),
-            len(self.icon_factories),
-        )
+        return (model["label"], model["color"], model["clock"], model["battery_level"],
+                model.get("wireless_status"), model["wifi_level"], model["network_connected"])
+
+    def extras_key(self, model):
+        return (bool(model["vpn"]), bool(model["rag"]), bool(model["image"]),
+                len(self.icon_factories), self.key(model) if self.icon_factories else None)
 
     def render(self, model):
         image = Image.new("RGB", (theme.WIDTH, theme.STATUS_H), theme.VOID)
         draw = ImageDraw.Draw(image)
-        fonts = self.fonts
-        color = model["color"]
-
-        # Divider with a state-coloured accent under the badge.
-        draw.line([(0, theme.DIVIDER_Y), (theme.WIDTH - 1, theme.DIVIDER_Y)], fill=theme.LINE)
-
-        # ---- right cluster, laid out right to left
-        right = theme.STATUS_SAFE_RIGHT
+        fonts, color = self.fonts, model["color"]
+        draw.line((0, theme.DIVIDER_Y, theme.WIDTH-1, theme.DIVIDER_Y), fill=theme.LINE)
+        draw.rectangle((24, CENTER_Y-3, 29, CENTER_Y+2), fill=color)
+        # Keep room for the clock for every state label. Unknown generic states fit.
+        label = fit_text(fonts.pixel8, model["label"], 64)
+        left = draw_text(draw, image, fonts.pixel8, 34, CENTER_Y, label, theme.TEXT)
+        draw.line((24, theme.DIVIDER_Y, int(left), theme.DIVIDER_Y), fill=theme.GREEN_MID if color == theme.GREEN else color)
         level = model["battery_level"]
-        if level is not None:
-            right = self._battery(draw, image, right, level)
-        wifi = model["wifi_level"]
-        if model.get("wireless_status") is not None:
-            right = draw_wireless(draw, right - GAP, CENTER_Y, model["wireless_status"], theme)
-        elif wifi:
-            right = self._wifi(draw, right - GAP, wifi, model["network_connected"])
+        valid = type(level) is int and 0 <= level <= 100
+        text = "%d%%" % level if valid else "--%"
+        right = int(theme.STATUS_SAFE_RIGHT-fonts.meta_bold.width(text))
+        fg = battery_color(level) if valid and level <= 30 else theme.TEXT if valid else theme.MUTED
+        draw_text(draw, image, fonts.meta_bold, right, CENTER_Y, text, fg)
+        state = model.get("wireless_status")
+        if state is None:
+            wifi = model["wifi_level"]
+            state = {'wifi': {'enabled': True if wifi else None,
+                     'connected': False if model["network_connected"] is False else True if wifi else None,
+                     'signal': {1:20, 2:50, 3:90}.get(wifi)}, 'bluetooth': {}}
+        radio_right = int(theme.STATUS_SAFE_RIGHT-fonts.meta_bold.width("100%")-GAP)
+        right = draw_home_wireless(image, radio_right, CENTER_Y, state)
+        if model["clock"]:
+            width = fonts.meta_bold.width(model["clock"])
+            x = max(int((theme.WIDTH-width)/2), int(left+GAP))
+            if x+width <= right-GAP:
+                draw_text(draw, image, fonts.meta_bold, x, CENTER_Y, model["clock"], theme.TEXT)
+        return image
+
+    def render_extras(self, model):
+        image = Image.new("RGBA", (theme.WIDTH, theme.STAGE_VISUAL_H))
+        draw = ImageDraw.Draw(image)
+        right = theme.CHROME_RIGHT
         for flag, text, fg, border in (
             ("vpn", "VPN", theme.CYAN, theme.CYAN_DIM),
             ("rag", "RAG", theme.AMBER, theme.AMBER_DIM),
             ("image", "IMG", theme.GREEN, theme.GREEN_DIM),
         ):
             if model[flag]:
-                right = self._tag(draw, image, right - GAP, text, fg, border)
-        right = self._plugin_icons(image, right, model)
-
-        # ---- left: state badge, fitted to the room the indicators leave
-        x = theme.STATUS_SAFE_LEFT
-        draw.rectangle([x, CENTER_Y - 3, x + 5, CENTER_Y + 2], fill=color)
-        label_x = x + 10
-        label = fit_text(fonts.pixel8, model["label"], max(0, min(86, right - GAP - label_x)))
-        left_end = draw_text(draw, image, fonts.pixel8, label_x, CENTER_Y, label, color)
-        draw.line([(x, theme.DIVIDER_Y), (int(left_end), theme.DIVIDER_Y)], fill=color)
-
-        # ---- centre: clock, only if it fits between badge and indicators
-        clock = model["clock"]
-        if clock:
-            stack = fonts.meta_bold
-            width = stack.width(clock)
-            cx = int((theme.WIDTH - width) / 2)
-            if cx < left_end + GAP:
-                cx = int(left_end + GAP)
-            if cx + width <= right - GAP:
-                draw_text(draw, image, stack, cx, CENTER_Y, clock, theme.MUTED)
+                right = self._tag(draw, image, right-GAP, text, fg, border)
+        self._plugin_icons(image, right, model)
         return image
-
-    # -- pieces -------------------------------------------------------------
-    def _battery(self, draw, image, right, level):
-        try:
-            level = max(0, min(100, int(level)))
-        except (TypeError, ValueError):
-            level = 0
-        fill = battery_color(level)
-        nub_w, body_w, body_h = 2, 20, 10
-        x1 = right - nub_w
-        x0 = x1 - body_w
-        y0 = CENTER_Y - body_h // 2
-        y1 = y0 + body_h - 1
-        draw.rectangle([x1 + 1, CENTER_Y - 2, x1 + nub_w, CENTER_Y + 1], fill=theme.MUTED)
-        draw.rectangle([x0, y0, x1, y1], outline=theme.MUTED)
-        inner = body_w - 4
-        filled = int(round(inner * level / 100.0))
-        if filled > 0:
-            draw.rectangle([x0 + 2, y0 + 2, x0 + 1 + filled, y1 - 2], fill=fill)
-        text = "%d" % level
-        stack = self.fonts.pixel8
-        tx = x0 - 3 - stack.width(text)
-        draw_text(draw, image, stack, tx, CENTER_Y, text, fill if level <= 30 else theme.MUTED)
-        return int(tx)
-
-    def _wifi(self, draw, right, level, connected):
-        try:
-            level = max(0, min(3, int(level)))
-        except (TypeError, ValueError):
-            level = 0
-        offline = connected is False
-        bar_w, gap = 2, 1
-        width = 3 * bar_w + 2 * gap
-        x = right - width
-        base = CENTER_Y + 4
-        for index in range(3):
-            height = 3 + index * 3
-            bx = x + index * (bar_w + gap)
-            if offline:
-                fill = theme.RED_DIM
-            else:
-                fill = theme.GREEN if index < level else theme.LINE
-            draw.rectangle([bx, base - height + 1, bx + bar_w - 1, base], fill=fill)
-        if offline:
-            draw.line([(x, base - 7), (x + width - 1, base)], fill=theme.RED)
-        return x
 
     def _tag(self, draw, image, right, text, fg, border):
         stack = self.fonts.pixel8
@@ -165,7 +102,7 @@ class StatusBar:
                         scale = 14.0 / tile.height
                         tile = tile.resize((max(1, int(tile.width * scale)), 14), Image.LANCZOS)
                     x0 = right - GAP - tile.width
-                    if x0 < theme.WIDTH // 2:
+                    if x0 < 140:  # Leave the title and activity dots unobscured.
                         return right
                     image.paste(tile, (x0, CENTER_Y - tile.height // 2), tile)
                     right = x0
