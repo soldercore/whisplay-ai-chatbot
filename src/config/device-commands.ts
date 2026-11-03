@@ -23,6 +23,20 @@ const unit = "(?: ?(?:%|percent|percentage points?))?";
 const amount = `(?:a little|a bit|slightly|(?:by |to )?${numberPattern}${unit})`;
 const match = (text: string, pattern: string) => new RegExp(`^(?:${pattern})$`).exec(text);
 
+// Clear whole-system requests are separate from app exit and screen controls.
+// Bare ability questions/unclear targets must never become a power ticket.
+export function powerRequest(text: string): "shutdown" | "reboot" | "capability" | "clarify" | undefined {
+  const raw = text.toLowerCase().replace(/[’]/g,"'").trim().replace(/[.!?]+$/g,"")
+    .replace(/\s+/g," ").replace(/^(?:hey )?glados[, ]+/,"");
+  const q = deviceCommandText(text);
+  if (/\b(?:not|don't|dont|never|if|unless|when|after|before|then|and|or|tomorrow|later)\b/.test(q)) return;
+  if (/^(?:can|could) you (?:shut down|shutdown|power down|reboot)$/.test(raw)) return "capability";
+  if (match(q,"(?:restart|reboot)|(?:turn|switch) (?:it|something) off|(?:turn|switch) off (?:it|something)")) return "clarify";
+  const target = "(?:the )?(?:whole system|entire system|system|raspberry pi|pi|device|computer|whisplay)|yourself";
+  if (match(q,`(?:restart|reboot) (?:${target})`)) return "reboot";
+  if (match(q,`(?:shut down|shutdown|power down)(?: (?:${target}))?|(?:turn|switch) off (?:${target})|(?:turn|switch) (?:${target}) off`)) return "shutdown";
+}
+
 export function deviceCommandText(text: string): string {
   if (text.length > 240) return "";
   let value = text.toLowerCase().replace(/[’]/g,"'").trim().replace(/[.!?]+$/g,"").replace(/\s+/g," ");
@@ -34,6 +48,8 @@ export function deviceCommandText(text: string): string {
 export function parseDeviceCommand(text: string): DeviceCommand | undefined {
   const q = deviceCommandText(text);
   if (!q) return;
+  const power = powerRequest(text);
+  if (power) return {name:"whisplay",args:{action:power === "capability" || power === "clarify" ? "capabilities" : power}};
   // Read-only checks accept "check if", but not an extra requested operation.
   const service = "(?:(?:the |your )?(?:ssh|ollama|piper|whisper|faster[- ]whisper|whisplay daemon|daemon)(?: service)?)";
   if (match(q,`(?:is ${service} (?:working|running|available|up|on)|(?:check (?:whether |if )?|tell me whether )${service} is (?:working|running|available|up|on)|(?:show|check|report)(?: me)? (?:the |your )?service (?:status|availability)|what(?: is|'s) (?:the )?status of ${service})`)) {
@@ -51,8 +67,17 @@ export function parseDeviceCommand(text: string): DeviceCommand | undefined {
   if (match(q,"(?:is (?:your |the )?bluetooth (?:on|off|enabled|disabled|connected)|check (?:if |whether )?(?:your |the )?bluetooth is (?:on|off|enabled|disabled|connected)|(?:show|check|report|read)(?: me)? (?:your |the |current )?bluetooth(?: status)?|what(?: is|'s) (?:your |the )?bluetooth status|what(?: is|'s) your bluetooth|which bluetooth devices are connected)")) {
     return {name:"whisplay",args:{action:"status",scope:"bluetooth"}};
   }
+  // These complete utterances express a radio intention; arbitrary negation is
+  // still excluded below and the host checks Qwen's proposal against this intent.
+  const radio = "(?:(?:your|the|my) )?(wi-?fi|wireless(?: connection)?|bluetooth)";
+  let wireless = match(q,`(?:i (?:need|want to use|would like to use)|i'd like to use) ${radio}`);
+  if (wireless) return {name:"whisplay",args:{action:wireless[1] === "bluetooth" ? "bluetooth" : "wifi",enabled:true}};
+  wireless = match(q,`i (?:don't|do not) (?:need|want to use) ${radio}(?: anymore| any more)?`);
+  if (wireless) return {name:"whisplay",args:{action:wireless[1] === "bluetooth" ? "bluetooth" : "wifi",enabled:false}};
+  if (match(q,"are you connected|what(?: is|'s) (?:your |the )?wi-?fi (?:signal|signal strength|ssid)|(?:my |your |the )?wi-?fi (?:isn't|is not) working|what(?: is|'s) wrong with (?:your |the |my )?(?:connection|wi-?fi)")) return {name:"whisplay",args:{action:"status",scope:"wifi"}};
+  if (match(q,"(?:bluetooth is (?:already )?(?:on|off)|is (?:your )?bluetooth working|(?:show|list) (?:known|paired|saved|connected) bluetooth devices)")) return {name:"whisplay",args:{action:"status",scope:"bluetooth"}};
   if (/\b(?:not|don't|dont|never|if|unless|when|after|before|and|then|or|except)\b/.test(q)) return;
-  if (match(q,"(?:(?:go|bring me|take me|return)(?: back)?(?: to)?|return me to|open) (?:the )?home(?: (?:screen|menu))?|(?:exit|close|quit) (?:glados|the chatbot)|(?:turn|switch) off (?:glados|yourself)|(?:turn|switch) (?:glados|yourself) off|shut (?:down glados|glados down)")) {
+  if (match(q,"(?:(?:go|bring me|take me|return)(?: back)?(?: to)?|return me to|open) (?:the )?home(?: (?:screen|menu))?|(?:exit|close|quit) (?:glados|the chatbot)|(?:turn|switch) off glados|(?:turn|switch) glados off|shut (?:down glados|glados down)")) {
     return {name:"whisplay",args:{action:"home"}};
   }
   if (match(q,"(?:show|list|tell me) (?:your|whisplay's|the device's) (?:functions|features|capabilities)")) return {name:"whisplay",args:{action:"capabilities"}};
@@ -69,6 +94,17 @@ export function parseDeviceCommand(text: string): DeviceCommand | undefined {
   if (extra) return {name:"whisplay",args:{action:"recording",enabled:["enable","unlock","on"].includes(extra[1]||extra[2])}};
   extra = match(q,"(enable|disable|turn on|turn off|switch on|switch off) (?:your |the )?(wi-?fi|bluetooth)");
   if (extra) return {name:"whisplay",args:{action:extra[2]==="bluetooth"?"bluetooth":"wifi",enabled:["enable","turn on","switch on"].includes(extra[1])}};
+  wireless = match(q,`(?:enable|activate|turn on|switch on) ${radio}|(?:turn|switch) ${radio} on`);
+  if (wireless) return {name:"whisplay",args:{action:(wireless[1]||wireless[2]) === "bluetooth" ? "bluetooth" : "wifi",enabled:true}};
+  wireless = match(q,`(?:disable|deactivate|turn off|switch off) ${radio}|(?:turn|switch) ${radio} off`);
+  if (wireless) return {name:"whisplay",args:{action:(wireless[1]||wireless[2]) === "bluetooth" ? "bluetooth" : "wifi",enabled:false}};
+  if (match(q,"(?:what|which) (?:wi-?fi )?networks are available|(?:find|show|list) (?:available |nearby )?(?:wi-?fi )?networks")) return {name:"whisplay",args:{action:"wifi_scan"}};
+  if (match(q,"(?:find|show|scan for|look for) (?:nearby |available )?bluetooth devices")) return {name:"whisplay",args:{action:"bluetooth_scan"}};
+  if (match(q,"disconnect(?: (?:from|your))? (?:wi-?fi|wireless(?: connection)?)")) return {name:"whisplay",args:{action:"wifi_profile",operation:"disconnect"}};
+  // No inferred SSID/profile: Qwen may discover a unique target through existing status.
+  if (match(q,"connect to (?:my |the )?(?:wi-?fi|wireless(?: connection)?)")) return {name:"whisplay",args:{action:"capabilities"}};
+  wireless = match(q,"(connect to|disconnect|disconnect from|pair with|pair) (?:my |the )?(?:bluetooth )?(.{1,128})");
+  if (wireless && /\b(?:bluetooth|headphones|headset|earbuds)\b/.test(q)) return {name:"whisplay",args:{action:"bluetooth_device",operation:wireless[1].startsWith("connect")?"connect":wireless[1].startsWith("pair")?"pair":"disconnect",device:wireless[2]}};
   if (match(q,"(?:scan|look|search) for (?:wi-?fi|networks|wi-?fi networks)")) return {name:"whisplay",args:{action:"wifi_scan"}};
   if (match(q,"(?:scan|look|search) for bluetooth(?: devices)?")) return {name:"whisplay",args:{action:"bluetooth_scan"}};
   extra = match(q,"(start|restart) (?:the )?(ssh|ollama|whisper|faster whisper|piper)(?: service)?");

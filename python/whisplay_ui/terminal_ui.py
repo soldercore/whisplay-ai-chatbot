@@ -345,6 +345,7 @@ class TerminalUI:
             "clock": "%02d:%02d" % (hour, minute),
             "battery_level": snapshot.get("battery_level"),
             "battery_color": snapshot.get("battery_color"),
+            "wireless_status": snapshot.get("wireless_status"),
             "wifi_level": snapshot.get("wifi_signal_level") or 0,
             "network_connected": snapshot.get("network_connected"),
             "vpn": snapshot.get("vpn_connected"),

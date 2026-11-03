@@ -1,7 +1,7 @@
 import type { LLMTool } from "../type";
 import { whisplayRequest, trackWhisplayHandoff } from "../device/whisplay-control";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { parseDeviceCommand, preciseDeviceArguments } from "./device-commands";
+import { parseDeviceCommand, preciseDeviceArguments, powerRequest } from "./device-commands";
 
 const questions = new AsyncLocalStorage<string>();
 export const withWhisplayQuestion = <T>(question: string, work: () => T): T => questions.run(question, work);
@@ -25,7 +25,7 @@ export const whisplayTool: LLMTool = {
   execution: "abortable", type: "function",
   function: {
     name: "whisplay",
-    description: "Discover installed capabilities and live state; control only supported operations. Read capabilities for ability questions and actual wifi/bluetooth status before selecting a discovered target. CPU/RAM/temperature/storage use getSystemHealth. home closes GLaDOS, never the Pi. Safe settings and radio enabling stay in GLaDOS; disconnects, pairing, recording lock, service/power actions require local Cancel-first confirmation after speech. Passwords are entered only locally; never send or repeat credentials or ticket IDs. Screen wake requires the physical button.",
+    description: "Discover live capabilities/state; control only supported operations. Read wifi/bluetooth status before choosing a unique discovered target. CPU/RAM/temperature/storage use getSystemHealth. home closes GLaDOS, never the Pi. Safe settings/radio toggles stay here; risky operations/pairing/power need fresh local Cancel-first confirmation after speech. Questions, hypotheticals and troubleshooting are read-only. Wi-Fi disruption is blocked until offline recovery is verified. Passwords stay local; never send/speak credentials or ticket IDs. Screen wake uses the button.",
     parameters: {
       type: "object", additionalProperties: false,
       properties: {
@@ -58,13 +58,26 @@ export const whisplayTool: LLMTool = {
         result = { ...result, scope: action === "capabilities" ? "capabilities" : args.scope };
       } else {
         const question = questions.getStore();
-        if (question && (/\b(not|don't|dont|never|if|unless|when|after|before|except|tomorrow|later)\b/i.test(question)
+        const expected = question ? parseDeviceCommand(question) : undefined;
+        const exactRadioOff = expected?.name === "whisplay" && ["wifi","bluetooth"].includes(expected.args.action)
+          && expected.args.action === action && expected.args.enabled === false && params.enabled === false;
+        if (expected && (expected.name !== "whisplay" || expected.args.action !== action
+          || ["wifi","bluetooth"].includes(action) && expected.args.enabled !== params.enabled
+          || ["wifi_profile","bluetooth_device"].includes(action) && expected.args.operation !== params.operation)) {
+          throw new Error("Proposed action does not match the user's request; no change sent");
+        }
+        if (question && (!exactRadioOff && /\b(not|don't|dont|never|if|unless|when|after|before|except|tomorrow|later)\b/i.test(question)
           || /^\s*(?:how (?:do|can|would)|what (?:if|happens)|(?:can|could) i|(?:tell|write) (?:me )?(?:a )?(?:story|joke)|explain|pretend|imagine)\b/i.test(question))) {
           throw new Error("Conditional, negated or explanatory requests cannot change the device");
         }
-        if (["reboot","shutdown"].includes(action)
-          && !/\b((?:raspberry )?pi|device|computer)\b/i.test(question||"")) {
-          throw new Error("Closing GLaDOS uses Home; a Pi power action needs an explicit Pi request");
+        if (["reboot","shutdown"].includes(action) && powerRequest(question||"") !== action) {
+          throw new Error("Do you mean the entire Raspberry Pi? A clear request and fresh physical confirmation are required");
+        }
+        if (["wifi","wifi_scan","wifi_join","wifi_profile","bluetooth","bluetooth_scan","bluetooth_device"].includes(action)
+          && question && !expected
+          && (!/^\s*(?:(?:hey )?glados[, ]+)?(?:please\b|(?:can|could|would|will) you\b|i (?:want|need|would like)\b|i'd like\b|let's\b|(?:enable|disable|activate|deactivate|turn|switch|connect|disconnect|pair|scan|find|search|look)\b)/i.test(question)
+            || /\b(?:already|isn't|is not|what if|happens|lose my connection)\b/i.test(question))) {
+          throw new Error("A status observation or troubleshooting question cannot change wireless settings");
         }
         if (["volume","brightness"].includes(action)) {
           if (Object.keys(params).some(key => !["action","level","change"].includes(key))

@@ -3,6 +3,7 @@ indicators, plus any plugin status icons registered with chatbot-ui.py."""
 from PIL import Image, ImageDraw
 
 from . import theme
+from wireless_icons import draw_wireless
 from .draw_util import draw_text, fit_text
 
 CENTER_Y = theme.STATUS_CENTER_Y
@@ -30,6 +31,7 @@ class StatusBar:
             model["color"],
             model["clock"],
             model["battery_level"],
+            model.get("wireless_status"),
             model["wifi_level"],
             model["network_connected"],
             bool(model["vpn"]),
@@ -53,7 +55,9 @@ class StatusBar:
         if level is not None:
             right = self._battery(draw, image, right, level)
         wifi = model["wifi_level"]
-        if wifi:
+        if model.get("wireless_status") is not None:
+            right = draw_wireless(draw, right - GAP, CENTER_Y, model["wireless_status"], theme)
+        elif wifi:
             right = self._wifi(draw, right - GAP, wifi, model["network_connected"])
         for flag, text, fg, border in (
             ("vpn", "VPN", theme.CYAN, theme.CYAN_DIM),

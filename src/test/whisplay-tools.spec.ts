@@ -51,7 +51,7 @@ test("voice bridge uses validated RPC, always offers grounded tools, cancels pen
     ["How can I mute you?",{action:"mute",enabled:true}],
     ["Turn off GLaDOS",{action:"shutdown"}],
     ["Close GLaDOS please",{action:"reboot"}],
-    ["Shutdown",{action:"shutdown"}],
+    ["Can you shut down?",{action:"shutdown"}],
   ] as [string,any][]) {
     assert.match((await withWhisplayQuestion(question,()=>invoke(args))).output,/\[error\]/);
   }

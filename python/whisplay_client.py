@@ -38,6 +38,8 @@ class WhisplayDaemonProxy:
         self.button_release_callback = None
         self.exit_request_callback = None
         self.focus_revoked_callback = None
+        self.wireless_status = None
+        self.status_update_callback = None
         self._button_down = False
         self._subscriber = None
         self._running = False
@@ -210,6 +212,7 @@ class WhisplayDaemonProxy:
                     ack = reader.readline().strip()
                     if not ack:
                         raise RuntimeError("subscription ack missing")
+                    self._set_wireless_status(json.loads(ack).get("payload", {}).get("wireless_status"))
                     for line in reader:
                         if not self._running:
                             return
@@ -219,7 +222,9 @@ class WhisplayDaemonProxy:
                         event = json.loads(line)
                         name = event.get("event")
                         payload = event.get("payload", {}) or {}
-                        if name == "button_pressed":
+                        if name == "device_status":
+                            self._set_wireless_status(payload)
+                        elif name == "button_pressed":
                             self._button_down = True
                             if self.button_press_callback:
                                 self.button_press_callback()
@@ -236,7 +241,14 @@ class WhisplayDaemonProxy:
                             if self.focus_revoked_callback:
                                 self.focus_revoked_callback(payload)
             except Exception:
+                self._set_wireless_status({"wifi": {}, "bluetooth": {}})
                 time.sleep(0.5)
+
+    def _set_wireless_status(self, state):
+        if isinstance(state, dict) and isinstance(state.get("wifi"), dict) and isinstance(state.get("bluetooth"), dict):
+            self.wireless_status = state
+            if self.status_update_callback:
+                self.status_update_callback()
 
     def cleanup(self):
         self._running = False

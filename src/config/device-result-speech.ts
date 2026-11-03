@@ -2,6 +2,7 @@
 // A small model chooses intent; it cannot rewrite measurements or claim pending work completed.
 import { isIPv4 } from "node:net";
 import { personaName } from "./persona";
+import { powerRequest } from "./device-commands";
 const labels: Record<string,string> = { brightness: "screen brightness", volume: "speaker volume", home: "Home navigation",
   lock: "screen locking", recording: "GLaDOS recording lock", wifi: "Wi-Fi", bluetooth: "Bluetooth",
   service: "service start or restart", reboot: "reboot", shutdown: "shutdown",
@@ -67,6 +68,9 @@ export function deviceResultSpeech(name: string, output: string, metric?: "tempe
     if (metric === "ip") return "The network lookup failed. Local Wi-Fi IP information is unavailable.";
     let reason="";try{reason=JSON.parse(output.slice(7)).reason||"";}catch{}
     if (/fixed privilege helper/i.test(reason)) return "That operation is unavailable: the fixed privileged control helper is missing or not authorized.";
+    if (/disruptive wi-fi|automatic recovery/i.test(reason)) return "That Wi-Fi change is unavailable until offline recovery is verified. Your connection has been left alone.";
+    if (/active ssh|ssh session/i.test(reason)) return "That change is blocked while SSH is connected. I will preserve your connection.";
+    if (/entire raspberry pi/i.test(reason)) return "Do you mean the entire Raspberry Pi? Power actions require a clear request and confirmation with the button.";
     if (/closing glados uses home/i.test(reason)) return "Closing GLaDOS returns to Home. A Raspberry Pi power action needs an explicit Pi request and physical confirmation.";
     return "I could not verify completion of that device request. No change was confirmed.";
   }
@@ -98,11 +102,20 @@ export function deviceResultSpeech(name: string, output: string, metric?: "tempe
     return `Local Wi-Fi IPv4 address is ${addresses.join(", ")}${iface ? " on " + iface : "; the interface was not reported"}.`;
   }
   if (r.api === 1 && r.actions && Array.isArray(r.readable)) {
+    const power = powerRequest(question);
+    if (power === "clarify") return `Do you mean ${/\b(restart|reboot)\b/i.test(question) ? "restart" : "turn off"} the entire Raspberry Pi?`;
+    if (power === "capability") return r.actions.shutdown?.supported === true && r.actions.reboot?.supported === true
+      ? "I can shut down or restart the entire Raspberry Pi, after a clear request and confirmation with the physical button."
+      : "System shutdown and restart are unavailable: the privileged control helper is missing or not authorized.";
+    if (/connect to (?:my |the )?(?:wi-?fi|wireless)/i.test(question)) return r.actions.wifi_profile?.supported === true
+      ? "Which saved Wi-Fi network do you want to connect to?"
+      : "Connecting or switching Wi-Fi is unavailable until offline recovery is verified. I can still check the current connection.";
     if (!detailed) return capabilityOverview(r);
     const allowed = Object.keys(labels).filter(key => r.actions[key]?.supported === true).map(key => labels[key]);
     const denied = Object.keys(labels).filter(key => r.actions[key]?.supported === false).map(key => labels[key]);
     const confirmations = Object.keys(labels).filter(key => r.actions[key]?.supported && r.actions[key]?.physical_confirmation)
-      .map(key => r.actions[key].immediate_enable ? `disabling ${labels[key]}` : labels[key]);
+      .map(key => r.actions[key].immediate_disable_when_idle ? `${labels[key]} changes affecting connected devices`
+        : r.actions[key].immediate_enable ? `disabling ${labels[key]}` : labels[key]);
     return `I can read ${r.readable.filter((key: string) => labels[key]).map((key: string) => labels[key]).join(", ")}, and actual CPU, RAM, temperature and storage. `
       + `Available controls are ${allowed.join(", ") || "none"}. `
       + (confirmations.length ? `${confirmations.join(", ")} require the physical confirmation screen. ` : "")
@@ -117,12 +130,18 @@ export function deviceResultSpeech(name: string, output: string, metric?: "tempe
     return r.enabled ? "Speaker muted. Push-to-talk and the physical Audio controls remain available."
       : `Speaker sound restored to ${clean(r.actual)} percent.`;
   }
-  if (r.status === "completed" && ["wifi","bluetooth"].includes(r.action)) return `${labels[r.action]} is enabled.`;
+  if (r.status === "completed" && ["wifi","bluetooth"].includes(r.action)) return typeof r.enabled === "boolean"
+    ? `${labels[r.action]} is ${r.changed === false ? "already " : ""}${r.enabled ? "enabled" : "disabled"}.`
+    : `${labels[r.action]} radio state could not be verified.`;
+  if (r.status === "completed" && r.action === "bluetooth_device" && r.verification === "BlueZ_readback") return `Connected to ${clean(r.device)}.`;
   if (r.status === "completed" && r.action === "recording") return "GLaDOS recording is already enabled. Push-to-talk remains active only while you press the button.";
   if (r.status === "completed" && r.action === "wifi_join" && r.already_connected) return `Wi-Fi is already connected to ${clean(r.network)}.`;
   if (r.status === "completed" && r.action === "wifi_scan") return `Wi-Fi scan completed. Networks reported: ${(r.networks||[]).slice(0,5).map((n:any)=>clean(n.ssid)).join(", ")||"none"}.`;
   if (r.status === "completed" && r.action === "bluetooth_scan") return `Bluetooth scan completed. Devices reported: ${(r.devices||[]).slice(0,5).map((n:any)=>clean(n.name)).join(", ")||"none"}.`;
   if (["awaiting_physical_confirmation", "awaiting_speech_handoff"].includes(r.status)) {
+    if (r.status === "awaiting_physical_confirmation" && ["shutdown","reboot"].includes(r.action)) {
+      return `${r.action === "shutdown" ? "Shut down" : "Restart"} the entire system? Confirm with the physical button after this reply; Cancel is selected first.`;
+    }
     const target = r.requested?.action === "service" ? `${clean(r.requested.operation)} ${clean(r.requested.service)}`
       : r.action === "recording" ? `${r.requested?.enabled ? "Enable" : "Lock"} GLaDOS recording`
       : r.action === "bluetooth_device" ? `${clean(r.requested.operation)} Bluetooth device ${clean(r.requested.device)}` : labels[r.action];
@@ -140,7 +159,9 @@ export function deviceResultSpeech(name: string, output: string, metric?: "tempe
     const bt = r.bluetooth?.enabled === true ? "enabled" : r.bluetooth?.enabled === false ? "disabled" : "unavailable";
     const connected = (r.wifi?.connected || []).map((n: any) => `${clean(n.ssid)}, IP ${clean(n.ipv4)}`).join(", ");
     const devices=(r.bluetooth?.devices||[]).slice(0,5).map((n:any)=>`${clean(n.name)}${n.connected?", connected":n.paired?", paired":""}`).join("; ");
-    return (r.scope !== "bluetooth" ? `Wi-Fi is ${wifi}${connected ? ", connected to " + connected : ", no active connection was reported"}. Internet reachability has not been tested. `:"")
+    const signal = (r.wifi?.connected || []).filter((n:any)=>n.active === true && Number.isInteger(n.signal) && n.signal >= 0 && n.signal <= 100).map((n:any)=>n.signal);
+    const strength = /\b(signal|strength)\b/i.test(question) ? signal.length ? ` Signal strength is ${signal[0]} percent.` : " Signal strength is unavailable." : "";
+    return (r.scope !== "bluetooth" ? `Wi-Fi is ${wifi}${connected ? ", connected to " + connected : ", no active connection was reported"}.${strength} Internet reachability has not been tested. `:"")
       + (r.scope !== "wifi" ? `Bluetooth is ${bt}.${devices?" Devices: "+devices+".":""}${r.bluetooth?.details_complete===false?" Some device details were unavailable.":""}`:"");
   }
   return;

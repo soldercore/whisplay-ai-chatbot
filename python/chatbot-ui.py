@@ -175,6 +175,7 @@ class RenderThread(threading.Thread):
             "emoji": current_emoji,
             "text": apply_tool_placeholders(current_text),
             "terminal_text": current_terminal_text,
+            "wireless_status": getattr(self.whisplay, "wireless_status", None),
             "battery_level": current_battery_level,
             "battery_color": current_battery_color,
             "network_connected": current_network_connected,
@@ -706,7 +707,11 @@ class RenderThread(threading.Thread):
 
         if battery_level is not None:
             icons.append(BatteryStatusIcon(battery_level, battery_color, battery_font, status_font_size))
-        if context.get("wifi_signal_level"):
+        wireless = getattr(self.whisplay, "wireless_status", None)
+        if wireless is not None:
+            from wireless_icons import WirelessStatusIcon
+            icons.append(WirelessStatusIcon(wireless))
+        elif context.get("wifi_signal_level"):
             icons.append(WifiStatusIcon(status_font_size, context.get("wifi_signal_level")))
         if context.get("vpn_connected"):
             icons.append(WireguardStatusIcon(status_font_size))
@@ -1142,6 +1147,8 @@ if __name__ == "__main__":
     
     # start render thread
     render_thread = RenderThread(whisplay, custom_font_path or "NotoSansSC-Bold.ttf", fps=30)
+    if hasattr(whisplay, "status_update_callback"):
+        whisplay.status_update_callback = render_thread.render_event.set
     render_thread.start()
     start_socket_server(render_thread, host='0.0.0.0', port=12345)
     

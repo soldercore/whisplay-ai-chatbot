@@ -64,7 +64,7 @@ test("host precision overrides model size, preserves explicit values and refuses
 
 test("voice exit variants close only GLaDOS; unsafe and conversational variants stay undecided", () => {
   for (const text of ["Go Home.","Bring me Home.","Exit GLaDOS.","Close GLaDOS.","Turn off GLaDOS.",
-    "GLaDOS, take me back to Home.","Could you please close GLaDOS?","Turn GLaDOS off","Switch yourself off"]) {
+    "GLaDOS, take me back to Home.","Could you please close GLaDOS?","Turn GLaDOS off"]) {
     assert.deepEqual(parseDeviceCommand(text),{name:"whisplay",args:{action:"home"}},text);
   }
   for (const text of ["Don't go Home","If I say go Home, close GLaDOS","Tell me a story about going Home",
