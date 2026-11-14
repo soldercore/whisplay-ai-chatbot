@@ -263,6 +263,30 @@ def checks():
         check(len(set(imgs.values())) == 3, "idle, listening and thinking eyes differ in the microphone row")
     finally:
         s.close()
+    # a failed device action: brief red indication, then idle; nothing keeps redrawing afterwards
+    s = pv.Session(env={"WHISPLAY_UI_EYE": "on"})
+    try:
+        text, holders = "{tool:t9} I could not change it.", {"t9": "% tv-screen.failed..."}
+        s.send(status="answering", emoji="", text=text, tool_placeholders=holders)
+        s.run_until(0.3)
+        s.send(status="idle|capri", text=text, tool_placeholders=holders)
+
+        def red():
+            return sum(1 for p in eye_crop(s).get_flattened_data() if p[0] > p[1] + 40)
+        seen = []
+        t = s.now
+        while t < 9.0:
+            t += 0.05
+            s.run_until(t)
+            seen.append((t, red()))
+        check(any(r > 50 for _, r in seen[:60]), "a failed action turns the eye red")
+        check(any(r == 0 for _, r in seen[:20]) and all(r > 50 for tt, r in seen if 2.0 < tt < 5.5), "three short flashes, then steady red")
+        check(all(r == 0 for tt, r in seen if tt > 7.5), "the red indication is brief: idle again after 6 s")
+        n = s.frames
+        s.run_until(40.0)
+        check(s.frames - n <= 60, "nothing keeps animating after the indication (%d frames in 31 s)" % (s.frames - n))
+    finally:
+        s.close()
     off = pv.Session(env={"WHISPLAY_UI_EYE": "off"})
     try:
         off.send(status="idle|capri", text="Screen off.", emoji="😴")

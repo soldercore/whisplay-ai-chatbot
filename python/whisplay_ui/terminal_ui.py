@@ -625,6 +625,8 @@ class TerminalUI:
             elif self.eye is not None:
                 if state in (vs.THINK, vs.TOOL, vs.TRANSCRIBE):
                     fps = max(fps, 10)
+                elif self._eye_state_strip(mode, state, now) == EYE_ERROR and self.eye.error_active(now):
+                    fps = max(fps, 8)      # three flashes, then steady red for a few seconds, then back to idle
                 elif self.eye.idle_fps > 0:
                     eye_tick = 1.0 / self.eye.idle_fps
         if kind == KIND_MIC and state in (vs.TRANSCRIBE, vs.THINK):

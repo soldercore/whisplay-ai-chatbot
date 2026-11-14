@@ -169,6 +169,10 @@ class Eye:
         self.last_t = now
         return self.level_now
 
+    def error_active(self, now):
+        """The red eye is still flashing or steady (it returns to idle after 6 s); needs frames until then."""
+        return self.error_since is not None and now - self.error_since < 6.1
+
     def sound_over(self, now):
         return self.start is None or now > self.start + max(self.duration, len(self.env) * HOP_MS / 1000.0) + LAG_S + 0.4
 
