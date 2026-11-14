@@ -25,6 +25,9 @@ import { stopMusicPlayback, isMusicPlaying } from "../device/music-player";
 import type { Status } from "../device/display";
 import { appSignal } from "../utils/app-lifecycle";
 import { formatToolTag } from "../config/action-outcome";
+import { composeIdleStatus, uiStatus } from "../utils/ui-status";
+import { beginTurn, mark as markTiming, recentMetric } from "../utils/response-timing";
+import { clarificationRemainingMs } from "../utils/pending-clarification";
 
 dotEnv.config();
 
@@ -46,6 +49,9 @@ class ChatFlow implements ChatFlowContext {
   wakeSessionIdleTimeoutMs: number =
     parseInt(process.env.WAKE_WORD_IDLE_TIMEOUT_SEC || "60") * 1000;
   clarificationListen: boolean = false;   // one bounded capture for the answer to a host clarification question
+  private capriConfigured = false;
+  private capriReady = false;   // the passive Capri listener is running (never a recording)
+  private idleRefreshTimer?: ReturnType<typeof setTimeout>;
   wakeRecordMaxSec: number = parseInt(
     process.env.WAKE_WORD_RECORD_MAX_SEC || "60",
   );
@@ -116,6 +122,7 @@ class ChatFlow implements ChatFlowContext {
       },
       ({ charStart, charEnd, durationMs, plan }) => {
         if (!this.isAnswerFlow()) return;
+        markTiming("firstAudible");   // a sentence's audio has actually started playing
         this.spokenReveal.sentenceStarted(charStart, charEnd, durationMs, plan);
         if (!durationMs || durationMs <= 0) return;
         display({
@@ -135,16 +142,31 @@ class ChatFlow implements ChatFlowContext {
     const wakeEnabled = (process.env.WAKE_WORD_ENABLED || "").toLowerCase();
     if (process.env.CAPRI_WAKE_WORD_ENABLED?.toLowerCase() === "true") {
       this.wakeWordListener = new WakeWordListener(true);
+      this.capriConfigured = true;
+      this.wakeWordListener.on("ready", () => {
+        this.capriReady = true;
+        if (this.currentFlowName === "sleep") display({ status: this.idleStatus() });
+      });
+      this.wakeWordListener.on("unavailable", () => {
+        this.capriReady = false;
+        if (this.currentFlowName === "sleep") display({ status: this.idleStatus() });
+      });
       this.wakeWordListener.on("listening", () => {
         if (this.currentFlowName !== "sleep") return;
         console.info("[Capri] Listening after wake");
-        display({ status: "listening", emoji: DEFAULT_EMOJI, RGB: "#00ff00", text: "Listening..." });
+        // The wake word was heard and the command capture is running now: this is the only recording state of Capri.
+        display({ status: uiStatus("listening", "capri"), emoji: DEFAULT_EMOJI, RGB: "#00ff00", text: "Listening..." });
+      });
+      this.wakeWordListener.on("hearing", () => {
+        if (this.currentFlowName === "sleep") display({ status: uiStatus("listening", "capri", "heard") });
       });
       this.wakeWordListener.on("idle", () => {
-        if (this.currentFlowName === "sleep") display({ status: "idle", RGB: "#000055", text: "Ready" });
+        if (this.currentFlowName === "sleep") display({ status: this.idleStatus(), RGB: "#000055", text: "Ready" });
       });
-      this.wakeWordListener.on("command", (text: string) => {
+      this.wakeWordListener.on("command", (text: string, speechEndAt?: number) => {
         if (appSignal.aborted || this.currentFlowName !== "sleep") return;
+        beginTurn("capri", speechEndAt);
+        markTiming("transcribed");
         this.answerId += 1;
         this.endWakeSession();
         const command = /^(?:open|launch|start) you ?tube[.!]?$/i.test(text) ? "Open YouTube on my TV." : text;
@@ -273,6 +295,8 @@ class ChatFlow implements ChatFlowContext {
     }
     if (flowName !== "sleep") {
       void this.wakeWordListener?.stop();
+      this.capriReady = false;   // stopped for this flow; the new process reports ready again
+      if (this.idleRefreshTimer) { clearTimeout(this.idleRefreshTimer); this.idleRefreshTimer = undefined; }
     }
     console.log(`[${getCurrentTimeTag()}] switch to:`, flowName);
     this.stateMachine.transitionTo(flowName);
@@ -281,6 +305,30 @@ class ChatFlow implements ChatFlowContext {
     }
     display({ text_input_enabled: flowName === "sleep" });
   };
+
+  /** Idle status with tokens for the panes: Capri ready, the last measured response, a pending clarification. */
+  idleStatus = (): string => {
+    return composeIdleStatus({
+      capriReady: this.capriReady, metric: recentMetric(ChatFlow.METRIC_SHOW_MS), pendingClarification: clarificationRemainingMs() > 0,
+    });
+  };
+
+  /** Re-send the idle status when the metric or the clarification window ends, so the screen never keeps a stale hint. */
+  scheduleIdleRefresh = (): void => {
+    if (this.idleRefreshTimer) clearTimeout(this.idleRefreshTimer);
+    const waits = [recentMetric(ChatFlow.METRIC_SHOW_MS)?.expiresInMs, clarificationRemainingMs() || undefined]
+      .filter((value): value is number => typeof value === "number" && value > 0);
+    if (!waits.length) { this.idleRefreshTimer = undefined; return; }
+    this.idleRefreshTimer = setTimeout(() => {
+      this.idleRefreshTimer = undefined;
+      if (this.currentFlowName !== "sleep") return;
+      display({ status: this.idleStatus() });
+      this.scheduleIdleRefresh();
+    }, Math.min(...waits) + 50);
+    this.idleRefreshTimer.unref?.();
+  };
+
+  private static readonly METRIC_SHOW_MS = 20_000;
 
   isAnswerFlow = (): boolean => {
     return (

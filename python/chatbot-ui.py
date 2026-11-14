@@ -626,9 +626,9 @@ class RenderThread(threading.Thread):
         top_height = status_font_size + emoji_font_size + 20
 
         # Draw status centered
-        status_bbox = status_font.getbbox(current_status)
+        status_bbox = status_font.getbbox(current_status.partition("|")[0])
         status_w = status_bbox[2] - status_bbox[0]
-        TextUtils.draw_mixed_text(draw, image, current_status, status_font, (whisplay.CornerHeight, 0))
+        TextUtils.draw_mixed_text(draw, image, current_status.partition("|")[0], status_font, (whisplay.CornerHeight, 0))
 
         # Keep the emoji centered normally. While a command is running, use the
         # XiaoZhi layout: emoji on the left and terminal output beside it.

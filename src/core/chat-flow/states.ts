@@ -16,6 +16,7 @@ import {
   recordAudioManually,
   recordFileFormat,
   getDynamicVoiceDetectLevel,
+  voiceDetectEndSilenceSec,
 } from "../../device/audio";
 import { chatWithLLMStream, llmServer } from "../../cloud-api/server";
 import { isImMode, summaryTextWithLLM } from "../../cloud-api/llm";
@@ -45,7 +46,10 @@ import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { selfKnowledgeTopic } from "../../config/self-knowledge";
 import { toolDisplayOutcome } from "../../config/action-outcome";
-import { CLARIFICATION_SETTLE_MS, clarificationDisplayMs, clarificationListenSeconds, idleStatusFor, shouldListenAfterAnswer } from "../../utils/pending-clarification";
+import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, shouldListenAfterAnswer } from "../../utils/pending-clarification";
+import { uiStatus } from "../../utils/ui-status";
+import { beginTurn, clearTurn, diagnosticsLine, finishTurn, hasTurn, mark as markTiming, toolFinished, toolStarted } from "../../utils/response-timing";
+import fs from "node:fs";
 import { whisplayHandoffTicket, presentWhisplayHandoff, cancelWhisplayHandoff } from "../../device/whisplay-control";
 import { operationDeadline, waitForOperation } from "../../utils/operation-lifecycle";
 
@@ -66,6 +70,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       await ctx.pauseWakeWordListener();
       if (ctx.currentFlowName !== "sleep") return;
       ctx.answerId += 1;
+      clearTurn();
       text = redactWifiCredentials(text);
       ctx.asrText = text;
       display({ status: "recognizing", text, text_input_enabled: false });
@@ -84,14 +89,9 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     }
     // A host question is waiting for the user's next request. Show that, without suggesting the microphone is open:
     // the status clears when the window ends, and answering still takes the button or the wake word.
-    const waitingMs = clarificationDisplayMs();
-    if (waitingMs > 0) {
-      setTimeout(() => {
-        if (ctx.currentFlowName === "sleep" && clarificationDisplayMs() <= 0) display({ status: "idle" });
-      }, waitingMs + 50).unref?.();
-    }
+    ctx.scheduleIdleRefresh();
     display({
-      status: idleStatusFor(waitingMs),
+      status: ctx.idleStatus(),
       emoji: "😴",
       RGB: "#000055",
       rag_icon_visible: false,
@@ -203,6 +203,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         ctx.transitionTo("sleep");
         return;
       }
+      beginTurn("button", performance.now());   // end of speech = button release
       stop();
       display({
         RGB: "#ff6800",
@@ -248,18 +249,38 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       rag_icon_visible: false,
     });
     getDynamicVoiceDetectLevel().then((level) => {
+      const maxSec = clarification ? clarificationListenSeconds() : ctx.wakeRecordMaxSec;
+      const mode = clarification ? `answer:${maxSec}` : "auto";
       display({
-        status: "listening",
+        status: uiStatus("listening", mode),
         emoji: DEFAULT_EMOJI,
         RGB: "#00ff00",
         text: `(Detect level: ${level}%) Listening...`,
         rag_icon_visible: false,
       });
-      recordAudio(ctx.currentRecordFilePath, clarification ? clarificationListenSeconds() : ctx.wakeRecordMaxSec, level)
+      // The recorder writes nothing until sound passes its start level, so growth of its file is real speech detection.
+      const recordingFile = ctx.currentRecordFilePath;
+      const startedAt = performance.now();
+      let poll: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+        try {
+          if (fs.statSync(recordingFile).size > 1024) {
+            display({ status: uiStatus("listening", mode, "heard") });
+            if (poll) { clearInterval(poll); poll = undefined; }
+          }
+        } catch { /* the file does not exist yet */ }
+      }, 250);
+      const stopPolling = () => { if (poll) { clearInterval(poll); poll = undefined; } };
+      recordAudio(recordingFile, maxSec, level)
         .then(() => {
+          stopPolling();
+          // The recorder stops only after its end-silence, so the speech ended that long before it stopped (unless the time limit ended it).
+          const ended = performance.now();
+          const bySilence = ended - startedAt < maxSec * 1000 - 250;
+          beginTurn("auto", bySilence ? ended - voiceDetectEndSilenceSec * 1000 : ended);
           ctx.transitionTo("asr");
         })
         .catch((err) => {
+          stopPolling();
           console.error("Error during auto recording:", err);
           ctx.endWakeSession();
           ctx.transitionTo("sleep");
@@ -289,6 +310,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         result = redactWifiCredentials(result);
         console.log("Audio recognized result:", result);
         ctx.asrText = result;
+        markTiming("transcribed");
         ctx.endAfterAnswer = ctx.shouldEndAfterAnswer(result);
         if (ctx.wakeSessionActive) {
           ctx.wakeSessionLastSpeechAt = Date.now();
@@ -315,7 +337,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.resetToolCallDisplay();
     ctx.answerDisplayText = "";
     display({
-      status: "answering...",
+      status: uiStatus("answering...", hasTurn() && "said"),   // "said": the text on screen is what speech recognition returned
       RGB: "#00c8a3",
     });
     const currentAnswerId = ctx.answerId;
@@ -369,6 +391,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       currentAnswerId === ctx.answerId && ctx.currentFlowName === "answer";
     const trackingPartial = (text: string): void => {
       if (!isCurrentAnswer()) return;
+      markTiming("firstText");
       llmResponseText += text;
       // The screen shows the answer as it is spoken (see SpokenTextReveal).
       partial(text);
@@ -448,6 +471,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
               ctx.musicDisplayText = result.replace(/^\[success\]/, "").trim();
             }
             if (!result) {
+              toolStarted();
+            } else {
+              toolFinished(result.startsWith("[host:"));   // a host-routed device action: its outcome time is the action metric
+            }
+            if (!result) {
               ctx.appendToolCallDisplay(functionName);
             } else if (
               functionName === "runCommand" &&
@@ -488,7 +516,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       });
     llmDonePromise.then(() => getPlayEndPromise()).then(async () => {
       if (deviceHandoff && !isCurrentAnswer()) cancelWhisplayHandoff(deviceHandoff);
-      if (isCurrentAnswer()) ctx.revealAllAnswerText();
+      if (isCurrentAnswer()) {
+        const timing = finishTurn();   // playback has ended: publish the one shown value and log the details
+        if (timing) console.info(diagnosticsLine(timing));
+        ctx.revealAllAnswerText();
+      }
       if (ctx.currentFlowName === "answer") {
         const savedExchange = autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder || deviceHandoff ? undefined : summaryTextWithLLM);
         clearPendingCapturedImgForChat();

@@ -30,6 +30,7 @@ export function toolDisplayOutcome(result?: string): ActionOutcome | undefined {
 
 /** Inline tool tag text. A finished host action shows its outcome as a dotted suffix the UI already parses as part of the tag. */
 export function formatToolTag(item: { name: string; elapsedSeconds?: number; outcome?: ActionOutcome }): string {
-  if (item.outcome) return `% ${item.name}.${item.outcome}`;
+  // The trailing "..." is the UI's tag delimiter: without it the first word of the reply is read as the tag's argument and hidden.
+  if (item.outcome) return `% ${item.name}.${item.outcome}...`;
   return item.elapsedSeconds && item.elapsedSeconds >= 10 ? `% ${item.name} ${item.elapsedSeconds}s...` : `% ${item.name}...`;
 }

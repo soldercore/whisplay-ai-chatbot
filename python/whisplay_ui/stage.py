@@ -45,6 +45,9 @@ class StageInfo:
         self.flags = flags
         self.quality = 0
         self.raw_status = ""
+        self.hint = ""
+        self.tokens = {}
+        self.transcript = ""
         self.tool_label = ""
         self.music_progress = None
         self.music_duration_ms = None

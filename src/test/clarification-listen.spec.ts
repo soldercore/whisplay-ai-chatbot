@@ -13,6 +13,7 @@ Object.assign(process.env, {
 const pc = require("../utils/pending-clarification");
 const dc = require("../config/device-commands");
 const tv = require("../device/lg-c1-volume");
+const { composeIdleStatus } = require("../utils/ui-status");
 
 test("the listen request is one-shot, only for a first question, and only while its window is open", async () => {
   pc.clearClarification();
@@ -86,7 +87,8 @@ const makeCtx = (over: any = {}) => {
     recordingsDir: "/tmp", currentRecordFilePath: "", wakeSessionActive: false, endAfterAnswer: false, enableCamera: false, currentFlowName: "asr",
     transitions, transitionTo: (name: string) => { transitions.push(name); }, endWakeSession: () => { ctx.wakeSessionActive = false; },
     recognizeAudio: async () => asrResult, shouldEndAfterAnswer: () => false, pauseWakeWordListener: async () => {},
-    wakeSessionLastSpeechAt: 0, shouldContinueWakeSession: () => false, ...over,
+    wakeSessionLastSpeechAt: 0, shouldContinueWakeSession: () => false,
+    idleStatus: () => composeIdleStatus({ capriReady: false, pendingClarification: pc.clarificationRemainingMs() > 0 }), scheduleIdleRefresh: noop, ...over,
   };
   return ctx;
 };
@@ -98,10 +100,10 @@ test("wake_listening after a clarification records once, bounded, with the LED a
   flowStates.wake_listening(ctx);
   await settle();
   const shown = events.filter(e => e.display).map(e => e.display.status);
-  assert.deepEqual(shown, ["detecting", "listening"], "status moves detecting then listening");
-  const listening = events.find(e => e.display?.status === "listening").display;
+  assert.deepEqual(shown, ["detecting", "listening|answer:7"], "status moves detecting then listening, marked as a bounded answer capture");
+  const listening = events.find(e => String(e.display?.status).startsWith("listening")).display;
   assert.equal(listening.RGB, "#00ff00", "the existing microphone LED colour");
-  const recordAt = events.findIndex(e => e.record), listeningAt = events.findIndex(e => e.display?.status === "listening");
+  const recordAt = events.findIndex(e => e.record), listeningAt = events.findIndex(e => String(e.display?.status).startsWith("listening"));
   assert.ok(listeningAt < recordAt, "the LED turns on right before recording starts, not earlier or later");
   assert.deepEqual(events[recordAt].record.seconds, 7, "the clarification capture is bounded, not the 60 s wake limit");
   assert.equal(ctx.clarificationListen, false, "one-shot: consumed on entry");
@@ -132,15 +134,16 @@ test("a heard answer goes to the normal answer flow and the pending handler deci
   assert.equal(ctx.asrText, "The TV.");
 });
 
-test("the idle hint shows only while the automatic listen is not covering the question", async () => {
+test("the idle screen says how a pending clarification can still be answered", async () => {
   const sleepStatus = () => { events.length = 0; const ctx = makeCtx({ currentFlowName: "sleep" }); flowStates.sleep(ctx); return events.filter(e => e.display).map(e => e.display.status).pop(); };
   pc.clearClarification();
   assert.equal(sleepStatus(), "idle");
   pc.markClarification(5_000, { listen: false });
-  assert.equal(sleepStatus(), "Your turn", "pending and no automatic listen: the existing hint");
-  pc.markClarification(5_000); pc.takeListenRequest();
-  assert.equal(sleepStatus(), "idle", "after the automatic listen window the hint is gone");
+  assert.equal(sleepStatus(), "idle|pend:button", "pending, Capri not running: the button can still answer");
+  assert.equal(composeIdleStatus({ capriReady: true, pendingClarification: true }), "idle|capri,pend:capri", "Capri running: it can answer");
+  pc.takeListenRequest();
   pc.clearClarification();
+  assert.equal(sleepStatus(), "idle", "no stale hint once the window is gone");
 });
 
 // ---- Provider: lifecycle and the false-success fix ----

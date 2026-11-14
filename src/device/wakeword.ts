@@ -12,6 +12,7 @@ export class WakeWordListener extends EventEmitter {
   private buffer: string = "";
   private stopping: Promise<void> | null = null;
   private wakePending: boolean = false;
+  private pendingSpeechEnd: { at: number; agoMs: number } | undefined;   // from the wake script's own last loud frame
   private wanted = false;
   private restartPending = false;
   private generation = 0;
@@ -55,13 +56,22 @@ export class WakeWordListener extends EventEmitter {
       while (newlineIndex !== -1) {
         const line = this.buffer.slice(0, newlineIndex).trim();
         this.buffer = this.buffer.slice(newlineIndex + 1);
-        if (this.capri && (line === "CAPRI_LISTENING" || line === "CAPRI_IDLE")) {
+        if (this.capri && line === "CAPRI_READY") {
+          this.emit("ready");   // the passive listener is running; it is not recording a command
+        } else if (this.capri && line === "CAPRI_HEARING") {
+          if (this.wanted) this.emit("hearing");   // speech began in the active command capture
+        } else if (this.capri && line.startsWith("CAPRI_TIMING ")) {
+          const agoMs = Number(line.slice("CAPRI_TIMING ".length));
+          this.pendingSpeechEnd = Number.isFinite(agoMs) && agoMs >= 0 && agoMs < 60_000 ? { at: performance.now(), agoMs } : undefined;
+        } else if (this.capri && (line === "CAPRI_LISTENING" || line === "CAPRI_IDLE")) {
           if (this.wanted) this.emit(line === "CAPRI_LISTENING" ? "listening" : "idle");
         } else if ((this.capri ? line.startsWith("CAPRI_COMMAND ") : line.startsWith("WAKE")) && !this.wakePending) {
           this.wakePending = true;
           // The wake-word process owns the capture device. Do not notify the
           // chat flow until it and its SoX child have released the microphone.
           const stopped = this.stop();
+          const speechEndAt = this.pendingSpeechEnd ? this.pendingSpeechEnd.at - this.pendingSpeechEnd.agoMs : undefined;
+          this.pendingSpeechEnd = undefined;
           const generation = this.generation;
           void stopped.then(() => {
             if (this.generation !== generation || appSignal.aborted) return;
@@ -70,7 +80,7 @@ export class WakeWordListener extends EventEmitter {
               return;
             }
             const command: unknown = JSON.parse(line.slice("CAPRI_COMMAND ".length));
-            if (typeof command === "string" && command.trim()) this.emit("command", command.trim());
+            if (typeof command === "string" && command.trim()) this.emit("command", command.trim(), speechEndAt);
           }).catch(error => console.error("[WakeWord] Microphone release failed:", error));
         } else if (line) {
           console.log(`[WakeWord] ${line}`);
@@ -91,6 +101,7 @@ export class WakeWordListener extends EventEmitter {
       if (this.process === child) {
         this.process = null;
         if (this.capri && this.wanted && !appSignal.aborted) {
+          this.emit("unavailable");
           this.emit("idle");
           this.retry = setTimeout(() => {
             this.retry = undefined;

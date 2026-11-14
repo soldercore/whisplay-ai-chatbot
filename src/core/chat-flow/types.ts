@@ -32,6 +32,8 @@ export interface ChatFlowContext {
   wakeSessionIdleTimeoutMs: number;
   wakeRecordMaxSec: number;
   clarificationListen: boolean;
+  idleStatus: () => string;
+  scheduleIdleRefresh: () => void;
   wakeEndKeywords: string[];
   endAfterAnswer: boolean;
   pendingExternalReply: string;

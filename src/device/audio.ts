@@ -45,7 +45,7 @@ const MP3_SOX_GAIN_DB = "2";
 const voiceDetectEndSilenceSecRaw = parseFloat(
   process.env.VOICE_DETECT_END_SILENCE_SEC || "1.5",
 );
-const voiceDetectEndSilenceSec =
+export const voiceDetectEndSilenceSec =
   Number.isFinite(voiceDetectEndSilenceSecRaw) && voiceDetectEndSilenceSecRaw > 0
     ? voiceDetectEndSilenceSecRaw
     : 1.5;

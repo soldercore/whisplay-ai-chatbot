@@ -328,7 +328,10 @@ class TerminalUI:
 
     def _update_info(self, snapshot, status):
         info = self.info
-        info.raw_status = status or ""
+        info.raw_status, info.hint = vs.split_status(status)
+        info.tokens = vs.parse_tokens(info.hint)
+        # What was recognised, only while the answer is being prepared and only when Node says it came from speech.
+        info.transcript = (self.text or "").strip() if "said" in info.tokens else ""
         info.music_progress = snapshot.get("music_progress")
         info.music_duration_ms = snapshot.get("music_duration_ms")
         label = ""
@@ -375,7 +378,8 @@ class TerminalUI:
         rects = []
         if kind == KIND_MIC:
             key = (state, (t % theme.BLINK_PERIOD) < theme.BLINK_ON,
-                   int(t*2) if state in (vs.TRANSCRIBE, vs.THINK) else int(t) if state == vs.LISTEN else None)
+                   int(t*2) if state in (vs.TRANSCRIBE, vs.THINK) else int(t) if state == vs.LISTEN else None,
+                   self.info.hint, self.info.transcript if state == vs.THINK else "")
             if key != self.side_key or force:
                 self.side_key = key
                 self.pane_img = render_microphone(self.fonts, state, t, self.info)
@@ -406,10 +410,10 @@ class TerminalUI:
             progress = snapshot.get("music_progress")
             animated = mode in (STRIP_SPEAKING, STRIP_RECEIVING)
             bucket = int(t * (theme.SPEAKING_FPS if mode == STRIP_SPEAKING else 6)) if animated else -1
-            key = (mode, bucket, id(emoji) if emoji is not None else None, progress)
+            key = (mode, bucket, id(emoji) if emoji is not None else None, progress, self.info.hint if mode == STRIP_RESPONSE else "")
             if key != self.side_key or force:
                 self.side_key = key
-                self.pane_img = render_strip(self.fonts, mode, t, emoji, progress)
+                self.pane_img = render_strip(self.fonts, mode, t, emoji, progress, self.info.tokens if mode == STRIP_RESPONSE else None)
                 self._paste_pane(self.pane_img, full_h)
                 rects.append((0, y0, theme.WIDTH, y0 + self.pane_h))
             return rects

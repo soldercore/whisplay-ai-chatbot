@@ -50,15 +50,15 @@ test("outcomes come only from the action's own reply", () => {
 test("the tool tag shows running, elapsed and the outcome", () => {
   assert.equal(outcome.formatToolTag({ name: "tv-screen" }), "% tv-screen...");
   assert.equal(outcome.formatToolTag({ name: "tv-power", elapsedSeconds: 12 }), "% tv-power 12s...");
-  assert.equal(outcome.formatToolTag({ name: "tv-screen", outcome: "ok" }), "% tv-screen.ok");
-  assert.equal(outcome.formatToolTag({ name: "tv-screen", outcome: "failed" }), "% tv-screen.failed");
-  assert.equal(outcome.formatToolTag({ name: "tv-screen", outcome: "unverified", elapsedSeconds: 30 }), "% tv-screen.unverified");
+  assert.equal(outcome.formatToolTag({ name: "tv-screen", outcome: "ok" }), "% tv-screen.ok...");
+  assert.equal(outcome.formatToolTag({ name: "tv-screen", outcome: "failed" }), "% tv-screen.failed...");
+  assert.equal(outcome.formatToolTag({ name: "tv-screen", outcome: "unverified", elapsedSeconds: 30 }), "% tv-screen.unverified...");
   // The UI's own tag parser must accept every produced form as one tag.
   const parser = /(?<![A-Za-z0-9])[%％﹪]\s*([A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)(?:\s+([0-9]+s))?/i;
-  for (const tag of ["% tv-screen...", "% tv-power 12s...", "% tv-screen.ok", "% tv-screen.failed", "% tv-screen.unverified"]) {
+  for (const tag of ["% tv-screen...", "% tv-power 12s...", "% tv-screen.ok...", "% tv-screen.failed...", "% tv-screen.unverified..."]) {
     assert.ok(parser.test(tag), tag);
   }
-  assert.equal(parser.exec("% tv-screen.unverified")?.[1], "tv-screen.unverified");
+  assert.equal(parser.exec("% tv-screen.unverified...")?.[1], "tv-screen.unverified");
 });
 
 test("a pending clarification drives a display status, expires, and is cleared", async () => {

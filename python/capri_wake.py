@@ -88,6 +88,7 @@ def capture(noise=None, live=None, after=None, announce=None):
     tail=0
     speech_frames=0
     burst_start=None
+    hearing_sent=False
     with (contextlib.nullcontext(live) if live else live_mic()) as read_live:
         def read():
             stamp,block=read_live()
@@ -128,6 +129,9 @@ def capture(noise=None, live=None, after=None, announce=None):
                     last=now
                     speech_frames+=1
                     tail=0
+                    if followup and not hearing_sent and speech_frames>=7 and now-burst_start>=.16:
+                        hearing_sent=True
+                        print("CAPRI_HEARING",flush=True)
                 else:
                     tail+=1
                     if tail >= 30:
@@ -179,7 +183,7 @@ def main():
                 noise=None
                 complete=False
                 while recording_allowed():
-                    raw,_,noise,complete=capture(noise=noise,live=live)
+                    raw,last_loud,noise,complete=capture(noise=noise,live=live)
                     if raw: break
                 else:
                     raw=b""
@@ -193,6 +197,7 @@ def main():
             if not match or not recording_allowed():
                 continue
             command=match[1].strip()
+            speech_last=last_loud
             if not command:
                 with live_mic() as live:
                     live()
@@ -201,7 +206,8 @@ def main():
                     # The existing signal has 360 ms of tone, followed by padding.
                     # Discard the tone and a 40 ms guard while keeping post-tone speech.
                     gate=playback+.40 if playback is not None else time.monotonic()
-                    follow,_,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING")
+                    follow,last_follow,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING")
+                    speech_last=last_follow
                 if follow and not complete:
                     print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
                     command=""
@@ -218,6 +224,8 @@ def main():
             if len(command)>1000 or any(ord(c)<32 for c in command):
                 print("CAPRI_IDLE",flush=True)
                 continue
+            if speech_last is not None:
+                print("CAPRI_TIMING %d"%round(max(0.0,time.monotonic()-speech_last)*1000),flush=True)   # ms since the last loud frame
             print("CAPRI_COMMAND "+json.dumps(command,ensure_ascii=True),flush=True)
             return
 

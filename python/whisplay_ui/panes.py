@@ -32,14 +32,40 @@ def speaking_levels(t, bars=7):
     return out
 
 
-def render_strip(fonts, mode, t, emoji_image=None, progress=None):
+def _seconds(value):
+    try:
+        return "%.1fs" % max(0.0, float(value))
+    except (TypeError, ValueError):
+        return ""
+
+
+def render_strip(fonts, mode, t, emoji_image=None, progress=None, tokens=None):
     image = Image.new("RGB", (theme.WIDTH, STRIP_H), theme.VOID)
     draw = ImageDraw.Draw(image)
     mid = theme.STRIP_MID_Y
     x = theme.CHROME_LEFT
     color = theme.GREEN
+    tokens = tokens or {}
+    label = mode
+    # One measured value per response, from real events: RESPONSE (speech end to first audible reply) or, for a
+    # device command, ACTION (speech end to the verified outcome). Nothing is drawn when it was not measured.
+    measured = _seconds(tokens.get("act")) if "act" in tokens else _seconds(tokens.get("resp")) if "resp" in tokens else ""
+    if measured:
+        label = ("ACTION" if "act" in tokens else mode) + " . " + measured
     draw_text(draw, image, fonts.pixel8, x, mid, ">", color)
-    end = draw_text(draw, image, fonts.pixel8, x + 9, mid, mode, color)
+    end = draw_text(draw, image, fonts.pixel8, x + 9, mid, label, color)
+    hint = ""
+    if mode == STRIP_RESPONSE:
+        if tokens.get("pend") == "capri":
+            hint = "CAPRI TO ANSWER"
+        elif "pend" in tokens:
+            hint = "HOLD TO ANSWER"
+        elif "capri" in tokens:
+            hint = "SAY CAPRI"
+    if hint:
+        right = theme.CHROME_RIGHT - (emoji_image.width + 6 if emoji_image is not None else 0)
+        text = fit_text(fonts.pixel8, hint, right - end - 8)
+        draw_text(draw, image, fonts.pixel8, int(right - fonts.pixel8.width(text)), mid, text, theme.DIM)
     if mode == STRIP_SPEAKING:
         # Actual speech state, not a simulated audio-level meter.
         draw.ellipse((int(end)+8, mid-2, int(end)+11, mid+1), fill=theme.GREEN)
@@ -114,6 +140,7 @@ def render_microphone(fonts, state, t, info):
     image.paste(prompt, (0, -12))
     recording = state == vs.LISTEN
     busy = state in (vs.TRANSCRIBE, vs.THINK)
+    tokens = getattr(info, "tokens", None) or {}
     label = "REC" if recording else "WORKING" if busy else "READY"
     draw_text(draw, image, fonts.meta_bold, 18, 70, ">", theme.GREEN)
     draw_text(draw, image, fonts.meta_bold, 30, 70, label, theme.TEXT)
@@ -131,6 +158,27 @@ def render_microphone(fonts, state, t, info):
     draw.line((cx-6,cy+18,cx+6,cy+18),fill=ink,width=2)
     instruction = ("[ Release to send ]" if recording else "[ Recognizing speech ]" if state == vs.TRANSCRIBE
                    else "[ Preparing response ]" if state == vs.THINK else "[ Hold to talk ]")
+    if recording:
+        # A button hold needs the release; the automatic and Capri captures end by themselves.
+        if "heard" in tokens:
+            instruction = "[ Hearing you ]"
+        elif "answer" in tokens:
+            instruction = "[ Answer now ]"
+        elif "auto" in tokens:
+            instruction = "[ Speak now ]"
+        elif "capri" in tokens:
+            instruction = "[ Speak your command ]"
+    elif state == vs.THINK:
+        said = getattr(info, "transcript", "")
+        if said:
+            instruction = '"' + said.replace("\n", " ") + '"'
+    elif state == vs.IDLE:
+        if tokens.get("pend") == "capri":
+            instruction = "[ Say Capri to answer ]"
+        elif "pend" in tokens:
+            instruction = "[ Hold to answer ]"
+        elif "capri" in tokens:
+            instruction = "[ Say Capri or hold to talk ]"
     text = fit_text(fonts.meta_bold,instruction,204)
     draw_text(draw,image,fonts.meta_bold,int((theme.WIDTH-fonts.meta_bold.width(text))/2),212,text,theme.TEXT)
     if busy:
@@ -138,5 +186,10 @@ def render_microphone(fonts, state, t, info):
             x = 113+i*6
             draw.rectangle((x,226,x+1,227),fill=theme.GREEN if i==int(t*2)%3 else theme.DIM)
     elif recording:
-        draw_text(draw,image,fonts.meta,98,230,"%02d:%02d" % (int(t)//60,int(t)%60),theme.MUTED)
+        limit = tokens.get("answer") or tokens.get("auto") or ""
+        shown = min(int(t), int(limit)) if limit.isdigit() else int(t)   # the capture ends at its limit
+        clock_text = "%02d:%02d" % (shown//60,shown%60)
+        if limit.isdigit():
+            clock_text += " / %02d:%02d" % (int(limit)//60,int(limit)%60)
+        draw_text(draw,image,fonts.meta,int((theme.WIDTH-fonts.meta.width(clock_text))/2),230,clock_text,theme.MUTED)
     return image
