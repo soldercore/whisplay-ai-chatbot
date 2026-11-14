@@ -1038,6 +1038,32 @@ export async function turnOnTvAndReply(parent?: AbortSignal, onWakeSent?: (text:
   return replyFor(status, wakeReplies, nextWakeReply);
 }
 
+// Spoken power status from the existing read-only power-state query. A state we cannot read is never guessed.
+export function describeTvPower(state: unknown, unreachable: boolean): string {
+  if (state === "on") return "The TV is on.";
+  if (state === "screen_off") return "The TV is on, with its screen off.";
+  if (state === "screen_saver") return "The TV is on, showing its screen saver.";
+  if (isConfirmedOff(state)) return "The TV is in standby.";
+  if (state === undefined && unreachable) return "The TV isn't responding on the network, so it is most likely off or in standby. I can't confirm that.";
+  return "I can't verify the TV's state right now.";
+}
+
+export async function tvPowerStatusAndReply(parent?: AbortSignal): Promise<string> {
+  const started = performance.now();
+  const deadline = operationDeadline(3000, parent);
+  let state: unknown;
+  let unreachable = false;
+  try {
+    const target = getTarget();
+    state = await wakePower(target, deadline.signal);
+    if (state === undefined) unreachable = await wakePortUnavailable(target.host, deadline.signal);
+  } catch (error) {
+    if (parent?.aborted) throw error;
+  } finally { deadline.dispose(); }
+  console.info("[TV status] state=%s unreachable=%s llm_requests=0 total_ms=%d", String(state ?? "-"), unreachable, Math.round(performance.now() - started));
+  return describeTvPower(state, unreachable);
+}
+
 async function pairPower(): Promise<void> {
   await withClient(getTarget(), pairingMs, undefined, true, async (client, signal) => {
     const result = await waitForOperation(client.getPowerState(), signal);

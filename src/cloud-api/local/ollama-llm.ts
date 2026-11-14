@@ -42,8 +42,8 @@ import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../..
 import { memoryProfileSystemSuffix, withoutDuplicateMemoryProfiles } from "../../config/local-memory";
 import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
 import { needsWhisplayCapabilities, requiresWhisplayTool, deviceCallFormat, withWhisplayQuestion, whisplayVoiceControlEnabled } from "../../config/whisplay-tools";
-import { changeTvAudioAndReply, changeTvPlaybackAndReply, getTvAudioCommand, getTvNavigationButton, getTvPlaybackAction, getTvScreenAction, getYoutubeSearchQuery, searchYoutubeAndReply, isTvNotification, setTvScreenAndReply, showTvNotificationAndReply, isOpenYoutubeOnTv, isTurnOffTv, isTurnOnTv, isTvVolumeDown, lowerTvVolumeAndReply, navigateTvAndReply, openYoutubeAndReply, turnOffTvAndReply, turnOnTvAndReply } from "../../device/lg-c1-volume";
-import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, isNegatedDeviceAction, isUnclearTvObservation, isUnclearVolumeObservation, parseDeviceCommand, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY, TV_VOLUME_PROMPT } from "../../config/device-commands";
+import { changeTvAudioAndReply, changeTvPlaybackAndReply, getTvAudioCommand, getTvNavigationButton, getTvPlaybackAction, getTvScreenAction, getYoutubeSearchQuery, searchYoutubeAndReply, isTvNotification, setTvScreenAndReply, showTvNotificationAndReply, isOpenYoutubeOnTv, isTurnOffTv, isTurnOnTv, isTvVolumeDown, lowerTvVolumeAndReply, navigateTvAndReply, openYoutubeAndReply, tvPowerStatusAndReply, turnOffTvAndReply, turnOnTvAndReply } from "../../device/lg-c1-volume";
+import { ambiguousScreenAction, brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, isMixedDeviceRequest, isNegatedDeviceAction, isTvPowerQuestion, isTvStateQuestion, isUnclearTvObservation, isUnclearVolumeObservation, parseDeviceCommand, SCREEN_TARGET_PROMPT, screenTargetAnswer, settingFollowUpText, suppressesMonitoringTools, TV_MIXED_REPLY, TV_STATE_UNVERIFIED_REPLY, TV_UNSUPPORTED_REPLY, TV_VOLUME_PROMPT } from "../../config/device-commands";
 import { deviceResultSpeech } from "../../config/device-result-speech";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
@@ -144,6 +144,11 @@ const messages: OllamaMessage[] = [
 // Only a completed host-routed change establishes a setting reference.
 const tvNavigationIdleMs = 60_000;
 let tvNavigationUntil = 0;
+// "Turn the screen back on" means the TV only right after the TV screen was confirmed off; otherwise the user is asked.
+const tvScreenContextMs = 120_000;
+const screenTargetAnswerMs = 30_000;
+let tvScreenOffUntil = 0;
+let pendingScreen: { action: "on" | "off"; until: number } | undefined;
 const confirmedSettings = new WeakMap<Message, "volume" | "brightness">();
 
 // ---- Timing diagnostics -------------------------------------------------------
@@ -588,14 +593,25 @@ const chatWithLLMStreamInternal = async (
       tvNavigationUntil = 0;
       const tvAudio = getTvAudioCommand(question);
       const tvPlayback = getTvPlaybackAction(question);
-      const tvScreen = getTvScreenAction(question);
+      const now = performance.now();
+      const screenContext = now < tvScreenOffUntil;
+      tvScreenOffUntil = 0;
+      const pendingTarget = pendingScreen && now < pendingScreen.until ? pendingScreen.action : undefined;
+      pendingScreen = undefined;
+      const ambiguousScreen = ambiguousScreenAction(question);
+      const targetAnswer = pendingTarget ? screenTargetAnswer(question) : undefined;
+      const tvScreen = getTvScreenAction(question)
+        ?? (ambiguousScreen === "on" && screenContext ? "on" : undefined)
+        ?? (targetAnswer === "tv" ? pendingTarget : undefined);
       const youtubeQuery = getYoutubeSearchQuery(question);
       if (isNegatedDeviceAction(question)) reply = "Understood. No device setting changed.";
+      else if (isMixedDeviceRequest(question)) reply = TV_MIXED_REPLY;
       else if (tvScreen || isTvNotification(question)) {
         reply = !ollamaEnableTools ? "Device control is disabled."
           : tvScreen ? await setTvScreenAndReply(tvScreen, toolLoopState.signal)
           : await showTvNotificationAndReply(toolLoopState.signal);
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
+        if (tvScreen === "off" && reply === "Screen off.") tvScreenOffUntil = performance.now() + tvScreenContextMs;
       }
       else if (isTvVolumeDown(question)) {
         reply = ollamaEnableTools ? await lowerTvVolumeAndReply(toolLoopState.signal) : "Device control is disabled.";
@@ -642,8 +658,21 @@ const chatWithLLMStreamInternal = async (
         reply = ollamaEnableTools ? await turnOffTvAndReply(toolLoopState.signal) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
+      else if (isTvPowerQuestion(question)) {
+        reply = ollamaEnableTools ? await tvPowerStatusAndReply(toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (isTvStateQuestion(question)) reply = TV_STATE_UNVERIFIED_REPLY;
       else if (isExternalTvRequest(question)) reply = TV_UNSUPPORTED_REPLY;
       else if (isUnclearTvObservation(question)) reply = TV_VOLUME_PROMPT;
+      else if (targetAnswer === "whisplay") {
+        if (pendingTarget === "off") executionQuestion = "turn off your screen";
+        else reply = "I can't switch Whisplay's screen on by voice.";
+      }
+      else if (ambiguousScreen) {
+        pendingScreen = { action: ambiguousScreen, until: performance.now() + screenTargetAnswerMs };
+        reply = SCREEN_TARGET_PROMPT;
+      }
       else if (followUp) {
         const users = messages.filter(message => message.role === "user");
         const target = confirmedSettings.get(users[users.length-2] as Message);

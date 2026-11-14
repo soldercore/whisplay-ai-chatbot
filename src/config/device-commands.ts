@@ -26,6 +26,9 @@ export const MIN_BRIGHTNESS = 20;
 export const BRIGHTNESS_RANGE_REPLY = `Screen brightness must be between ${MIN_BRIGHTNESS} and 100 percent.`;
 export const TV_UNSUPPORTED_REPLY = "I can change the TV's volume, screen and power, but I cannot control the TV in any other way.";
 export const TV_VOLUME_PROMPT = "Tell me whether to turn the TV volume up or down.";
+export const SCREEN_TARGET_PROMPT = "Do you mean the TV screen or Whisplay's screen?";
+export const TV_MIXED_REPLY = "That names both the TV and Whisplay. I handle one device per request, so nothing was changed. Please ask for them separately.";
+export const TV_STATE_UNVERIFIED_REPLY = "I can't verify that about the TV. I can only check whether it is on.";
 const absoluteSetting = (text: string, target: string) =>
   match(text,`(?:set|change|adjust|make) ${target} (?:to |at )?(${numberPattern})${unit}`);
 
@@ -81,6 +84,36 @@ export function isExternalTvRequest(text: string): boolean {
 
 // Whisplay's own controls never apply to a request that names the TV, whatever its wording.
 export const mentionsExternalTv = (text: string): boolean => /\b(?:tv|t\.v\.|television)(?=\W|$)/i.test(text);
+
+const WHISPLAY_TARGET = /\b(?:whisplay|yourself|your (?:own )?(?:volume|screen|display|speaker|brightness))\b/i;
+// An explicit request naming both devices is never half-executed. A question about both is left to the model.
+export const isMixedDeviceRequest = (text: string): boolean =>
+  mentionsExternalTv(text) && WHISPLAY_TARGET.test(text)
+  && (!/\?\s*$/.test(text.trim()) || /^(?:(?:hey )?glados[, ]+)?(?:can|could|would|will) you\b/i.test(text.trim()));
+
+// "The screen" with no device named: the TV or Whisplay. Requests that name the TV or "your" screen are handled elsewhere.
+export function ambiguousScreenAction(text: string): "on" | "off" | undefined {
+  const q = deviceCommandText(text);
+  if (mentionsExternalTv(q) || /\b(?:your|whisplay)\b/.test(q)) return;
+  if (match(q,"make (?:the )?(?:screen|display) (?:black|dark)")) return "off";
+  if (match(q,"(?:turn|switch) (?:the )?(?:screen|display) (?:back )?on|(?:turn|switch) (?:back )?on (?:the )?(?:screen|display)|wake (?:up )?(?:the )?(?:screen|display)")) return "on";
+}
+
+// The answer to SCREEN_TARGET_PROMPT.
+export function screenTargetAnswer(text: string): "tv" | "whisplay" | undefined {
+  const q = deviceCommandText(text);
+  if (/^(?:i mean(?:t)? )?(?:the |my )?(?:tv|television)(?: screen)?$/.test(q)) return "tv";
+  if (/^(?:i mean(?:t)? )?(?:yours?|your (?:own )?screen|(?:the )?whisplay(?:'s)?(?: screen)?|the device)$/.test(q)) return "whisplay";
+}
+
+// Questions about the TV's power can be answered from the existing read-only power-state query.
+export const isTvPowerQuestion = (text: string): boolean =>
+  /^(?:is|are) (?:the |my )?(?:tv|television)(?: (?:screen|display))? (?:currently |now |still )?(?:on|off|awake|asleep|in standby|turned on|turned off|powered on|powered off|running)$/.test(deviceCommandText(text));
+
+// Any other question about what the TV is doing cannot be verified and must not be answered from the model.
+export const isTvStateQuestion = (text: string): boolean => mentionsExternalTv(text)
+  && /^(?:(?:what|which)(?: is|'s| are)|is|are|does|did|has|have|how (?:loud|high|low))\b/.test(deviceCommandText(text))
+  && /\b(?:volume|muted|mute|playing|paused|channel|input|hdmi|screen|display|loud|quiet|louder|quieter|brightness|showing|watching|doing|state|status|standby|awake|asleep)\b/.test(deviceCommandText(text));
 
 // A statement about the TV's sound is not a command; ask instead of guessing a direction.
 export const isUnclearTvObservation = (text: string): boolean =>

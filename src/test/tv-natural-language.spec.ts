@@ -65,7 +65,7 @@ const calls: string[] = [];
 const results: Record<string, string> = {};
 const requests: any[] = [];
 const originals: Record<string, any> = {};
-for (const name of ["setTvScreenAndReply", "turnOffTvAndReply", "turnOnTvAndReply", "lowerTvVolumeAndReply", "changeTvAudioAndReply"]) {
+for (const name of ["setTvScreenAndReply", "turnOffTvAndReply", "turnOnTvAndReply", "lowerTvVolumeAndReply", "changeTvAudioAndReply", "tvPowerStatusAndReply"]) {
   originals[name] = tv[name];
   tv[name] = async (...args: any[]) => { calls.push(`${name}${args[0] && typeof args[0] !== "object" ? `(${args[0]})` : args[0]?.action ? `(${args[0].action})` : ""}`); return results[name] ?? "fixture reply"; };
 }
@@ -133,4 +133,90 @@ test("unsupported TV actions, observations and questions get honest handling and
   assert.equal(requests.length, 1, "one plain model answer; no retry demanding a Whisplay tool");
   assert.ok(!(requests[0].tools || []).some((tool: any) => tool.function.name === "whisplay"), "Whisplay controls must not be offered for a TV request");
   t.mock.restoreAll();
+});
+
+test("ambiguous screen requests ask which device; context is used only when unambiguous", async t => {
+  // No TV named, no recent TV screen action: ask, execute nothing, never call the model.
+  for (const question of ["Make the screen black.", "Turn the screen back on.", "Make the display dark.", "Turn the screen on."]) {
+    const text = await ask(t, question);
+    assert.equal(text.trim(), dc.SCREEN_TARGET_PROMPT, question);
+    assert.deepEqual(calls, [], question); assert.equal(requests.length, 0, question);
+    t.mock.restoreAll();
+  }
+  // The answer completes the pending request, once.
+  await ask(t, "Make the screen black."); t.mock.restoreAll();
+  let text = await ask(t, "The TV.", { setTvScreenAndReply: "Screen off." });
+  assert.deepEqual(calls, ["setTvScreenAndReply(off)"]); assert.equal(text.trim(), "Screen off."); t.mock.restoreAll();
+  text = await ask(t, "The TV."); assert.deepEqual(calls, [], "an answer with no pending question is not a command"); t.mock.restoreAll();
+  // An unrelated message in between cancels the pending question.
+  await ask(t, "Turn the screen back on."); t.mock.restoreAll();
+  await ask(t, "Hello."); t.mock.restoreAll();
+  await ask(t, "The TV."); assert.deepEqual(calls, []); t.mock.restoreAll();
+  // Right after a confirmed TV screen-off, "back on" is unambiguous.
+  await ask(t, "Turn off the TV screen.", { setTvScreenAndReply: "Screen off." }); t.mock.restoreAll();
+  await ask(t, "Turn the screen back on.");
+  assert.deepEqual(calls, ["setTvScreenAndReply(on)"]); t.mock.restoreAll();
+  // The context is spent after one use, broken by another command, and absent after a failed or unverified screen-off.
+  text = await ask(t, "Turn the screen back on."); assert.equal(text.trim(), dc.SCREEN_TARGET_PROMPT, "step1"); t.mock.restoreAll();
+  await ask(t, "Turn off the TV screen.", { setTvScreenAndReply: "Screen off." }); t.mock.restoreAll();
+  await ask(t, "Turn off the TV."); t.mock.restoreAll();
+  text = await ask(t, "Turn the screen back on."); assert.equal(text.trim(), dc.SCREEN_TARGET_PROMPT, "step2"); assert.deepEqual(calls, []); t.mock.restoreAll();
+  for (const failed of ["TV screen change is unverified.", "I couldn't change the TV screen."]) {
+    await ask(t, "Turn off the TV screen.", { setTvScreenAndReply: failed }); t.mock.restoreAll();
+    text = await ask(t, "Turn the screen back on."); assert.equal(text.trim(), dc.SCREEN_TARGET_PROMPT, "step3"); assert.deepEqual(calls, []); t.mock.restoreAll();
+  }
+  // Screen-off and standby stay distinct, and requests naming the TV or "your" screen are not treated as ambiguous.
+  assert.equal(dc.ambiguousScreenAction("Make the screen black."), "off");
+  assert.equal(dc.ambiguousScreenAction("Turn the screen back on."), "on");
+  for (const q of ["Make the TV screen black.", "Turn off the screen.", "Turn on your screen.", "Make your screen dark.", "Turn off the TV."]) {
+    assert.equal(dc.ambiguousScreenAction(q), undefined, q);
+  }
+  assert.equal(dc.screenTargetAnswer("The TV."), "tv"); assert.equal(dc.screenTargetAnswer("I meant the television."), "tv");
+  assert.equal(dc.screenTargetAnswer("Whisplay."), "whisplay"); assert.equal(dc.screenTargetAnswer("Yours."), "whisplay");
+  assert.equal(dc.screenTargetAnswer("Turn off the TV."), undefined);
+});
+
+test("TV status: power is read from the device; anything else is reported as unverifiable, never invented", async t => {
+  for (const question of ["Is the TV on?", "Is the television off?", "Is the TV screen on?", "Is the TV in standby?"]) {
+    const text = await ask(t, question, { tvPowerStatusAndReply: "The TV is on." });
+    assert.deepEqual(calls, ["tvPowerStatusAndReply"], question);
+    assert.equal(text.trim(), "The TV is on."); assert.equal(requests.length, 0, question);
+    t.mock.restoreAll();
+  }
+  for (const question of ["What is the TV volume?", "What is the TV playing?", "Is the TV muted?", "What's on the TV screen?", "Is the TV too loud?", "Is the TV on HDMI two?"]) {
+    const text = await ask(t, question);
+    assert.equal(text.trim(), dc.TV_STATE_UNVERIFIED_REPLY, question);
+    assert.deepEqual(calls, [], question); assert.equal(requests.length, 0, question);
+    t.mock.restoreAll();
+  }
+  // Ordinary TV conversation and how-to questions still reach the model.
+  for (const question of ["Is there anything good on TV tonight?", "How do I lower the TV volume?"]) {
+    await ask(t, question); assert.equal(requests.length, 1, question); assert.deepEqual(calls, []); t.mock.restoreAll();
+  }
+  assert.equal(tv.describeTvPower("on", false), "The TV is on.");
+  assert.equal(tv.describeTvPower("screen_off", false), "The TV is on, with its screen off.");
+  assert.equal(tv.describeTvPower("screen_saver", false), "The TV is on, showing its screen saver.");
+  assert.equal(tv.describeTvPower("standby", false), "The TV is in standby.");
+  assert.equal(tv.describeTvPower("off", false), "The TV is in standby.");
+  assert.match(tv.describeTvPower(undefined, true), /most likely off or in standby\. I can't confirm/);
+  for (const [state, unreachable] of [[undefined, false], ["unknown_state", false], ["unknown_state", true], [null, true]] as const) {
+    assert.equal(tv.describeTvPower(state, unreachable), "I can't verify the TV's state right now.");
+  }
+});
+
+test("a request naming both the TV and Whisplay changes nothing and says so", async t => {
+  for (const question of ["Turn off the TV and mute yourself.", "Set the TV volume to twenty and your volume to ten.",
+    "Turn your volume down and the TV volume up.", "Lower the TV volume and turn off the Whisplay screen.", "Could you mute yourself and turn off the TV?"]) {
+    assert.ok(dc.isMixedDeviceRequest(question), question);
+    const text = await ask(t, question);
+    assert.equal(text.trim(), dc.TV_MIXED_REPLY, question);
+    assert.deepEqual(calls, [], question); assert.equal(requests.length, 0, question);
+    t.mock.restoreAll();
+  }
+  for (const q of ["Turn off the TV.", "Mute yourself.", "Is the TV louder than your speaker?", "How do I turn off the TV and Whisplay?"]) {
+    assert.ok(!dc.isMixedDeviceRequest(q), q);
+  }
+  // Each device still works on its own.
+  await ask(t, "Turn off the TV."); assert.deepEqual(calls, ["turnOffTvAndReply"]); t.mock.restoreAll();
+  assert.deepEqual(dc.parseDeviceCommand("Mute yourself.")?.args, { action: "mute", enabled: true });
 });
