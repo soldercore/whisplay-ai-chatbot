@@ -24,8 +24,18 @@ export const hasTurn = (): boolean => turn !== undefined;
 export const clearTurn = (): void => { turn = undefined; };
 
 /**
- * speechEndAt is a monotonic timestamp. button: the moment the button was released. auto: when the recorder stopped, minus the
- * silence it waited for (it stops only after that much quiet). capri: reported by the wake script from its own last loud frame.
+ * Event definitions (all monotonic):
+ *  speech end  button: the moment the button was released (the user may have stopped speaking a little earlier).
+ *              auto:   when the recorder stopped, minus the end-of-silence it waits for. The recorder stops only after that much
+ *                      quiet, so this is an approximation within the recorder's own 0.1 s detection windows; when the time limit
+ *                      ended the capture it is the stop time itself.
+ *              capri:  the wake script's own last loud frame (20 ms frames), reported as an age when the line is printed.
+ *  first audible  the first sentence's playback was started: its audio is fully synthesised and the player process was launched.
+ *              It is NOT the moment sound leaves the speaker: the player takes about 5-20 ms to start (measured in the app log),
+ *              the sound card adds its buffer, and the clip begins with 50-80 ms of silence. Queued or still-synthesising
+ *              audio is never counted.
+ *  action done the host-routed device action returned its verified, failed or unverified outcome.
+ * speechEndAt is a monotonic timestamp.
  */
 export function beginTurn(path: TimingPath, speechEndAt?: number): void {
   const at = clock();
@@ -34,6 +44,11 @@ export function beginTurn(path: TimingPath, speechEndAt?: number): void {
 
 export function mark(name: "transcribed" | "firstText" | "firstAudible" | "finished"): void {
   if (turn && turn[name] === undefined) turn[name] = clock();
+}
+
+/** Playback of a sentence started. Only audio that exists counts (a failed or silent sentence reports a duration of 0). */
+export function markAudible(durationMs: number): void {
+  if (durationMs > 0) mark("firstAudible");
 }
 
 export function toolStarted(): void {

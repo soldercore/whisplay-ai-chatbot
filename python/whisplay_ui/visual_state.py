@@ -21,13 +21,13 @@ CONSOLE_STATES = frozenset([ANSWER])
 
 def split_status(status):
     """Node may send "<status>|<tokens>": the status is classified as before and the comma separated
-    tokens only refine the wording of the panes (for example "idle|capri", "listening|auto,heard")."""
+    tokens only refine the wording of the panes (for example "idle|capri", "listening|auto,audio")."""
     head, _, tokens = (status or "").partition("|")
     return head.strip(), tokens.strip().lower()
 
 
 def parse_tokens(tokens):
-    """"answer:7,heard" -> {"answer": "7", "heard": ""}. Unknown tokens are ignored by the panes."""
+    """"answer:7,audio" -> {"answer": "7", "audio": ""}. Unknown tokens are ignored by the panes."""
     out = {}
     for item in (tokens or "").split(","):
         key, _, value = item.strip().partition(":")

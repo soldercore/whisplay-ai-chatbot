@@ -264,7 +264,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       let poll: ReturnType<typeof setInterval> | undefined = setInterval(() => {
         try {
           if (fs.statSync(recordingFile).size > 1024) {
-            display({ status: uiStatus("listening", mode, "heard") });
+            display({ status: uiStatus("listening", mode, "audio") });   // the recorder wrote sound: energy over its start level
             if (poll) { clearInterval(poll); poll = undefined; }
           }
         } catch { /* the file does not exist yet */ }
@@ -290,6 +290,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
   asr: (ctx: ChatFlowContext) => {
     display({
       status: "recognizing",
+      RGB: "#ff6800",   // recording is over, whatever started it: the LED must not stay on the recording colour
     });
     onButtonDoubleClick(null);
     Promise.race([

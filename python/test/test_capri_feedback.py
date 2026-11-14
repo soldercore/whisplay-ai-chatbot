@@ -130,7 +130,7 @@ def main():
     ms = int(timing[0].split()[1])
     # Speech ended at the last word; the capture returns after its 0.6 s of silence, so about 600 ms (plus one frame) had passed.
     check("timing = ms since the last loud frame", 560 <= ms <= 680, f"{ms} ms")
-    check("no HEARING outside the follow-up capture", "CAPRI_HEARING" not in lines)
+    check("no AUDIO or PROCESSING outside the follow-up capture", "CAPRI_AUDIO" not in lines and "CAPRI_PROCESSING" not in lines)
     if prev:
         check("same command as the previous script", command_of(run_main(prev, [one], VOCAB)) == command_of(lines))
 
@@ -140,8 +140,8 @@ def main():
     lines = run_main(new, [capri_only, follow], VOCAB)
     check("follow-up dispatches", command_of(lines) == "turn off the TV screen", repr(command_of(lines)))
     order = [l.split()[0] for l in lines]
-    check("order: LISTENING, HEARING (once), TIMING, COMMAND", order == ["CAPRI_LISTENING", "CAPRI_HEARING", "CAPRI_TIMING", "CAPRI_COMMAND"], str(order))
-    check("follow-up timing is plausible", 560 <= int(lines[2].split()[1]) <= 680, lines[2])
+    check("order: LISTENING, AUDIO (once), PROCESSING, TIMING, COMMAND", order == ["CAPRI_LISTENING", "CAPRI_AUDIO", "CAPRI_PROCESSING", "CAPRI_TIMING", "CAPRI_COMMAND"], str(order))
+    check("follow-up timing is plausible", 560 <= int(lines[3].split()[1]) <= 680, lines[3])
     if prev:
         check("same follow-up command as the previous script", command_of(run_main(prev, [capri_only, follow], VOCAB)) == command_of(lines))
 
@@ -149,11 +149,11 @@ def main():
     blip = [frame(1000)] * 3 + silence(1.5)
     follow_blip = [frame(NOISE)] + silence(0.3) + blip + silence(0.5) + speech(CMD, start_index=1) + silence(2)
     lines = run_main(new, [capri_only, follow_blip], VOCAB)
-    check("noise burst: one HEARING, for the real speech only", lines.count("CAPRI_HEARING") == 1 and command_of(lines) == "turn off the TV screen", str(lines))
+    check("noise burst: one AUDIO, for the real sound only", lines.count("CAPRI_AUDIO") == 1 and lines.count("CAPRI_PROCESSING") == 1 and command_of(lines) == "turn off the TV screen", str(lines))
 
     # 4. Silence after the chime: no HEARING and no timing; the loop returns to idle.
     lines = run_main(new, [capri_only, [frame(NOISE)] + silence(8)], VOCAB)
-    check("silent follow-up: no HEARING, no TIMING, no command", "CAPRI_HEARING" not in lines and not any(l.startswith("CAPRI_TIMING") for l in lines) and command_of(lines) is None and "CAPRI_IDLE" in lines, str(lines))
+    check("silent follow-up: no AUDIO, no PROCESSING, no TIMING, no command", "CAPRI_AUDIO" not in lines and "CAPRI_PROCESSING" not in lines and not any(l.startswith("CAPRI_TIMING") for l in lines) and command_of(lines) is None and "CAPRI_IDLE" in lines, str(lines))
 
     width = max(len(r[0]) for r in rows)
     for name, verdict, detail in rows:

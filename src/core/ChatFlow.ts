@@ -26,7 +26,7 @@ import type { Status } from "../device/display";
 import { appSignal } from "../utils/app-lifecycle";
 import { formatToolTag } from "../config/action-outcome";
 import { composeIdleStatus, uiStatus } from "../utils/ui-status";
-import { beginTurn, mark as markTiming, recentMetric } from "../utils/response-timing";
+import { beginTurn, mark as markTiming, markAudible, recentMetric } from "../utils/response-timing";
 import { clarificationRemainingMs } from "../utils/pending-clarification";
 
 dotEnv.config();
@@ -122,7 +122,7 @@ class ChatFlow implements ChatFlowContext {
       },
       ({ charStart, charEnd, durationMs, plan }) => {
         if (!this.isAnswerFlow()) return;
-        markTiming("firstAudible");   // a sentence's audio has actually started playing
+        markAudible(durationMs);   // playback of a synthesised sentence started (see response-timing.ts for what that means)
         this.spokenReveal.sentenceStarted(charStart, charEnd, durationMs, plan);
         if (!durationMs || durationMs <= 0) return;
         display({
@@ -157,8 +157,13 @@ class ChatFlow implements ChatFlowContext {
         // The wake word was heard and the command capture is running now: this is the only recording state of Capri.
         display({ status: uiStatus("listening", "capri"), emoji: DEFAULT_EMOJI, RGB: "#00ff00", text: "Listening..." });
       });
-      this.wakeWordListener.on("hearing", () => {
-        if (this.currentFlowName === "sleep") display({ status: uiStatus("listening", "capri", "heard") });
+      this.wakeWordListener.on("audio", () => {
+        // Sound passed the capture's start level; this is energy, not proof of human speech.
+        if (this.currentFlowName === "sleep") display({ status: uiStatus("listening", "capri", "audio") });
+      });
+      this.wakeWordListener.on("processing", () => {
+        // The command capture is over and Whisper is transcribing it: the microphone is no longer recording.
+        if (this.currentFlowName === "sleep") display({ status: "recognizing", RGB: "#ff6800" });
       });
       this.wakeWordListener.on("idle", () => {
         if (this.currentFlowName === "sleep") display({ status: this.idleStatus(), RGB: "#000055", text: "Ready" });

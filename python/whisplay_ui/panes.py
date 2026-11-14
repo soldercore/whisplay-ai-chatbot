@@ -160,8 +160,8 @@ def render_microphone(fonts, state, t, info):
                    else "[ Preparing response ]" if state == vs.THINK else "[ Hold to talk ]")
     if recording:
         # A button hold needs the release; the automatic and Capri captures end by themselves.
-        if "heard" in tokens:
-            instruction = "[ Hearing you ]"
+        if "audio" in tokens:
+            instruction = "[ Audio detected ]"
         elif "answer" in tokens:
             instruction = "[ Answer now ]"
         elif "auto" in tokens:

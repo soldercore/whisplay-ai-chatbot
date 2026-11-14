@@ -131,7 +131,7 @@ def capture(noise=None, live=None, after=None, announce=None):
                     tail=0
                     if followup and not hearing_sent and speech_frames>=7 and now-burst_start>=.16:
                         hearing_sent=True
-                        print("CAPRI_HEARING",flush=True)
+                        print("CAPRI_AUDIO",flush=True)
                 else:
                     tail+=1
                     if tail >= 30:
@@ -208,6 +208,8 @@ def main():
                     gate=playback+.40 if playback is not None else time.monotonic()
                     follow,last_follow,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING")
                     speech_last=last_follow
+                if follow and complete and recording_allowed():
+                    print("CAPRI_PROCESSING",flush=True)   # capture is over; Whisper runs next
                 if follow and not complete:
                     print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
                     command=""

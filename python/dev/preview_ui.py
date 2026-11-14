@@ -349,7 +349,7 @@ def scenario(session):
     wait(0.8)
     s.shot("ux_idle_capri")
     for name, status in (("ux_rec_hold", "listening"), ("ux_rec_capri", "listening|capri"), ("ux_rec_auto", "listening|auto"),
-                         ("ux_rec_answer", "listening|answer:7"), ("ux_rec_heard", "listening|answer:7,heard")):
+                         ("ux_rec_answer", "listening|answer:7"), ("ux_rec_audio", "listening|answer:7,audio")):
         s.send(status=status, text="Listening...")
         wait(2.2)
         s.shot(name)
@@ -517,8 +517,16 @@ def selftest():
             s.run_until(s.now + 8.0)
             return " ".join("".join(g[0] for g in line.glyphs) for line in s.rt.terminal_ui.body.layout.lines if line.kind == "text")
 
+        replies = ["Screen off.", "I couldn't change the TV screen.", "TV screen change is unverified.", "tv-screen is off",
+                   "Line one.\nLine two.\nLine three.", "Screen off.\n\nSecond paragraph.", "42 degrees.", "ok then"]
         for tag in ("% tv-screen...", "% tv-screen.ok...", "% tv-screen.failed...", "% tv-screen.unverified..."):
-            check("Screen off." in shown_text(tag, "Screen off."), f"reply text intact after the tag {tag}")
+            for reply in replies:
+                wanted = " ".join(reply.split())
+                check(wanted in " ".join(shown_text(tag, reply).split()), f"reply text intact after {tag}: {wanted[:30]!r}")
+        both = shown_text("% tv-screen.ok...", "Screen off.")
+        check("Screen off." in both, "a second tag (action then tool) leaves the text intact")
+        # Negative control: the form without the delimiter really does swallow the first word, so the checks above can fail.
+        check("Screen off." not in shown_text("% tv-screen.ok", "Screen off."), "control: an undelimited outcome tag hides the first word (why the delimiter is required)")
     finally:
         s.close()
 
@@ -543,9 +551,9 @@ def selftest():
     s = Session()
     try:
         check(vs.split_status("idle|capri,resp:1.8") == ("idle", "capri,resp:1.8") and vs.classify("idle|capri") == vs.IDLE
-              and vs.classify("listening|auto,heard") == vs.LISTEN and vs.classify("answering...|said") == vs.THINK and vs.classify("idle") == vs.IDLE,
+              and vs.classify("listening|auto,audio") == vs.LISTEN and vs.classify("answering...|said") == vs.THINK and vs.classify("idle") == vs.IDLE,
               "status tokens do not change the classified state")
-        check(vs.parse_tokens("answer:7,heard") == {"answer": "7", "heard": ""} and vs.parse_tokens("") == {}, "token parsing")
+        check(vs.parse_tokens("answer:7,audio") == {"answer": "7", "audio": ""} and vs.parse_tokens("") == {}, "token parsing")
         frames = {}
 
         def look(name, status, text="", settle=1.2, **extra):
@@ -559,11 +567,11 @@ def selftest():
         check(look("idle_capri", "idle|capri") == vs.IDLE, "idle with Capri running is still idle, not recording")
         check(not np.array_equal(frames["idle"], frames["idle_capri"]), "the instruction line tells that Capri is available")
         states = {n: look(n, st, "Listening...", settle=2.2) for n, st in
-                  (("hold", "listening"), ("auto", "listening|auto"), ("answer", "listening|answer:7"), ("heard", "listening|answer:7,heard"), ("capri_rec", "listening|capri"))}
+                  (("hold", "listening"), ("auto", "listening|auto"), ("answer", "listening|answer:7"), ("audio", "listening|answer:7,audio"), ("capri_rec", "listening|capri"))}
         check(all(v == vs.LISTEN for v in states.values()), "every active capture is the recording state")
         names = list(states)
         check(all(not np.array_equal(frames[a], frames[b]) for i, a in enumerate(names) for b in names[i + 1:]),
-              "hold, auto, answer, heard and Capri captures are visibly different")
+              "hold, auto, answer, audio-detected and Capri captures are visibly different")
         check(look("said", "answering...|said", "turn off the tv screen", settle=1.0) == vs.THINK, "thinking with the recognised text")
         check(look("not_said", "answering...", "turn off the tv screen", settle=1.0) == vs.THINK, "thinking without a speech transcript")
         check(not np.array_equal(frames["said"], frames["not_said"]), "the recognised text is shown only when Node says it came from speech")
@@ -585,7 +593,7 @@ def selftest():
             ys, xs = np.nonzero((frames[a] != frames[b]).any(axis=2))
             return (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())) if len(xs) else None
 
-        pairs = [("idle", "idle_capri"), ("idle", "pend_idle"), ("hold", "auto"), ("hold", "answer"), ("hold", "heard"), ("hold", "capri_rec"),
+        pairs = [("idle", "idle_capri"), ("idle", "pend_idle"), ("hold", "auto"), ("hold", "answer"), ("hold", "audio"), ("hold", "capri_rec"),
                  ("not_said", "said"), ("plain_response", "resp"), ("plain_response", "act"), ("plain_response", "pend_capri")]
         for a, b in pairs:
             box = changed_box(a, b)

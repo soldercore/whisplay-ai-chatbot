@@ -14,7 +14,7 @@ const timing = require("../utils/response-timing");
 
 test("status tokens: only well-formed tokens are sent, and the idle status says what is really running", () => {
   assert.equal(ui.uiStatus("idle"), "idle");
-  assert.equal(ui.uiStatus("listening", "auto", false, undefined, null, "heard"), "listening|auto,heard");
+  assert.equal(ui.uiStatus("listening", "auto", false, undefined, null, "audio"), "listening|auto,audio");
   assert.equal(ui.uiStatus("listening", "answer:7"), "listening|answer:7");
   for (const bad of ["BAD", "a b", "x|y", "t,u", "", "a:b:c", "resp:-1"]) assert.equal(ui.uiStatus("idle", bad), "idle", bad);
   assert.equal(ui.composeIdleStatus({ capriReady: false, pendingClarification: false }), "idle", "no claim about Capri until it reports ready");
@@ -77,6 +77,36 @@ test("response timing: every value needs both of its real events", () => {
   timing.resetTiming();
 });
 
+test("first audible counts only synthesised audio whose playback started, never an empty or failed sentence", () => {
+  let now = 0;
+  timing.resetTiming(); timing.setClock(() => now);
+  now = 1000; timing.beginTurn("button", 1000);
+  now = 1800; timing.markAudible(0);          // a sentence with no audio (failed or silent): the sentence-play event still fires
+  now = 2100; timing.markAudible(1450);       // the first real sentence
+  now = 2600; timing.markAudible(900);
+  now = 4000;
+  const s = timing.finishTurn();
+  assert.equal(s.firstAudibleMs, 1100, "measured to the first sentence that actually played");
+  now = 5000; timing.beginTurn("button", 5000); now = 5500; timing.markAudible(0); now = 6000;
+  assert.equal(timing.finishTurn().metric, undefined, "no audio at all: no RESPONSE value");
+  timing.resetTiming();
+});
+
+test("response and action stay separate measurements", () => {
+  let now = 0;
+  timing.resetTiming(); timing.setClock(() => now);
+  now = 0; timing.beginTurn("auto", 0);
+  now = 500; timing.toolStarted(); now = 1900; timing.toolFinished(true);   // device action finished at 1.9 s
+  now = 2600; timing.markAudible(1000);                                      // its spoken result starts at 2.6 s
+  now = 4000;
+  const s = timing.finishTurn();
+  assert.equal(s.actionMs, 1900); assert.equal(s.firstAudibleMs, 2600);
+  assert.deepEqual(s.metric, { kind: "act", seconds: 1.9 }, "the action value, not the later speech");
+  now = 10_000; timing.beginTurn("auto", 10_000); now = 10_800; timing.toolStarted(); now = 11_000; timing.toolFinished(false); now = 11_500; timing.markAudible(1000);
+  assert.deepEqual(timing.finishTurn().metric, { kind: "resp", seconds: 1.5 }, "a model tool call is not a device action");
+  timing.resetTiming();
+});
+
 // ---- The real wake_listening handler with a recorder fixture ----
 const events: any[] = [];
 const noop = () => {};
@@ -113,7 +143,7 @@ const makeCtx = (over: any = {}) => {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const statuses = () => events.filter(e => e.display).map(e => e.display.status);
 
-test("speech detection comes from the recorder's own output: only real growth shows HEARING, once", async () => {
+test("audio detection comes from the recorder's own output: only real growth shows AUDIO, once", async () => {
   events.length = 0; timing.resetTiming();
   recorder = async (file) => {
     fs.writeFileSync(file, Buffer.alloc(44));         // header only: the recorder has opened the file, nothing heard yet
@@ -127,7 +157,7 @@ test("speech detection comes from the recorder's own output: only real growth sh
   const ctx = makeCtx();
   flowStates.wake_listening(ctx);
   await sleep(1900);
-  assert.deepEqual(statuses(), ["detecting", "listening|auto", "listening|auto,heard"]);
+  assert.deepEqual(statuses(), ["detecting", "listening|auto", "listening|auto,audio"]);
   assert.deepEqual(ctx.transitions, ["asr"]);
   assert.equal(timing.hasTurn(), true, "the recording end started a timing turn");
   const before = statuses().length;
@@ -135,13 +165,13 @@ test("speech detection comes from the recorder's own output: only real growth sh
   assert.equal(statuses().length, before, "polling stopped with the recording");
 });
 
-test("silence: no HEARING, a bounded capture, and no recognised-speech state", async () => {
+test("silence: no audio status, a bounded capture, and no recognised-speech state", async () => {
   events.length = 0; timing.resetTiming();
   recorder = async (file, seconds) => { fs.writeFileSync(file, Buffer.alloc(44)); await sleep(900); };
   const ctx = makeCtx({ clarificationListen: true });
   flowStates.wake_listening(ctx);
   await sleep(1300);
-  assert.deepEqual(statuses(), ["detecting", "listening|answer:7"], "never HEARING without sound");
+  assert.deepEqual(statuses(), ["detecting", "listening|answer:7"], "never AUDIO without sound");
   assert.equal(events.find(e => e.record !== undefined).record, 7, "bounded capture");
   assert.deepEqual(ctx.transitions, ["asr"]);
 });
@@ -160,8 +190,23 @@ test("a failed recorder returns to sleep and stops polling", async () => {
   assert.equal(statuses().length, before, "no leftover poller");
 });
 
+test("the LED is the recording colour only while recording; transcription is the working colour", async () => {
+  events.length = 0;
+  recorder = async () => { await sleep(150); };
+  const ctx = makeCtx({ recognizeAudio: async () => "", isFromWakeListening: true, shouldEndAfterAnswer: () => false, shouldContinueWakeSession: () => false, wakeSessionLastSpeechAt: 0 });
+  flowStates.wake_listening(ctx);
+  await sleep(500);
+  const colours = events.filter(e => e.display).map(e => [e.display.status, e.display.RGB]);
+  assert.deepEqual(colours.map(c => c[1]), ["#00ff00", "#00ff00"], "detecting and listening: the capture is running");
+  events.length = 0;
+  flowStates.asr(ctx);
+  await sleep(50);
+  const asr = events.find(e => e.display).display;
+  assert.deepEqual([asr.status, asr.RGB], ["recognizing", "#ff6800"], "recording is over: the LED leaves the recording colour before Whisper finishes");
+});
+
 // ---- The real Capri listener parser with a fake child ----
-test("Capri lifecycle: ready is passive, hearing is active capture, and the command carries the real end of speech", async () => {
+test("Capri lifecycle: ready is passive, audio is the active capture, processing ends it, and the command carries the real end of speech", async () => {
   const child: any = new EventEmitter();
   child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.pid = 4242; child.kill = noop;
   const lifecycle = { appSignal: { aborted: false, addEventListener: noop, removeEventListener: noop }, spawnOwned: () => child, stopOwnedChild: async () => {} };
@@ -173,13 +218,13 @@ test("Capri lifecycle: ready is passive, hearing is active capture, and the comm
   (Module as any)._load = load;
   const listener = new WakeWordListener(true);
   const seen: any[] = [];
-  for (const name of ["ready", "listening", "hearing", "idle", "unavailable", "command"]) listener.on(name, (...args: any[]) => seen.push([name, ...args]));
+  for (const name of ["ready", "listening", "audio", "processing", "idle", "unavailable", "command"]) listener.on(name, (...args: any[]) => seen.push([name, ...args]));
   listener.start();
   const send = (line: string) => child.stdout.emit("data", Buffer.from(line + "\n"));
   send("CAPRI_READY");
   assert.deepEqual(seen.map(e => e[0]), ["ready"], "the passive listener is ready; that alone is not a recording");
-  send("CAPRI_LISTENING"); send("CAPRI_HEARING");
-  assert.deepEqual(seen.map(e => e[0]), ["ready", "listening", "hearing"]);
+  send("CAPRI_LISTENING"); send("CAPRI_AUDIO"); send("CAPRI_PROCESSING");
+  assert.deepEqual(seen.map(e => e[0]), ["ready", "listening", "audio", "processing"]);
   const arrival = performance.now();
   send("CAPRI_TIMING 1500");
   send('CAPRI_COMMAND "turn off the tv screen"');
