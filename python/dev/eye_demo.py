@@ -97,6 +97,28 @@ def play(session, sentences, gap=0.35, interrupt_at=None, fps=None, record=None,
     return frames, schedule, t0
 
 
+def pixel_activity(crop):
+    """How much of the eye is lit, from the pixels themselves (what the LCD shows)."""
+    a = np.asarray(crop).astype(int)
+    return float((a[:, :, 1] - a[:, :, 0]).clip(0).sum())
+
+
+def screen_sync(frames, device_latency_s):
+    """Lag between the sound leaving the speaker (audio position minus the assumed device latency) and the lit area of
+    the eye on the LCD, from the rendered pixels. Positive = the eye is behind the sound."""
+    ts = np.array([f["t"] for f in frames])
+    act = np.array([pixel_activity(f["crop"]) for f in frames])
+    true = np.array([f["true"] for f in frames])
+    mask = ts < ts[-1] - 0.5
+    best = None
+    for lag_ms in range(-80, 241, 5):
+        sound = np.interp(ts - device_latency_s - lag_ms / 1000.0, ts, true)
+        r = float(np.corrcoef(sound[mask], act[mask])[0, 1])
+        if best is None or r > best[0]:
+            best = (r, lag_ms)
+    return best
+
+
 def correlation(frames, lag_s):
     """Pearson correlation between the true audio level and the displayed level `lag_s` later."""
     ts = np.array([f["t"] for f in frames])
@@ -163,7 +185,10 @@ def main():
         sys.exit(checks())
     os.makedirs(args.out, exist_ok=True)
     envs = json.load(open(args.envs))
-    texts = {"sapi1.wav": "Screen off.",
+    texts = {"piper1.wav": "Screen off.",
+             "piper2.wav": "Oh. It is you. I suppose the screen is off now, which is what you wanted, probably.",
+             "piper3.wav": "The weather in Oslo is, as usual, cold. You should still go outside, although I would not recommend it.",
+             "sapi1.wav": "Screen off.",
              "sapi2.wav": "Oh. It's you. I suppose the screen is off now, which is what you wanted, probably.",
              "sapi3.wav": "The weather in Oslo is, as usual, cold. You should still go outside."}
     sentences = [dict(text=texts[k], **v) for k, v in envs.items()]
@@ -176,7 +201,10 @@ def main():
     finally:
         s.close()
     best = max(((correlation(frames, lag / 1000.0), lag) for lag in range(0, 200, 10)))
-    print("sync: best correlation %.3f at display lag %d ms; at 0 ms %.3f" % (best[0], best[1], correlation(frames, 0.0)))
+    print("sync (level): best correlation %.3f at display lag %d ms; at 0 ms %.3f" % (best[0], best[1], correlation(frames, 0.0)))
+    from whisplay_ui import eye as eye_mod
+    r, lag = screen_sync(frames, eye_mod.LAG_S)
+    print("sync (rendered pixels vs sound leaving the speaker, assumed device latency %d ms): correlation %.3f, eye behind sound by %d ms" % (eye_mod.LAG_S * 1000, r, lag))
     plot(frames, os.path.join(args.out, "eye_sync_plot.png"))
     # frames every 3rd (20 fps) as a strip of crops for a visual sequence
     picks = [f["crop"] for f in frames[:: 6]][:96]
@@ -261,6 +289,27 @@ def checks():
             s.run_until(s.now + 1.3)
             imgs[name] = np.asarray(s.lcd.image().crop((196, 87, 216, 107))).tobytes()
         check(len(set(imgs.values())) == 3, "idle, listening and thinking eyes differ in the microphone row")
+    finally:
+        s.close()
+    # an unverified action: restrained amber, no flashing, never red
+    s = pv.Session(env={"WHISPLAY_UI_EYE": "on"})
+    try:
+        text, holders = "{tool:t8} I could not confirm it.", {"t8": "% tv-screen.unverified..."}
+        s.send(status="answering", emoji="", text=text, tool_placeholders=holders)
+        s.run_until(0.3)
+        s.send(status="idle|capri", text=text, tool_placeholders=holders)
+        seen = []
+        t = s.now
+        while t < 9.0:
+            t += 0.05
+            s.run_until(t)
+            px = np.asarray(eye_crop(s)).astype(int)
+            seen.append((t, int((px[:, :, 0] - px[:, :, 2] > 60).sum()), int((px[:, :, 0] > px[:, :, 1] + 90).sum()), px.tobytes()))
+        amber = [a for tt, a, r, _ in seen if tt < 5.5]
+        check(min(amber) > 20, "an unverified action shows amber (%d amber pixels at least)" % min(amber))
+        check(all(r == 0 for _, _, r, _ in seen), "unverified is never red")
+        check(len({b for tt, _, _, b in seen if 1.0 < tt < 5.0}) <= 2, "unverified does not flash")
+        check(all(a < 10 for tt, a, _, _ in seen if tt > 7.5), "the amber indication ends after 6 s")
     finally:
         s.close()
     # a failed device action: brief red indication, then idle; nothing keeps redrawing afterwards

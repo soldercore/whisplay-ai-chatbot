@@ -17,7 +17,7 @@ export type SpeechTiming = {
   speechEndMs: number;
   pauses: [number, number][]; // [start, end] of silences inside the speech
   // Loudness of the sentence's own audio for the on-screen eye: one hex digit (0-f) per ENVELOPE_HOP_MS from the first
-  // sample, so index n is the sound n * ENVELOPE_HOP_MS after playback starts. Absolute scale (-48 dBFS = 0, -12 dBFS = f),
+  // sample, so index n is the sound n * ENVELOPE_HOP_MS after playback starts. Absolute scale chosen on real GLaDOS Piper audio (speech RMS median -12, p90 -8, max -5 dBFS; soft sounds -25 to -40): -36 dBFS = 0, -6 dBFS = f, mild curve,
   // not normalised per sentence. Empty when the sentence is too long to describe compactly.
   levels?: string;
 };
@@ -100,7 +100,7 @@ const envelopeFrom = (rms: number[]): string => {
     let value = 0;
     for (let k = 0; k < hop && i * hop + k < rms.length; k++) value = Math.max(value, rms[i * hop + k]);
     const db = value > 0 ? 20 * Math.log10(value / 32768) : -96;
-    const level = Math.max(0, Math.min(1, (db + 48) / 36));
+    const level = Math.pow(Math.max(0, Math.min(1, (db + 36) / 30)), 1.2);
     out += Math.round(level * 15).toString(16);
   }
   return out;

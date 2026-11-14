@@ -16,7 +16,7 @@ from . import clock, theme
 from . import visual_state as vs
 from .body import TONE_ECHO, TONE_MUTED, TONE_TEXT, Body
 from .draw_util import STATE_COLORS, ease_in_out
-from .eye import ERROR as EYE_ERROR, IDLE as EYE_IDLE, LISTEN as EYE_LISTEN, SPEAK as EYE_SPEAK, THINK as EYE_THINK, Eye
+from .eye import ERROR as EYE_ERROR, IDLE as EYE_IDLE, LISTEN as EYE_LISTEN, SPEAK as EYE_SPEAK, THINK as EYE_THINK, UNSURE as EYE_UNSURE, Eye
 from .fonts import Fonts
 from .panes import (
     STRIP_H,
@@ -484,8 +484,11 @@ class TerminalUI:
             return EYE_SPEAK
         if mode == STRIP_RECEIVING or state in (vs.THINK, vs.TOOL, vs.TRANSCRIBE):
             return EYE_THINK
-        if (self.info.tool_label or "").lower().endswith((".failed", ".unverified")):
-            return EYE_ERROR
+        label = (self.info.tool_label or "").lower()
+        if label.endswith(".failed"):
+            return EYE_ERROR            # a confirmed failure: brief red
+        if label.endswith(".unverified"):
+            return EYE_UNSURE           # outcome unknown: restrained amber, never shown as a confirmed failure
         return EYE_IDLE
 
     def _eye_fixed_level(self, mode):
@@ -627,6 +630,8 @@ class TerminalUI:
                     fps = max(fps, 10)
                 elif self._eye_state_strip(mode, state, now) == EYE_ERROR and self.eye.error_active(now):
                     fps = max(fps, 8)      # three flashes, then steady red for a few seconds, then back to idle
+                elif self._eye_state_strip(mode, state, now) == EYE_UNSURE and self.eye.error_active(now):
+                    fps = max(fps, 2)      # steady amber, then back to idle after the same time
                 elif self.eye.idle_fps > 0:
                     eye_tick = 1.0 / self.eye.idle_fps
         if kind == KIND_MIC and state in (vs.TRANSCRIBE, vs.THINK):

@@ -2,7 +2,7 @@
 
 Design (20 px): dark housing, a ring of eight mechanical segments, a green iris whose aperture and brightness follow
 the state, a few iris blades that read as machinery only when the iris is open. Nothing here talks to hardware; frames
-are drawn at 4x and reduced once, then cached by their quantised parameters, so a frame costs a dictionary lookup
+are drawn pixel by pixel at their real size (hard edges, no blur) and cached by their quantised parameters, so a frame costs a dictionary lookup
 after the first few seconds.
 
 Speaking follows a level envelope that Node measured from the sentence's own Piper WAV (one hex digit per 20 ms) and
@@ -15,20 +15,26 @@ from PIL import Image, ImageDraw
 
 from . import theme
 
-K = 4                     # supersampling factor
 SEGMENTS = 8
 HOP_MS = 20               # envelope resolution sent by Node
-LAG_S = 0.04              # player start-up + sound card buffer between "playback started" and sound
-ATTACK_S = 0.03          # smoothing of the displayed level: fast rise, slower fall
-RELEASE_S = 0.11
-LEVELS = 8                # quantisation of the level (cache key)
+SEGMENTS = 8
+LAG_S = 0.04              # assumed player start-up + sound card delay between "playback started" and sound (calibrate on the device)
+LEAD_S = 0.03             # the envelope is known in advance: read this far ahead to cancel the smoothing delay
+ATTACK_S = 0.025          # smoothing of the displayed level: fast rise, slower fall
+RELEASE_S = 0.09
+LEVELS = 10               # quantisation of the level (cache key)
+ERROR_SHOWN_S = 6.0
 
-HOUSING = (12, 20, 14)
-APERTURE = (3, 7, 4)
-BASE = (14, 50, 28)
-WARM_WHITE = (205, 255, 220)
+HOUSING = (10, 18, 12)
+APERTURE = (2, 6, 3)
+WARM_WHITE = (214, 255, 226)
 
-IDLE, LISTEN, THINK, SPEAK, ERROR = "idle", "listen", "think", "speak", "error"
+IDLE, LISTEN, THINK, SPEAK, ERROR, UNSURE = "idle", "listen", "think", "speak", "error", "unsure"
+
+# bright / mid / dim / deep tones per accent. Hard edges, no glow: the icon is drawn at its real size.
+GREEN_SET = (theme.GREEN, theme.GREEN_MID, (24, 96, 50), (12, 46, 26))
+RED_SET = (theme.RED, (206, 62, 58), (116, 36, 36), (62, 20, 20))
+AMBER_SET = (theme.AMBER, theme.AMBER_MID, (112, 78, 20), (58, 40, 12))
 
 
 def _mix(a, b, f):
@@ -36,77 +42,91 @@ def _mix(a, b, f):
     return tuple(int(round(a[i] + (b[i] - a[i]) * f)) for i in range(3))
 
 
-def _seg(draw, c, r_out, width, center_deg, span_deg, color):
-    box = (c - r_out, c - r_out, c + r_out, c + r_out)
-    draw.arc(box, center_deg - span_deg / 2.0, center_deg + span_deg / 2.0, fill=color, width=int(width))
+def _ring(img, c, radius, center_deg, half_span, color):
+    """One mechanical segment: pixels along a circle (1 px thick), exactly where they land at the real size."""
+    step = 2.0
+    deg = center_deg - half_span
+    while deg <= center_deg + half_span:
+        x = int(round(c + radius * math.cos(math.radians(deg))))
+        y = int(round(c + radius * math.sin(math.radians(deg))))
+        img.putpixel((x, y), color)
+        deg += step
+
+
+def _disc(d, c, r, color):
+    d.ellipse((c - r, c - r, c + r, c + r), fill=color)
 
 
 def _draw(state, level, phase, size):
-    s = size * K
-    c = s / 2.0
-    accent = theme.RED if state == ERROR else theme.GREEN
-    mid = theme.RED_DIM if state == ERROR else theme.GREEN_MID
-    deep = (60, 16, 16) if state == ERROR else BASE
-    img = Image.new("RGB", (s, s), theme.VOID)
+    n = size
+    c = (n - 1) / 2.0
+    bright, mid, dim, deep = RED_SET if state == ERROR else AMBER_SET if state == UNSURE else GREEN_SET
+    img = Image.new("RGB", (n, n), theme.VOID)
     d = ImageDraw.Draw(img)
-    r = c - 0.5 * K
-    d.ellipse((c - r, c - r, c + r, c + r), fill=HOUSING, outline=_mix(deep, mid, 0.7), width=K)
+    d.ellipse((0, 0, n - 1, n - 1), fill=HOUSING, outline=_mix(dim, mid, 0.55))
 
-    # --- aperture and iris
+    # ---- iris: aperture (dark well), three tones, blades, hot centre
     if state == SPEAK:
-        openness, bright = 0.36 + 0.58 * level, 0.5 + 0.5 * level
+        openness, glow = 0.12 + 0.88 * level, 0.35 + 0.65 * level
     elif state == LISTEN:
-        openness, bright = 0.74, 0.92
+        openness, glow = 0.78, 0.9
     elif state == THINK:
-        openness, bright = 0.40 + 0.08 * math.sin(phase * math.pi), 0.66
+        openness, glow = 0.42 + 0.06 * math.sin(phase * 2 * math.pi), 0.7
     elif state == ERROR:
-        openness, bright = 0.52, 0.95
+        openness, glow = 0.55, 1.0
+    elif state == UNSURE:
+        openness, glow = 0.45, 0.75
     else:
-        openness, bright = 0.30 + 0.09 * level, 0.52 + 0.14 * level   # idle breathing: `level` carries the breath
-    ri_max = 0.30 * s
-    ri = ri_max * (0.30 + 0.70 * openness)
-    ra = ri_max + 0.9 * K
-    d.ellipse((c - ra, c - ra, c + ra, c + ra), fill=APERTURE)
-    d.ellipse((c - ri, c - ri, c + ri, c + ri), fill=_mix(deep, mid, bright))
-    r2 = ri * 0.62
-    d.ellipse((c - r2, c - r2, c + r2, c + r2), fill=_mix(mid, accent, bright))
-    r3 = max(0.55 * K, ri * 0.22)
-    d.ellipse((c - r3, c - r3, c + r3, c + r3), fill=_mix(accent, WARM_WHITE, bright * 0.85))
-    if ri / K >= 3.0:
-        rot = math.radians(15 + (phase * 24 if state == THINK else 0))
+        openness, glow = 0.22 + 0.16 * level, 0.5 + 0.2 * level      # idle: `level` carries the breath
+    _disc(d, c, 5.6, APERTURE)
+    ri = 1.4 + 4.0 * openness
+    _disc(d, c, ri, _mix(deep, mid, glow))
+    if ri >= 2.6:
+        _disc(d, c, ri * 0.70, _mix(mid, bright, glow))
+    if ri >= 4.4:
+        rot = math.radians(15 + (phase * 90 if state == THINK else 0))
         for i in range(3):
             a = rot + i * math.pi / 3
-            dx, dy = math.cos(a) * ri, math.sin(a) * ri
-            d.line((c - dx, c - dy, c + dx, c + dy), fill=APERTURE, width=max(1, int(0.45 * K)))
-        d.ellipse((c - r3, c - r3, c + r3, c + r3), fill=_mix(accent, WARM_WHITE, bright * 0.85))
+            dx, dy = math.cos(a) * (ri - 0.2), math.sin(a) * (ri - 0.2)
+            d.line((c - dx, c - dy, c + dx, c + dy), fill=_mix(APERTURE, deep, 0.5))
+    _disc(d, c, max(0.6, ri * 0.30), _mix(bright, WARM_WHITE, glow * 0.8))
 
-    # --- segment ring
-    ring_out = 0.5 * s - 2.3 * K
-    ring_w = 1.5 * K
-    span = 31
+    # ---- segment ring (eight segments, clear gaps)
+    ring = 7.4
     lit = [deep] * SEGMENTS
     if state == SPEAK:
-        order = [[4], [3, 5], [2, 6], [1, 7], [0]]       # a vertical meter, bottom up, symmetrical
+        order = [[4], [3, 5], [2, 6], [1, 7], [0]]                  # a vertical meter, bottom up, symmetrical
         count = int(round(level * len(order)))
         for group in order[:count]:
             for i in group:
-                lit[i] = _mix(mid, accent, 0.4 + 0.6 * level)
+                lit[i] = bright
+        for group in order[count:]:
+            for i in group:
+                lit[i] = dim
     elif state == LISTEN:
         pulse = 0.5 + 0.5 * math.sin(phase * 2 * math.pi)
         for i in (2, 6):
             lit[i] = mid
         for i in (1, 3, 5, 7):
-            lit[i] = _mix(deep, mid, 0.35 + 0.65 * pulse)
+            lit[i] = _mix(dim, bright, pulse)
     elif state == ERROR:
-        for i in range(SEGMENTS):
-            lit[i] = _mix(deep, accent, 0.65)
+        lit = [bright if i % 2 == 0 else mid for i in range(SEGMENTS)]
+    elif state == UNSURE:
+        for i in (1, 3, 5, 7):
+            lit[i] = mid
+        for i in (0, 2, 4, 6):
+            lit[i] = dim
+    elif state == IDLE:
+        lit = [dim if i % 2 == 0 else deep for i in range(SEGMENTS)]
+    else:
+        lit = [dim] * SEGMENTS
     for i in range(SEGMENTS):
-        _seg(d, c, ring_out, ring_w, -90 + 45 * i, span, lit[i])
+        _ring(img, c, ring, -90 + 45 * i, 14, lit[i])
     if state == THINK:
-        head = phase * 360.0 - 90.0           # sweeps the ring; the tail fades behind it
-        for k, f in enumerate((1.0, 0.6, 0.3)):
-            _seg(d, c, ring_out, ring_w + (0.5 * K if k == 0 else 0), head - k * 38, 36, _mix(deep, accent, f))
-    return img.reduce(K)
+        head = phase * 360.0 - 90.0                                   # a bright run sweeps the ring, tail fades
+        for k, (span, color) in enumerate(((16, bright), (16, mid), (16, dim))):
+            _ring(img, c, ring, head - k * 30, span / 2.0, color)
+    return img
 
 
 class Eye:
@@ -142,7 +162,7 @@ class Eye:
         """Level (0..1) in the audio being played right now, interpolated between 20 ms steps; 0 outside the sentence."""
         if self.start is None or not self.env:
             return 0.0
-        pos = (now - self.start - LAG_S) / (HOP_MS / 1000.0)
+        pos = (now - self.start - LAG_S + LEAD_S) / (HOP_MS / 1000.0)
         if pos < 0 or pos > len(self.env):
             return 0.0
         i = int(pos)
@@ -171,7 +191,7 @@ class Eye:
 
     def error_active(self, now):
         """The red eye is still flashing or steady (it returns to idle after 6 s); needs frames until then."""
-        return self.error_since is not None and now - self.error_since < 6.1
+        return self.error_since is not None and now - self.error_since < ERROR_SHOWN_S + 0.1
 
     def sound_over(self, now):
         return self.start is None or now > self.start + max(self.duration, len(self.env) * HOP_MS / 1000.0) + LAG_S + 0.4
@@ -180,7 +200,7 @@ class Eye:
     def frame(self, state, now, fixed_level=None):
         """state: idle/listen/think/speak/error. Speaking uses the playback envelope unless `fixed_level` is given."""
         phase, lv = 0.0, 0.0
-        if state != ERROR:
+        if state not in (ERROR, UNSURE):
             self.error_since = None
         if state == SPEAK:
             raw = fixed_level if fixed_level is not None else self.level(now)
@@ -193,12 +213,20 @@ class Eye:
         elif state == LISTEN:
             b = int(now * 4) % 8                        # slow side-wave pulse, 2 s per cycle
             key, phase = (LISTEN, 0, b), b / 8.0
+        elif state == UNSURE:
+            # an unconfirmed outcome: steady amber for a few seconds, no flashing (never shown as a confirmed failure)
+            if self.error_since is None:
+                self.error_since = now
+            shown = IDLE if now - self.error_since > ERROR_SHOWN_S else UNSURE
+            key, state = (shown, 0, 0), shown
+            if shown == IDLE:
+                key, lv = (IDLE, 0, 0), 0.0
         elif state == ERROR:
             if self.error_since is None:
                 self.error_since = now
             age = now - self.error_since
             # three short flashes, steady red for a few seconds, then back to idle (the outcome stays in the text)
-            shown = IDLE if age > 6.0 else ERROR if (age > 0.9 or int(age * 6) % 2 == 0) else IDLE
+            shown = IDLE if age > ERROR_SHOWN_S else ERROR if (age > 0.9 or int(age * 6) % 2 == 0) else IDLE
             key, state = (shown, 0, 0), shown
         else:
             breath = 0.5 + 0.5 * math.sin(now * 2 * math.pi / 6.0)
