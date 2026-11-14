@@ -16,8 +16,8 @@ const tv = require("../device/lg-c1-volume");
 const dc = require("../config/device-commands");
 
 test("outcomes come only from the action's own reply", () => {
-  const ok = ["Screen off.", "Screen on.", "Powering off.", "Volume adjusted.", "TV muted.", "TV unmuted.", "Waking the TV.", "Opening YouTube.",
-    "Notification displayed.", "TV volume is already at zero.", "TV volume is already at maximum.", "The TV is already on."];
+  const ok = ["Screen off.", "Screen on.", "Powering off.", "Volume adjusted.", "TV muted.", "TV unmuted.", "Waking the TV.", "Opening YouTube."];
+
   const unverified = ["TV screen change is unverified.", "TV power-off is unverified.", "TV audio change is unverified.", "TV volume change is unverified.",
     "TV wake-up is unverified.", "YouTube opening is unverified.", "TV notification is unverified.", "Sent. Playback unverified.",
     "I can't verify the TV's state right now.", "The TV isn't responding on the network, so it is most likely off or in standby. I can't confirm that."];
@@ -28,6 +28,11 @@ test("outcomes come only from the action's own reply", () => {
   for (const r of unverified) assert.equal(outcome.actionOutcome(r), "unverified", r);
   for (const r of failed) assert.equal(outcome.actionOutcome(r), "failed", r);
   // Anything unrecognised is neutral: no claim is made.
+  // Acceptance by the TV, or no change, is not a verified result: neutral, never ok.
+  for (const r of ["Notification displayed.", "TV volume is already at zero.", "TV volume is already at maximum.", "The TV is already on.", "Search sent to YouTube."]) {
+    assert.equal(outcome.actionOutcome(r), undefined, r);
+  }
+  assert.equal(outcome.actionOutcome("I couldn't verify the YouTube search request."), "unverified");
   for (const r of ["The TV is on.", "Use a whole TV volume from zero to one hundred.", "Device control is disabled.", "Something new.", "Done!", ""]) {
     assert.equal(outcome.actionOutcome(r), undefined, r);
   }

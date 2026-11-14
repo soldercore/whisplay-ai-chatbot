@@ -2,9 +2,12 @@
 // already say verified / failed / unverified). It never infers device state: an unrecognised reply is neutral.
 export type ActionOutcome = "ok" | "failed" | "unverified";
 
-const UNVERIFIED = /unverified|can't verify|could not verify|can't confirm|not verified/i;
+const UNVERIFIED = /unverified|can't verify|couldn't verify|could not verify|can't confirm|not verified/i;
 const FAILED = /\b(?:couldn't|could not|didn't|failed|unable)\b/i;
-const SUCCESS = /^(?:Screen o(?:n|ff)\.|Powering off\.|Volume adjusted\.|TV (?:un)?muted\.|Waking the TV\.|Opening YouTube\.|Notification displayed\.|TV volume is already (?:at zero|at maximum)\.|The TV is already on\.)$/;
+// Only replies the TV code returns after its own verification: a power/screen state read, a volume or mute read-back, the
+// foreground-app read for YouTube, or power "on" plus the Home screen for wake. Replies that rest on the TV merely accepting a
+// command ("Notification displayed."), or that report no change ("already at maximum", "already on"), stay neutral.
+const SUCCESS = /^(?:Screen o(?:n|ff)\.|Powering off\.|Volume adjusted\.|TV (?:un)?muted\.|Waking the TV\.|Opening YouTube\.)$/;
 
 export function actionOutcome(reply: string, emptyMeansVerified = false): ActionOutcome | undefined {
   const text = reply.trim();
