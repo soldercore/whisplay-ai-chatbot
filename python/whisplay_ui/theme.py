@@ -12,7 +12,7 @@ def _hex(value):
 
 
 # ---- Palette -------------------------------------------------------------
-VOID = _hex("000000")
+VOID = _hex("080C08")  # Approved Home charcoal.
 RAISED = _hex("080C08")
 PANEL = _hex("101810")
 LINE = _hex("182821")

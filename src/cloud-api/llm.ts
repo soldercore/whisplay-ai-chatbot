@@ -1,3 +1,4 @@
+import { redactWifiCredentials, WIFI_PRIVATE, wifiCredentialReply } from "../config/whisplay-privacy";
 import { noop } from "lodash";
 import dotenv from "dotenv";
 import { LLMServer } from "../type";
@@ -34,6 +35,12 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
     // Explicit memory commands are answered from the local store without an
     // LLM round trip; the reply is spoken and displayed like any answer.
     const lastUser = [...inputMessages].reverse().find((message) => message.role === "user");
+    if (typeof lastUser?.content === "string" && redactWifiCredentials(lastUser.content) === WIFI_PRIVATE) {
+      lastUser.content = WIFI_PRIVATE;
+      partialCallback(wifiCredentialReply);
+      endCallBack();
+      return;
+    }
     const memoryReply =
       typeof lastUser?.content === "string" ? handleMemoryCommand(lastUser.content) : null;
     if (memoryReply) {

@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import moment from "moment";
-import { LLMTool, ToolReturnTag } from "../type";
+import { LLMTool, Message, ToolReturnTag } from "../type";
 import { dataDir } from "../utils/dir";
 import {
   containsSecret,
@@ -298,10 +298,11 @@ const writeStore = (store: MemoryStore): void => {
   fs.renameSync(tempPath, memoryStorePath);
 };
 
-const enqueueWrite = (fn: () => void | Promise<void>): void => {
-  writeQueue = writeQueue
-    .then(() => fn())
+const enqueueWrite = (fn: () => void | Promise<void>): Promise<void> => {
+  const operation = writeQueue.then(() => fn());
+  writeQueue = operation
     .catch((error) => console.error(`[Memory] Write failed: ${error.message}`));
+  return operation;
 };
 
 const buildSessionSummary = async (
@@ -402,6 +403,7 @@ const STOPWORDS = new Set([
   "that", "your", "i", "me", "do", "you", "it", "how", "which", "did", "does",
   "should", "could", "would", "can", "for", "this", "use", "today", "tonight",
   "earlier", "mention", "mentioned", "remember", "recall", "tell", "like",
+  "please", "now", "again", "currently", "still",
 ]);
 
 const topicWords = (topic: string): string[] =>
@@ -423,8 +425,9 @@ const findFacts = (store: MemoryStore, topic: string): UserMemory[] => {
     // A mention or a liking is not evidence of a favorite. Preserve the saved
     // wording; never upgrade an ambiguous statement during deterministic recall.
     if (words.includes("favorite") && !containsWord(haystack, "favorite")) return false;
-    const hits = words.filter((word) => containsWord(haystack, word)).length;
-    return hits > 0 && hits >= Math.ceil(words.length / 2);
+    // Commands may recall, update or delete facts. A shared word such as
+    // "favorite" or "name" cannot stand in for the rest of the requested topic.
+    return words.every((word) => containsWord(haystack, word));
   });
 };
 
@@ -604,18 +607,33 @@ const rollSessionIfIdle = (): void => {
   }
 };
 
-export const prepareMemoryPrompt = (userText: string): string => {
-  if (!memoryEnabled) return "";
+// Only this builder can establish provenance. The marker is never serialized
+// into conversation history or included in a model request.
+const profileBlocks = new WeakMap<object, boolean>();
+
+export function withoutDuplicateMemoryProfiles<T extends object>(messages: T[]): T[] {
+  let newest = messages.length - 1;
+  while (newest >= 0 && !profileBlocks.has(messages[newest])) newest--;
+  if (newest < 0) return messages;
+  // The configured profile is fixed for this process. A newer mixed block
+  // repeats it too, but only profile-only blocks can be removed.
+  return messages.filter((message, index) => index >= newest || profileBlocks.get(message) !== true);
+}
+
+export const prepareMemoryMessage = (userText: string): Message | null => {
+  if (!memoryEnabled) return null;
   try {
-    return buildMemoryPrompt(userText);
+    return buildMemoryMessage(userText);
   } catch (error: any) {
     // A memory problem must not stop the assistant from answering.
     console.error(`[Memory] Could not prepare memory context: ${error.message}`);
-    return "";
+    return null;
   }
 };
 
-const buildMemoryPrompt = (userText: string): string => {
+export const prepareMemoryPrompt = (userText: string): string => prepareMemoryMessage(userText)?.content ?? "";
+
+const buildMemoryMessage = (userText: string): Message | null => {
   rollSessionIfIdle();
   const store = readStore();
 
@@ -643,11 +661,17 @@ const buildMemoryPrompt = (userText: string): string => {
       : "",
   ].filter(Boolean);
 
-  if (sections.length === 0) return "";
-  return [
-    "Local memory about this user. Use it only when relevant to the current request, not to decorate greetings. A past mention or liking is not necessarily a lasting favorite. Current instructions take precedence. Answer in English and never invent details that are not listed here.",
-    ...sections,
-  ].join("\n\n");
+  if (sections.length === 0) return null;
+  const message: Message = {
+    role: "system",
+    contextScope: "turn",
+    content: [
+      "Local memory about this user. Use it only when relevant to the current request, not to decorate greetings. A past mention or liking is not necessarily a lasting favorite. Current instructions take precedence. Answer in English and never invent details that are not listed here.",
+      ...sections,
+    ].join("\n\n"),
+  };
+  if (memoryProfileText) profileBlocks.set(message, wakeupItems.length === 0 && searchResults.length === 0);
+  return message;
 };
 
 // ---- Memory commands --------------------------------------------------------
@@ -734,7 +758,7 @@ export function autoSaveExchange(
   userText: string,
   assistantText: string,
   summaryText?: (text: string, promptPrefix: string) => Promise<string>,
-): void {
+): void | Promise<void> {
   if (!memoryAutoSave) return;
   if (!userText.trim() || !assistantText.trim()) return;
   // Memory commands are already stored as facts; saving the exchange too would
@@ -745,7 +769,7 @@ export function autoSaveExchange(
     return;
   }
 
-  enqueueWrite(async () => {
+  return enqueueWrite(async () => {
     // Step 1: append the exchange (synchronous read-modify-write).
     const store = readStore();
     const session = getActiveSession(store, userText);

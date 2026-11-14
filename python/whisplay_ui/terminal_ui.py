@@ -19,6 +19,7 @@ from .draw_util import STATE_COLORS, ease_in_out
 from .fonts import Fonts
 from .panes import (
     STRIP_H,
+    MIC_H, MIC_STATES, render_microphone,
     STRIP_RECEIVING,
     STRIP_RESPONSE,
     STRIP_SPEAKING,
@@ -42,10 +43,11 @@ from .stage import (
 from .statusbar import StatusBar
 from .typewriter import ECHO, INSTANT, STREAM
 
+KIND_MIC = "microphone"
 KIND_STAGE = "stage"
 KIND_STRIP = "strip"
 KIND_TERMINAL = "terminal"
-PANE_HEIGHTS = {KIND_STAGE: theme.STAGE_H, KIND_STRIP: STRIP_H, KIND_TERMINAL: TERMINAL_H}
+PANE_HEIGHTS = {KIND_MIC: MIC_H, KIND_STAGE: theme.STAGE_H, KIND_STRIP: STRIP_H, KIND_TERMINAL: TERMINAL_H}
 CLASSIC_MAX_SCROLL_SPEED = 0.5  # chatbot-ui.py MAX_SCROLL_SPEED (px per frame)
 IM_TOOL_RE = re.compile(r"^\s*\[([^\]\n]{1,40})\]")
 
@@ -53,8 +55,8 @@ STATE_LABELS = {
     vs.BOOT: "BOOT",
     vs.IDLE: "IDLE",
     vs.CALIBRATE: "CALIBRATE",
-    vs.LISTEN: "LISTEN",
-    vs.TRANSCRIBE: "STT",
+    vs.LISTEN: "LISTENING",
+    vs.TRANSCRIBE: "RECOGNIZE",
     vs.THINK: "THINK",
     vs.TOOL: "TOOL",
     vs.ANSWER: "REPLY",
@@ -102,6 +104,7 @@ class TerminalUI:
         self._list_pixels = False
         # text / speech
         self.text = None
+        self.response_text = None
         self.text_offset = 0
         self.transaction = None
         self.speech_seq = None
@@ -162,8 +165,10 @@ class TerminalUI:
         self.info.quality = self.quality
 
         # ---- geometry and transitions
+        retained_response = state == vs.IDLE and self.response_text is not None
         kind = KIND_TERMINAL if _snap(snapshot, "terminal_text", "") else (
-            KIND_STRIP if state in vs.CONSOLE_STATES else KIND_STAGE
+            KIND_STRIP if retained_response else KIND_MIC if state in MIC_STATES
+            else KIND_STRIP if state in vs.CONSOLE_STATES else KIND_STAGE
         )
         target_h = PANE_HEIGHTS[kind]
         if kind != self.pane_kind:
@@ -255,6 +260,16 @@ class TerminalUI:
     def _ingest_text(self, snapshot, state, now):
         text = _snap(snapshot, "text", "")
         text = text if isinstance(text, str) else str(text)
+        if state in (vs.LISTEN, vs.CALIBRATE):
+            self.response_text = None
+        elif state == vs.ANSWER and text.strip():
+            self.response_text = text
+        elif state == vs.IDLE and self.response_text is not None:
+            # Idle/metadata refreshes must not replace the completed answer.
+            text = self.response_text
+        # Only replace the host's startup instruction, never a conversation answer.
+        if state == vs.IDLE and (not text or text.startswith("Long Press the button to say something")):
+            text = "Hold to talk.\nRelease to send."
         transaction = snapshot.get("transaction_id")
         tx_changed = (
             transaction is not None
@@ -330,7 +345,7 @@ class TerminalUI:
     def _status_model(self, snapshot, state):
         hour, minute, _ = clock.wall_hms()
         speaking = state == vs.ANSWER and self.body.speaking(self.last_now)
-        label = "SPEAK" if speaking else STATE_LABELS.get(state)
+        label = "SPEAKING" if speaking else STATE_LABELS.get(state)
         if label is None:
             if state == vs.RESULT:
                 label = (self.info.raw_status or "").strip().upper()
@@ -345,6 +360,7 @@ class TerminalUI:
             "clock": "%02d:%02d" % (hour, minute),
             "battery_level": snapshot.get("battery_level"),
             "battery_color": snapshot.get("battery_color"),
+            "wireless_status": snapshot.get("wireless_status"),
             "wifi_level": snapshot.get("wifi_signal_level") or 0,
             "network_connected": snapshot.get("network_connected"),
             "vpn": snapshot.get("vpn_connected"),
@@ -357,6 +373,16 @@ class TerminalUI:
         y0 = theme.PANE_Y
         full_h = PANE_HEIGHTS[kind]
         rects = []
+        if kind == KIND_MIC:
+            key = (state, (t % theme.BLINK_PERIOD) < theme.BLINK_ON,
+                   int(t*2) if state in (vs.TRANSCRIBE, vs.THINK) else int(t) if state == vs.LISTEN else None)
+            if key != self.side_key or force:
+                self.side_key = key
+                self.pane_img = render_microphone(self.fonts, state, t, self.info)
+                self._paste_pane(self.pane_img, full_h)
+                rects.append((0, y0, theme.WIDTH, y0+self.pane_h))
+            return rects
+
         if kind == KIND_STAGE:
             changed = self._update_stage(state, t, now)
             pane = self.pane_img
@@ -536,11 +562,18 @@ class TerminalUI:
                 fps = max(fps, theme.SPEAKING_FPS)
             elif mode == STRIP_RECEIVING:
                 fps = max(fps, 6)
-        fps = max(fps, self.body.fps_needed(now))
+        if kind == KIND_MIC and state in (vs.TRANSCRIBE, vs.THINK):
+            fps = max(fps, 2)
+        if kind != KIND_MIC:
+            fps = max(fps, self.body.fps_needed(now))
         self._animating = fps > 0
         if fps > 0:
             return 1.0 / min(fps, self._fps_cap())
         waits = [clock.seconds_to_next_minute() + 0.05]
+        if kind == KIND_MIC:
+            waits.append(next_blink_edge(t))
+            if state == vs.LISTEN:
+                waits.append(1.0 - (t % 1.0))
         if kind == KIND_STAGE and state == vs.IDLE:
             waits.append(next_blink_edge(t))
             if rain_active(state, t, self.info):

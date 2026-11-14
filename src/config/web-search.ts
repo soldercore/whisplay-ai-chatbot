@@ -60,10 +60,11 @@ function relevantNews(results: SearchResult[], query: string): SearchResult[] {
   const ignored = new Set(["the", "a", "an", "for", "of", "on", "in", "about", "latest", "recent", "current", "news", "headlines", "today", "this", "week", "what", "s", "is", "are", "tell", "me", "please"]);
   const words = (text: string) => text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
   const terms = [...new Set(words(query).filter(word => !ignored.has(word)))];
-  if (!terms.length) return results;
+  if (!terms.length && !/\btoday\b/i.test(query)) return results;
   return results.filter(result => {
     const found = new Set(words(`${result.title} ${result.snippet || ""}`));
-    return terms.every(term => found.has(term));
+    return terms.every(term => found.has(term))
+        && (!/\btoday\b/i.test(query) || (result.published && new Date(result.published).toDateString() === new Date().toDateString()));
   });
 }
 
@@ -82,7 +83,7 @@ export const getWebSearchSystemNote = (now: Date = new Date()): string => {
   return ` Today is ${today}. Your built-in knowledge stops in the past. Only for questions whose answer changes over time (news, prices, weather, release dates, who currently holds a role, recent events) call web_search before answering. Answer stable general knowledge, jokes and small talk directly without any tool.`;
 };
 
-if (webSearchEnabled) {
+if (webSearchEnabled && process.env.WEB_SEARCH_FETCH_ENABLED !== "false") {
   webSearchTools.push({
     execution: "abortable",
     type: "function",
@@ -131,6 +132,8 @@ if (webSearchEnabled) {
     },
   });
 
+}
+if (webSearchEnabled) {
   webSearchTools.push({
     execution: "abortable",
     type: "function",
@@ -161,8 +164,16 @@ if (webSearchEnabled) {
     func: async (params: any) => {
       try {
         const result = await performUniversalWebSearch(params || {});
-        if ((params?.search_type === "news" || params?.search_type === "google_news") && !result.results.length) {
-          return `${ToolReturnTag.Response}${NEWS_UNAVAILABLE}`;
+        if (!result.results.length) {
+          return `${ToolReturnTag.Response}${params?.search_type === "news" || params?.search_type === "google_news"
+              ? NEWS_UNAVAILABLE : "I couldn't verify that with web search right now."}`;
+        }
+        if (params?.search_type === "news" || params?.search_type === "google_news") {
+          const { title, source } = result.results[0];
+          const suffix = source ? ` - ${source}` : "";
+          const headline = suffix && title.endsWith(suffix) ? title.slice(0, -suffix.length) : title;
+          const prefix = source ? `${clip(source, 60)} reports` : "I found this headline";
+          return `${ToolReturnTag.Response}${prefix}: ${clip(headline.replace(/https?:\/\/\S+/gi, "").trim(), 180)}`;
         }
         return `${ToolReturnTag.Success}${formatSearchResponse(result)}${SEARCH_ANSWER_NOTE}`;
       } catch (error: any) {
@@ -390,7 +401,18 @@ async function performUniversalWebSearch(params: {
     return searchDuckDuckGo(query, limit);
   }
 
-  return searchDuckDuckGo(query, limit);
+  const result = await searchDuckDuckGo(query, limit);
+  if (/\b(?:latest|newest|current)\s+(?:stable\s+)?ollama\s+(?:release|version)\b/i.test(query)) {
+    const endpoint = "https://github.com/ollama/ollama/releases/latest";
+    const response = await webToolFetch(endpoint, { method: "HEAD", redirect: "manual" });
+    const location = response.location ? new URL(response.location, endpoint) : undefined;
+    const version = location?.origin === "https://github.com"
+      ? /^\/ollama\/ollama\/releases\/tag\/(v?\d+\.\d+\.\d+)$/.exec(location.pathname)?.[1] : undefined;
+    if (response.status !== 302 || !version || !location) throw new Error("Official Ollama release could not be verified");
+    return { ...result, source: "github_latest_release", results: [{ title: `Latest stable Ollama release: ${version}`, url: location.href,
+        snippet: `Ollama’s official GitHub latest release points to ${version}.` }] };
+  }
+  return result;
 }
 
 async function extractPage(url: string, maxChars: number) {
@@ -553,8 +575,8 @@ export function parseDuckDuckGoHtml(html: string, limit: number): SearchResult[]
 
 async function searchGoogleNewsRss(query: string, limit: number) {
   const url =
-    `https://news.google.com/rss/search?q=${encodeURIComponent(query)}` +
-    "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans";
+    `https://news.google.com/rss/search?q=${encodeURIComponent(/\btoday\b/i.test(query) ? query + " when:1d" : query)}` +
+    "&hl=en-US&gl=US&ceid=US:en";
   const response = await webToolFetch(url, { headers: webHeaders() });
   if (!response.ok) {
     throw new Error(`Google News RSS error: ${response.status} ${response.statusText}`);
@@ -674,7 +696,7 @@ function webHeaders() {
 async function webToolFetch(
   url: string,
   options: RequestInit = {},
-): Promise<Pick<Response, "ok" | "status" | "statusText" | "url" | "text" | "json">> {
+): Promise<Pick<Response, "ok" | "status" | "statusText" | "url" | "text" | "json"> & { location: string | null }> {
   const parent = currentToolSignal();
   checkCancelled(parent);
   const deadline = operationDeadline(webToolTimeoutMs, parent);
@@ -694,7 +716,7 @@ async function webToolFetch(
     }
     checkCancelled(deadline.signal);
     const text = Buffer.concat(chunks).toString("utf8");
-    return { ok: response.ok, status: response.status, statusText: response.statusText, url: response.url,
+    return { ok: response.ok, status: response.status, statusText: response.statusText, url: response.url, location: response.headers.get("location"),
       text: async () => text, json: async () => JSON.parse(text) };
   } finally {
     // Keep the deadline alive until the body is consumed, not just headers.

@@ -175,6 +175,7 @@ class RenderThread(threading.Thread):
             "emoji": current_emoji,
             "text": apply_tool_placeholders(current_text),
             "terminal_text": current_terminal_text,
+            "wireless_status": getattr(self.whisplay, "wireless_status", None),
             "battery_level": current_battery_level,
             "battery_color": current_battery_color,
             "network_connected": current_network_connected,
@@ -706,7 +707,11 @@ class RenderThread(threading.Thread):
 
         if battery_level is not None:
             icons.append(BatteryStatusIcon(battery_level, battery_color, battery_font, status_font_size))
-        if context.get("wifi_signal_level"):
+        wireless = getattr(self.whisplay, "wireless_status", None)
+        if wireless is not None:
+            from wireless_icons import WirelessStatusIcon
+            icons.append(WirelessStatusIcon(wireless))
+        elif context.get("wifi_signal_level"):
             icons.append(WifiStatusIcon(status_font_size, context.get("wifi_signal_level")))
         if context.get("vpn_connected"):
             icons.append(WireguardStatusIcon(status_font_size))
@@ -1106,7 +1111,7 @@ def handle_client(client_socket, addr, whisplay):
         del clients[addr]
         client_socket.close()
 
-def start_socket_server(render_thread, host='0.0.0.0', port=12345):
+def start_socket_server(render_thread, host='127.0.0.1', port=12345):
     # Register button events
     whisplay.on_button_press(on_button_pressed)
     whisplay.on_button_release(on_button_release)
@@ -1142,8 +1147,10 @@ if __name__ == "__main__":
     
     # start render thread
     render_thread = RenderThread(whisplay, custom_font_path or "NotoSansSC-Bold.ttf", fps=30)
+    if hasattr(whisplay, "status_update_callback"):
+        whisplay.status_update_callback = render_thread.render_event.set
     render_thread.start()
-    start_socket_server(render_thread, host='0.0.0.0', port=12345)
+    start_socket_server(render_thread, host='127.0.0.1', port=12345)
     
     def cleanup_and_exit(signum, frame):
         print("[System] Exiting...")

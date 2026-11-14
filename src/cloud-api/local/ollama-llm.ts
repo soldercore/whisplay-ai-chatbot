@@ -1,3 +1,4 @@
+import { redactWifiCredentials, WIFI_PRIVATE, wifiCredentialReply, privateWhisplayCall } from "../../config/whisplay-privacy";
 import axios from "axios";
 import * as fs from "fs";
 import * as path from "path";
@@ -30,7 +31,7 @@ import {
   consumePendingCapturedImgForChat,
   hasPendingCapturedImgForChat,
 } from "../../utils/image";
-import { discoverRuntimeContext, fitOllamaPrompt, PromptMessage } from "./ollama-context-budget";
+import { discoverRuntimeContext, fitOllamaPrompt, OllamaContextBudgetError, PromptMessage } from "./ollama-context-budget";
 import { getWebSearchSystemNote } from "../../config/web-search";
 import {
   needsCurrentInformation,
@@ -38,7 +39,12 @@ import {
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../../config/tool-router";
+import { withoutDuplicateMemoryProfiles } from "../../config/local-memory";
 import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
+import { needsWhisplayCapabilities, requiresWhisplayTool, deviceCallFormat, withWhisplayQuestion, whisplayVoiceControlEnabled } from "../../config/whisplay-tools";
+import { changeTvAudioAndReply, changeTvPlaybackAndReply, getTvAudioCommand, getTvNavigationButton, getTvPlaybackAction, getTvScreenAction, getYoutubeSearchQuery, searchYoutubeAndReply, isTvNotification, setTvScreenAndReply, showTvNotificationAndReply, isOpenYoutubeOnTv, isTurnOffTv, isTurnOnTv, isTvVolumeDown, lowerTvVolumeAndReply, navigateTvAndReply, openYoutubeAndReply, turnOffTvAndReply, turnOnTvAndReply } from "../../device/lg-c1-volume";
+import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, isNegatedDeviceAction, isUnclearVolumeObservation, parseDeviceCommand, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY } from "../../config/device-commands";
+import { deviceResultSpeech } from "../../config/device-result-speech";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { boundOllamaHistory } from "./ollama-history-limits";
@@ -130,6 +136,11 @@ const messages: OllamaMessage[] = [
   },
 ];
 
+// Only a completed host-routed change establishes a setting reference.
+const tvNavigationIdleMs = 60_000;
+let tvNavigationUntil = 0;
+const confirmedSettings = new WeakMap<Message, "volume" | "brightness">();
+
 // ---- Timing diagnostics -------------------------------------------------------
 // One log line per model request, so a slow answer can be attributed on the
 // device: prompt tokens read (prompt_eval_*), tokens generated (eval_*), model
@@ -210,6 +221,7 @@ if (llmServer.trim().toLowerCase() === "ollama") {
 }
 
 const resetChatHistory = (): void => {
+  tvNavigationUntil = 0;
   messages.length = 0;
   messages.push({
     role: "system",
@@ -218,6 +230,9 @@ const resetChatHistory = (): void => {
 };
 
 type ToolLoopState = {
+  deviceToolRequired?: boolean;
+  deviceRetried?: boolean;
+  capabilitiesPrefetched?: boolean;
   healthPrefetched?: boolean;
   pending?: { message?: OllamaMessage };
   round: number;
@@ -245,7 +260,10 @@ const reportResourceFailure = (
     const index = messages.indexOf(pendingAssistant);
     if (index >= 0) messages.splice(index, 1);
   }
-  const reply = `Resource limit exceeded: ${error.message}. Tool execution stopped for this request. Completion was not verified.`;
+  const contextError = error instanceof OllamaContextBudgetError;
+  if (contextError) console.warn("[Ollama context] Request stopped:", error.message);
+  const reply = contextError ? "I lost track of the context. Please repeat the key detail."
+      : `Resource limit exceeded: ${error.message}. Tool execution stopped for this request. Completion was not verified.`;
   messages.push({ role: "assistant", content: reply });
   partialCallback(reply);
 };
@@ -335,9 +353,9 @@ const prefetchWebSearchIfNeeded = async (
     { role: "tool", content: result, tool_name: "web_search" },
   );
   toolLoopState.signatures.add(toolCallSignature(call));
-  if (args.search_type === "news" && (result.startsWith(ToolReturnTag.Response) || execution.status !== "success")) {
+  if (result.startsWith(ToolReturnTag.Response) || execution.status !== "success") {
     const reply = result.startsWith(ToolReturnTag.Response) && execution.status === "success"
-      ? extractToolResponse(result) : "I couldn't find relevant news results to verify that right now.";
+      ? extractToolResponse(result) : "I couldn't verify that with web search right now.";
     messages.push({ role: "assistant", content: reply });
     partialCallback(reply);
     return false;
@@ -370,6 +388,12 @@ const prefetchSystemHealth = async (
     partialCallback(reply);
     return false;
   }
+  const deviceReply = deviceResultSpeech("getSystemHealth", execution.output, undefined, question);
+  if (deviceReply) {
+    messages.push({ role: "assistant", content: deviceReply });
+    partialCallback(deviceReply);
+    return false;
+  }
   const directAnswer = directCpuTemperatureAnswer(execution.output, question);
   if (directAnswer) {
     messages.push({ role: "assistant", content: directAnswer });
@@ -382,7 +406,7 @@ const prefetchSystemHealth = async (
 
 const WEB_TOOL_NAMES = new Set(["web_search", "fetch_webpage"]);
 const toolsForRequest = (toolLoopState: ToolLoopState) => {
-  if (!ollamaEnableTools || toolLoopState.healthPrefetched) return undefined;
+  if (!ollamaEnableTools || toolLoopState.healthPrefetched || toolLoopState.capabilitiesPrefetched) return undefined;
   const boundedTools = llmTools.filter(tool => tool.execution === "bounded" || tool.execution === "abortable");
   if (toolLoopState.webToolsOnly) {
     return boundedTools.filter((tool) => WEB_TOOL_NAMES.has(tool.function.name));
@@ -419,8 +443,9 @@ const answerFromAvailableToolResults = async ({
   let finalThinking = "";
   let responseTextBytes = 0;
   try {
+    const history = withoutDuplicateMemoryProfiles(messages);
     let requestMessages: PromptMessage[] = [
-      ...messages.map((msg, index) =>
+      ...history.map((msg, index) =>
         withRequestSystemNote({
           role: msg.role,
           content: msg.content,
@@ -436,7 +461,7 @@ const answerFromAvailableToolResults = async ({
       },
     ];
     requestMessages = await budgetRequest(requestMessages, undefined, signal,
-      messages.map(message => message.role).lastIndexOf("user"));
+      history.map(message => message.role).lastIndexOf("user"));
     const shape = requestShape(requestMessages);
     const startedAt = Date.now();
     let firstTokenAt = 0;
@@ -530,7 +555,138 @@ const chatWithLLMStreamInternal = async (
   if (toolLoopState.round === 0) {
     const latestUser = [...inputMessages].reverse().find(message => message.role === "user");
     const question = typeof latestUser?.content === "string" ? latestUser.content : "";
-    if (needsSystemHealth(question)) {
+    let executionQuestion = question;
+    let reply: string | undefined;
+    if (whisplayVoiceControlEnabled()) {
+      const followUp = settingFollowUpText(question);
+      const tvButton = getTvNavigationButton(question, performance.now() < tvNavigationUntil);
+      tvNavigationUntil = 0;
+      const tvAudio = getTvAudioCommand(question);
+      const tvPlayback = getTvPlaybackAction(question);
+      const tvScreen = getTvScreenAction(question);
+      const youtubeQuery = getYoutubeSearchQuery(question);
+      if (isNegatedDeviceAction(question)) reply = "Understood. No device setting changed.";
+      else if (tvScreen || isTvNotification(question)) {
+        reply = !ollamaEnableTools ? "Device control is disabled."
+          : tvScreen ? await setTvScreenAndReply(tvScreen, toolLoopState.signal)
+          : await showTvNotificationAndReply(toolLoopState.signal);
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (isTvVolumeDown(question)) {
+        reply = ollamaEnableTools ? await lowerTvVolumeAndReply(toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (tvAudio) {
+        reply = ollamaEnableTools ? await changeTvAudioAndReply(tvAudio, toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (youtubeQuery) {
+        reply = ollamaEnableTools ? await searchYoutubeAndReply(youtubeQuery, toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (isOpenYoutubeOnTv(question)) {
+        reply = ollamaEnableTools ? await openYoutubeAndReply(toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (tvButton) {
+        if (ollamaEnableTools) {
+          const result = await navigateTvAndReply(tvButton, toolLoopState.signal);
+          if (toolLoopState.signal?.aborted) { endCallback(); return; }
+          if (result.sent) tvNavigationUntil = performance.now() + tvNavigationIdleMs;
+          reply = result.reply;
+        } else reply = "Device control is disabled.";
+      }
+      else if (tvPlayback) {
+        reply = ollamaEnableTools ? await changeTvPlaybackAndReply(tvPlayback, toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted || reply === "") { endCallback(); return; }
+      }
+      else if (isTurnOnTv(question)) {
+        let progress = "";
+        reply = ollamaEnableTools ? await turnOnTvAndReply(toolLoopState.signal, text => {
+          progress = text;
+          partialCallback(text + " ");
+        }) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+        const finalText = reply === progress ? "" : reply;
+        messages.push({ role: "assistant", content: [progress, finalText].filter(Boolean).join(" ") });
+        if (finalText) partialCallback(finalText);
+        endCallback();
+        return;
+      }
+      else if (isTurnOffTv(question)) {
+        reply = ollamaEnableTools ? await turnOffTvAndReply(toolLoopState.signal) : "Device control is disabled.";
+        if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      }
+      else if (isExternalTvRequest(question)) reply = TV_UNSUPPORTED_REPLY;
+      else if (followUp) {
+        const users = messages.filter(message => message.role === "user");
+        const target = confirmedSettings.get(users[users.length-2] as Message);
+        if (target) {
+          executionQuestion = followUp.replace(/\bit\b/,target);
+          reply = brightnessLevelError(executionQuestion);
+        }
+        if (!reply && (!target || !parseDeviceCommand(executionQuestion))) reply = "Which Whisplay setting do you mean, speaker volume or screen brightness?";
+      } else if (isUnclearVolumeObservation(question)) {
+        reply = "Do you want me to lower this Whisplay's speaker volume?";
+      } else reply = brightnessLevelError(question);
+    }
+    if (reply) {
+      messages.push({role:"assistant",content:reply});
+      partialCallback(reply);endCallback();return;
+    }
+    const direct = whisplayVoiceControlEnabled() ? parseDeviceCommand(executionQuestion) : undefined;
+    if (direct) {
+      const started = Date.now();
+      const allowedTools = toolsForRequest(toolLoopState) || [];
+      reserveToolAttempts(toolLoopState.budget, 1, false);
+      invokeFunctionCallback?.(direct.name);
+      const result = await withWhisplayQuestion(executionQuestion, () => executeLLMTool(direct.name, direct.args, {
+        enabled: ollamaEnableTools, allowedTools, signal: toolLoopState.signal,
+      }));
+      invokeFunctionCallback?.(direct.name, result.output);
+      if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      const action = direct.args.action;
+      if (latestUser && result.status === "success" && (action === "volume" || action === "brightness")) {
+        const value = JSON.parse(result.output.slice("[success]".length));
+        if (value?.status === "completed" && value.action === action && Number.isInteger(value.actual)) {
+          confirmedSettings.set(latestUser,action);
+        }
+      }
+      const call = { function: { index: 0, name: direct.name, arguments: direct.args } };
+      const reply = deviceResultSpeech(direct.name, result.output, direct.metric, question)
+        || "I could not verify completion of that device request. No change was confirmed.";
+      messages.push({role:"assistant",content:"",tool_calls:[[call]]},
+        {role:"tool",content:result.output,tool_name:direct.name},{role:"assistant",content:reply});
+      console.log(`[Device fast] tool=${direct.name} args=${JSON.stringify(direct.args)} status=${result.status} llm_requests=0 total_ms=${Date.now()-started}`);
+      partialCallback(reply);endCallback();return;
+    } else if (needsWhisplayCapabilities(question)) {
+      reserveToolAttempts(toolLoopState.budget, 1, false);
+      const allowedTools = toolsForRequest(toolLoopState) || [];
+      invokeFunctionCallback?.("whisplay");
+      const args = { action: "capabilities" };
+      const result = await executeLLMTool("whisplay", args, {
+        enabled: ollamaEnableTools, allowedTools, signal: toolLoopState.signal,
+      });
+      invokeFunctionCallback?.("whisplay", result.output);
+      if (toolLoopState.signal?.aborted) { endCallback(); return; }
+      if (result.status !== "success") {
+        partialCallback("I could not read the installed Whisplay capabilities. I cannot verify what is available.");
+        endCallback();
+        return;
+      }
+      const call = { function: { index: 0, name: "whisplay", arguments: args } };
+      messages.push({ role: "assistant", content: "", tool_calls: [[call]] },
+        { role: "tool", content: result.output, tool_name: "whisplay" });
+      toolLoopState.signatures.add(toolCallSignature(call));
+      const reply = deviceResultSpeech("whisplay", result.output, undefined, question);
+      if (reply) {
+        messages.push({ role: "assistant", content: reply });
+        partialCallback(reply);
+        endCallback();
+        return;
+      }
+      toolLoopState.capabilitiesPrefetched = true;
+    } else if (needsSystemHealth(question)) {
       if (!await prefetchSystemHealth(question, toolLoopState, partialCallback, invokeFunctionCallback)) {
         endCallback();
         return;
@@ -542,6 +698,14 @@ const chatWithLLMStreamInternal = async (
       }
     }
   }
+  const deviceQuestion = [...messages].reverse().find(message => message.role === "user")?.content;
+  const deviceToolRequired = toolLoopState.deviceToolRequired
+    ?? requiresWhisplayTool(typeof deviceQuestion === "string" ? deviceQuestion : "");
+  const verifiedPartialCallback = partialCallback;
+  let holdDeviceProse = deviceToolRequired;
+  // Do not send an unexecuted device-success claim to TTS while the model streams.
+  partialCallback = text => { if (!holdDeviceProse) verifiedPartialCallback(text); };
+
   // A cancelled answer must not compact the history the newer question uses.
   if (toolLoopState.signal?.aborted) {
     endCallback();
@@ -567,7 +731,8 @@ const chatWithLLMStreamInternal = async (
   const functionCallsPackages: OllamaFunctionCall[][] = [];
 
   try {
-    const lastUserMessageIndex = messages
+    const history = withoutDuplicateMemoryProfiles(messages);
+    const lastUserMessageIndex = history
       .map((msg, index) => ({ msg, index }))
       .filter(({ msg }) => msg.role === "user")
       .map(({ index }) => index)
@@ -582,8 +747,14 @@ const chatWithLLMStreamInternal = async (
       ? fs.readFileSync(capturedImagePath).toString("base64")
       : "";
 
-    const requestTools = toolsForRequest(toolLoopState);
-    let requestMessages = messages.map((msg, index) => ({
+    // Location references use the immediately preceding conversation turn.
+    // These conversation-only questions need context, not tool schemas.
+    const locationFollowUp = toolLoopState.round === 0 && !deviceToolRequired && typeof deviceQuestion === "string"
+        && /^\s*where\s+(?:(?:did\s+i\s+(?:leave|put|move|park|keep))|(?:is|was|are|were))\s+(?:it|this|that|them|those|they)(?:\s+(?:now|again))?\s*[?.!]*$/i.test(deviceQuestion);
+    const previousUserIndex = locationFollowUp && lastUserMessageIndex !== undefined && lastUserMessageIndex > 0
+        ? history.map(message => message.role).lastIndexOf("user", lastUserMessageIndex - 1) : -1;
+    const requestTools = previousUserIndex < 0 ? toolsForRequest(toolLoopState) : undefined;
+    let requestMessages = history.map((msg, index) => ({
       role: msg.role,
       content: withRequestSystemNote(msg, index).content,
       ...(msg.contextScope ? { contextScope: msg.contextScope } : {}),
@@ -597,7 +768,18 @@ const chatWithLLMStreamInternal = async (
         ? { images: [capturedImageBase64] }
         : {}),
     }));
+    const deviceFormat = deviceToolRequired ? deviceCallFormat(requestTools, typeof deviceQuestion === "string" ? deviceQuestion : "") : undefined;
+    if (deviceFormat) requestMessages.push({role:"system", contextScope:"turn",
+      content:"Return one JSON function call with name and arguments only. Choose whisplay for device capabilities/state/control or getSystemHealth for measurements, from the user's meaning. Omit unused arguments. Do not answer in prose."});
+    else if (typeof deviceQuestion === "string" && suppressesMonitoringTools(deviceQuestion)) {
+      requestMessages.push({role:"system", contextScope:"turn",
+        content:"Respond directly to the user's statement in their language. No measurements were taken. Do not claim to know any device or personal measurements."});
+    }
+    const previousUser = requestMessages[previousUserIndex];
     requestMessages = await budgetRequest(requestMessages, requestTools, toolLoopState.signal);
+    if (previousUser && !requestMessages.includes(previousUser)) {
+        throw new OllamaContextBudgetError("previous conversation turn does not fit");
+    }
     const shape = requestShape(requestMessages, requestTools);
     const startedAt = Date.now();
     let firstTokenAt = 0;
@@ -615,6 +797,7 @@ const chatWithLLMStreamInternal = async (
           ...configuredDraftOptions,
         },
         tools: requestTools,
+        ...(deviceFormat ? { format: deviceFormat } : {}),
         keep_alive: -1,
       },
       {
@@ -692,6 +875,9 @@ const chatWithLLMStreamInternal = async (
           if (partialAnswer) partialCallback(partialAnswer);
         }
       }
+      for (let i = 0; i < functionCallsPackages.length; i++) {
+        functionCallsPackages[i] = functionCallsPackages[i].map(privateWhisplayCall);
+      }
       const functionCalls = functionCallsPackages.flat().map((call, index) => ({
         id: `call_${Date.now()}_${Math.random()}_${index}`,
         type: "function",
@@ -707,6 +893,10 @@ const chatWithLLMStreamInternal = async (
       );
       console.log("functionCalls: ", JSON.stringify(functionCalls));
       if (functionCalls.length) reserveToolAttempts(toolLoopState.budget, functionCalls.length);
+      if (deviceToolRequired && functionCalls.length) {
+        holdDeviceProse = false;
+        partialAnswer = "";
+      }
       const assistantMessage: OllamaMessage = {
         role: "assistant",
         content: partialAnswer,
@@ -811,7 +1001,9 @@ const chatWithLLMStreamInternal = async (
         if (executions.some((result) => result.status === "rejected")
           || executions.some((result) => result.status !== "success")
             && functionCalls.some((call) => !WEB_TOOL_NAMES.has(call.function.name))) {
-          const reply = executions.some((result) => result.status === "rejected")
+          const denial = results.length === 1 ? deviceResultSpeech(results[0][0], results[0][1]) : undefined;
+          const reply = denial === BRIGHTNESS_RANGE_REPLY || denial === TV_UNSUPPORTED_REPLY ? denial
+            : executions.some((result) => result.status === "rejected")
             ? "I couldn't run the requested tool. Completion was not verified."
             : "The tool did not confirm completion. The result is unverified.";
           messages.push(...newMessages, { role: "assistant", content: reply });
@@ -822,6 +1014,16 @@ const chatWithLLMStreamInternal = async (
         }
 
         // Directly extract and return the tool result if available
+        const deviceReplies = results.map(([name, result]) => deviceResultSpeech(name, result, undefined, typeof deviceQuestion === "string" ? deviceQuestion : ""));
+        if (deviceReplies.length && deviceReplies.every(Boolean)) {
+          const reply = deviceReplies.join(" ");
+          messages.push(...newMessages, { role: "assistant", content: reply });
+          partialCallback(reply);
+          endResolve();
+          endCallback();
+          return;
+        }
+
         const describeMessage = newMessages.find((msg) =>
           msg.content.startsWith(ToolReturnTag.Response),
         );
@@ -863,7 +1065,10 @@ const chatWithLLMStreamInternal = async (
           partialThinkingCallback,
           invokeFunctionCallback,
           {
+            deviceToolRequired,
+            deviceRetried: toolLoopState.deviceRetried,
             healthPrefetched: toolLoopState.healthPrefetched,
+            capabilitiesPrefetched: toolLoopState.capabilitiesPrefetched,
             pending: toolLoopState.pending,
             round: toolLoopState.round + 1,
             signatures: toolLoopState.signatures,
@@ -874,6 +1079,22 @@ const chatWithLLMStreamInternal = async (
         );
         return;
       } else {
+        if (deviceToolRequired) {
+          // One bounded model retry, never a guessed host-side action.
+          assistantMessage.content = "";
+          if (!toolLoopState.deviceRetried && toolLoopState.round < ollamaMaxToolRounds) {
+            await chatWithLLMStreamInternal([{ role: "system", contextScope: "turn",
+              content: "No device tool has run. Do not claim a result. Call whisplay for installed capabilities/state/control or getSystemHealth for measurements, using valid arguments. If you cannot, say that completion is unverified." }],
+              verifiedPartialCallback, () => { endResolve(); endCallback(); }, partialThinkingCallback,
+              invokeFunctionCallback, { ...toolLoopState, round: toolLoopState.round + 1,
+                deviceToolRequired: true, deviceRetried: true });
+            return;
+          }
+          const reply = "I could not verify that device request through an available tool. No change was confirmed.";
+          assistantMessage.content = reply;
+          verifiedPartialCallback(reply);
+          endResolve(); endCallback(); return;
+        }
         // Only a terminal round needs an answer. Earlier thinking/tool proposals
         // cannot substitute for it, and empty completion must never be silent.
         if (!purifyTextForTTS(partialAnswer)) {
@@ -887,7 +1108,7 @@ const chatWithLLMStreamInternal = async (
   } catch (error: any) {
     console.error("Error:", error.message);
     if (error instanceof OperationTimeoutError) { endResolve(); throw error; }
-    if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, partialCallback, toolLoopState.signal);
+    if (error instanceof OllamaResourceLimitError) reportResourceFailure(error, error instanceof OllamaContextBudgetError ? verifiedPartialCallback : partialCallback, toolLoopState.signal);
     endResolve();
     endCallback();
   }
@@ -943,7 +1164,9 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       throw new OllamaResourceLimitError("user input exceeds 262144 UTF-8 bytes");
     }
     const lastUser = [...inputMessages].reverse().find(message => message.role === "user");
-    const refusal = typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
+    const privateWifi = typeof lastUser?.content === "string" && redactWifiCredentials(lastUser.content) === WIFI_PRIVATE;
+    if (privateWifi && lastUser) lastUser.content = WIFI_PRIVATE;
+    const refusal = privateWifi ? wifiCredentialReply : typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
     if (refusal) {
       // No generation, prefetch or tool dispatch. Retain the actual exchange so
       // the next turn sees the refusal, rather than an unfulfilled action.
@@ -953,14 +1176,14 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
       emit(refusal);
       return;
     }
-    await chatWithLLMStreamInternal(
+    await withWhisplayQuestion(typeof lastUser?.content === "string" ? lastUser.content : "", () => chatWithLLMStreamInternal(
       inputMessages,
       emit,
       () => {}, // The public boundary ends the response exactly once, after cleanup.
       text => { if (activeAnswer === answer && !deadline.signal.aborted) partialThinkingCallback?.(text); },
       (name, result) => { if (activeAnswer === answer && !deadline.signal.aborted) invokeFunctionCallback?.(name, result); },
       { round: 0, signatures: new Set<string>(), signal: deadline.signal, budget: createOllamaRequestBudget(), pending },
-    );
+    ));
   } catch (error) {
     if (activeAnswer === answer) {
       if (error instanceof OllamaResourceLimitError) {

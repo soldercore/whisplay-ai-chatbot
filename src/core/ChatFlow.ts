@@ -12,6 +12,7 @@ import { SpokenTextReveal } from "./spoken-text-reveal";
 import { recordingsDir } from "../utils/dir";
 import dotEnv from "dotenv";
 import { WakeWordListener } from "../device/wakeword";
+import { redactWifiCredentials } from "../config/whisplay-privacy";
 import {
   WhisplayIMBridgeServer,
   type WhisplayIMApprovalRequest,
@@ -129,7 +130,28 @@ class ChatFlow implements ChatFlowContext {
     this.transitionTo("sleep");
 
     const wakeEnabled = (process.env.WAKE_WORD_ENABLED || "").toLowerCase();
-    if (wakeEnabled === "true") {
+    if (process.env.CAPRI_WAKE_WORD_ENABLED?.toLowerCase() === "true") {
+      this.wakeWordListener = new WakeWordListener(true);
+      this.wakeWordListener.on("listening", () => {
+        if (this.currentFlowName !== "sleep") return;
+        console.info("[Capri] Listening after wake");
+        display({ status: "listening", emoji: DEFAULT_EMOJI, RGB: "#00ff00", text: "Listening..." });
+      });
+      this.wakeWordListener.on("idle", () => {
+        if (this.currentFlowName === "sleep") display({ status: "idle", RGB: "#000055", text: "Ready" });
+      });
+      this.wakeWordListener.on("command", (text: string) => {
+        if (appSignal.aborted || this.currentFlowName !== "sleep") return;
+        this.answerId += 1;
+        this.endWakeSession();
+        const command = /^(?:open|launch|start) you ?tube[.!]?$/i.test(text) ? "Open YouTube on my TV." : text;
+        this.asrText = redactWifiCredentials(command);
+        console.info("[Capri] Command accepted");
+        display({ status: "recognizing", text: this.asrText });
+        this.transitionTo("answer");
+      });
+      this.wakeWordListener.start();
+    } else if (wakeEnabled === "true") {
       this.wakeWordListener = new WakeWordListener();
       this.wakeWordListener.on("wake", () => {
         if (this.currentFlowName === "sleep") {

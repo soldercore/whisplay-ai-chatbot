@@ -87,18 +87,21 @@ def render_visual(state, t, info):
     image = Image.new("RGB", (theme.WIDTH, VISUAL_H), theme.VOID)
     draw = ImageDraw.Draw(image)
     color = STATE_COLORS.get(state, theme.MUTED)
-    corner_brackets(draw, 8, 3, theme.WIDTH - 9, VISUAL_H - 4, 5, theme.LINE)
+    if state != vs.IDLE:
+        corner_brackets(draw, 8, 3, theme.WIDTH - 9, VISUAL_H - 4, 5, theme.LINE)
     cursor_rect = None
     painter = _PAINTERS.get(state, _generic)
     cursor_rect = painter(image, draw, t, info, color)
-    if info.flags.scanlines and info.quality == 0:
+    if state != vs.IDLE and info.flags.scanlines and info.quality == 0:
         image = _scanlines(image)
     return image, cursor_rect
 
 
 def _scanlines(image):
     arr = np.array(image, dtype=np.uint8)
-    arr[1::2] = (arr[1::2].astype(np.uint16) * 184 >> 8).astype(np.uint8)
+    foreground = np.any(arr[1::2] != np.asarray(theme.VOID), axis=2)
+    rows = arr[1::2]
+    rows[foreground] = (rows[foreground].astype(np.uint16) * 184 >> 8).astype(np.uint8)
     return Image.fromarray(arr, "RGB")
 
 
@@ -107,6 +110,12 @@ def _idle(image, draw, t, info, color):
     if rain_active(vs.IDLE, t, info):
         fade = clamp01(t / 0.5) * clamp01((IDLE_RAIN_SECONDS - t) / RAIN_FADE)
         _rain(image, draw, t, fonts, fade)
+    return terminal_identity(image, draw, t, info)
+
+
+def terminal_identity(image, draw, t, info):
+    """Original prompt and cursor, shared without decorative stage effects."""
+    fonts = info.fonts
     stack = fonts.prompt
     parts = [(PROMPT_USER, theme.GREEN), (":", theme.MUTED), (PROMPT_PATH, theme.CYAN), ("$", theme.MUTED)]
     width = sum(stack.width(text) for text, _ in parts) + 4 + theme.CURSOR_W
@@ -368,7 +377,7 @@ def caption_parts(state, t, info):
     if state == vs.BOOT:
         label = "STARTING"
     elif state == vs.IDLE:
-        label, right, right_color = "READY", "HOLD TO TALK", theme.DIM
+        label, right, right_color = "READY", "GLaDOS", theme.MUTED
     elif state == vs.CALIBRATE:
         label, right = "CALIBRATING", "MIC LEVEL"
     elif state == vs.LISTEN:

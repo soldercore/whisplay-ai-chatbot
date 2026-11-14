@@ -45,12 +45,12 @@ export const recognizeAudio = async (
       if (response.data && response.data.recognition) {
         return response.data.recognition;
       } else {
-        console.error("Invalid response from Whisper service:", response.data);
+        console.error("Invalid response from Whisper service; response body withheld.");
         return "";
       }
     })
     .catch((error) => {
-      console.error("Error calling Whisper service:", error);
+      console.error("Error calling Whisper service; request and response bodies withheld.");
       return "";
     })
 };

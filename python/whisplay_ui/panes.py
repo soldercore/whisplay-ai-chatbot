@@ -4,6 +4,8 @@ import math
 from PIL import Image, ImageDraw
 
 from . import theme
+from . import visual_state as vs
+from .stage import terminal_identity
 from .draw_util import clamp01, draw_text, fit_text, smooth_noise
 
 STRIP_H = theme.BODY_TOP_CONSOLE - theme.PANE_Y
@@ -39,10 +41,8 @@ def render_strip(fonts, mode, t, emoji_image=None, progress=None):
     draw_text(draw, image, fonts.pixel8, x, mid, ">", color)
     end = draw_text(draw, image, fonts.pixel8, x + 9, mid, mode, color)
     if mode == STRIP_SPEAKING:
-        bx = int(end) + 8
-        for i, level in enumerate(speaking_levels(t)):
-            h = 1 + int(level * 6)
-            draw.rectangle([bx + i * 4, mid - h, bx + i * 4 + 1, mid + h - 1], fill=theme.GREEN if level > 0.45 else theme.GREEN_MID)
+        # Actual speech state, not a simulated audio-level meter.
+        draw.ellipse((int(end)+8, mid-2, int(end)+11, mid+1), fill=theme.GREEN)
     elif mode == STRIP_RECEIVING:
         bx = int(end) + 6
         lit = int(t * 6) % 4
@@ -89,8 +89,8 @@ def render_approval(fonts):
     draw = ImageDraw.Draw(image)
     draw.line([(theme.CHROME_LEFT, 0), (theme.CHROME_RIGHT - 1, 0)], fill=theme.LINE)
     mid = theme.APPROVAL_H // 2 - 2
-    _chip(draw, image, fonts, theme.CHROME_LEFT + 6, mid, "TAP", "ALLOW", theme.GREEN, theme.GREEN_DIM)
-    _chip(draw, image, fonts, theme.WIDTH // 2 + 8, mid, "HOLD", "DENY", theme.RED, theme.RED_DIM)
+    _chip(draw, image, fonts, theme.CHROME_LEFT + 2, mid, "HOLD", "CANCEL", theme.MUTED, theme.DIM)
+    _chip(draw, image, fonts, theme.WIDTH // 2 + 8, mid, "TAP", "ALLOW", theme.AMBER, theme.AMBER_DIM)
     return image
 
 
@@ -99,3 +99,44 @@ def _chip(draw, image, fonts, x, mid, key, label, fg, border):
     draw.rectangle([x, mid - 7, x + key_w, mid + 6], outline=border)
     draw_text(draw, image, fonts.pixel8, x + 4, mid, key, fg)
     draw_text(draw, image, fonts.meta_bold, x + key_w + 6, mid, label, theme.TEXT)
+
+
+MIC_H = theme.CONTENT_SAFE_BOTTOM - theme.PANE_Y
+MIC_STATES = frozenset((vs.IDLE, vs.LISTEN, vs.TRANSCRIBE, vs.THINK))
+
+
+def render_microphone(fonts, state, t, info):
+    """Physical-button affordance. No touch handler or microphone ownership here."""
+    image = Image.new("RGB", (theme.WIDTH, MIC_H), theme.VOID)
+    draw = ImageDraw.Draw(image)
+    prompt = Image.new("RGB", (theme.WIDTH, theme.STAGE_VISUAL_H), theme.VOID)
+    terminal_identity(prompt, ImageDraw.Draw(prompt), t, info)
+    image.paste(prompt, (0, -12))
+    recording = state == vs.LISTEN
+    busy = state in (vs.TRANSCRIBE, vs.THINK)
+    label = "REC" if recording else "WORKING" if busy else "READY"
+    draw_text(draw, image, fonts.meta_bold, 18, 70, ">", theme.GREEN)
+    draw_text(draw, image, fonts.meta_bold, 30, 70, label, theme.TEXT)
+    name = "GLADOS"
+    draw_text(draw, image, fonts.meta_bold, int(216-fonts.meta_bold.width(name)), 70, name, theme.TEXT)
+    draw.line((120,64,120,76),fill=theme.LINE)
+    draw.line((14,83,225,83),fill=theme.LINE)
+    cx, cy, radius = 120, 159, 35
+    color = theme.DIM if busy else theme.GREEN
+    draw.ellipse((cx-radius,cy-radius,cx+radius,cy+radius),outline=color,width=2 if recording else 1)
+    ink = theme.MUTED if busy else theme.TEXT
+    draw.rounded_rectangle((cx-5,cy-13,cx+5,cy+4),radius=5,outline=ink,width=2)
+    draw.arc((cx-9,cy-5,cx+9,cy+12),0,180,fill=ink,width=2)
+    draw.line((cx,cy+12,cx,cy+18),fill=ink,width=2)
+    draw.line((cx-6,cy+18,cx+6,cy+18),fill=ink,width=2)
+    instruction = ("[ Release to send ]" if recording else "[ Recognizing speech ]" if state == vs.TRANSCRIBE
+                   else "[ Preparing response ]" if state == vs.THINK else "[ Hold to talk ]")
+    text = fit_text(fonts.meta_bold,instruction,204)
+    draw_text(draw,image,fonts.meta_bold,int((theme.WIDTH-fonts.meta_bold.width(text))/2),212,text,theme.TEXT)
+    if busy:
+        for i in range(3):
+            x = 113+i*6
+            draw.rectangle((x,226,x+1,227),fill=theme.GREEN if i==int(t*2)%3 else theme.DIM)
+    elif recording:
+        draw_text(draw,image,fonts.meta,98,230,"%02d:%02d" % (int(t)//60,int(t)%60),theme.MUTED)
+    return image

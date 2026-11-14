@@ -240,7 +240,7 @@ export class WhisplayDisplay {
       this.client = new Socket();
       const socket = this.client;
       socket.setTimeout(5000, () => socket.destroy(new Error("Display connection timed out")));
-      this.client.connect(12345, "0.0.0.0", () => {
+      this.client.connect(12345, "127.0.0.1", () => {
         socket.setTimeout(0);
         console.log("Connected to local display socket");
         this.receiveBuffer = "";
