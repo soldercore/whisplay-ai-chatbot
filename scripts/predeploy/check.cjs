@@ -63,7 +63,7 @@ try {
     else if (production[f][0] !== built[f][0]) formatting.push(f);
   }
   const unexpected = changed.filter(f => !expected.has(f.split(" ")[0]));
-  const missingExpected = [...expected].filter(f => !changed.includes(f));
+  const missingExpected = [...expected].filter(f => !changed.some(c => c.split(" ")[0] === f));   // a new file shows as "f (new)"
   step("compiled files match production except the expected ones", unexpected.length === 0 && missingExpected.length === 0,
     `${Object.keys(built).length} files, code differs in ${changed.length}` +
     (unexpected.length ? `\n  unexpected: ${unexpected.join(", ")}` : "") +

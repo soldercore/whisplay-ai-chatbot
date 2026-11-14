@@ -43,6 +43,7 @@ import { isMusicPlaying, getCurrentTrackTitle, stopMusicPlayback, startPendingMu
 import { autoSaveExchange, prepareMemoryMessage } from "../../config/local-memory";
 import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
+import { selfKnowledgeTopic } from "../../config/self-knowledge";
 import { whisplayHandoffTicket, presentWhisplayHandoff, cancelWhisplayHandoff } from "../../device/whisplay-control";
 import { operationDeadline, waitForOperation } from "../../utils/operation-lifecycle";
 
@@ -306,7 +307,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       RGB: "#00c8a3",
     });
     const currentAnswerId = ctx.answerId;
-    const unsupportedReminder = llmServer === "ollama" && unsupportedReminderReply(ctx.asrText) !== null;
+    const unsupportedReminder = llmServer === "ollama" && (unsupportedReminderReply(ctx.asrText) !== null || selfKnowledgeTopic(ctx.asrText) !== undefined);
     if (isImMode) {
       const prompt: {
         role: "system" | "user";

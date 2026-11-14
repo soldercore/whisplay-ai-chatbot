@@ -47,6 +47,8 @@ import { ambiguousScreenAction, brightnessLevelError, BRIGHTNESS_RANGE_REPLY, is
 import { deviceResultSpeech } from "../../config/device-result-speech";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
+import { answerSelfKnowledge } from "../../config/self-knowledge";
+import { whisplayRequest } from "../../device/whisplay-control";
 import { boundOllamaHistory } from "./ollama-history-limits";
 import { operationDeadline, timeoutSetting, waitForOperation, OperationTimeoutError } from "../../utils/operation-lifecycle";
 import { appSignal, onAppShutdown } from "../../utils/app-lifecycle";
@@ -1221,7 +1223,19 @@ const chatWithLLMStream: ChatWithLLMStreamFunction = async (
     const lastUser = [...inputMessages].reverse().find(message => message.role === "user");
     const privateWifi = typeof lastUser?.content === "string" && redactWifiCredentials(lastUser.content) === WIFI_PRIVATE;
     if (privateWifi && lastUser) lastUser.content = WIFI_PRIVATE;
-    const refusal = privateWifi ? wifiCredentialReply : typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
+    const reminderRefusal = privateWifi ? wifiCredentialReply : typeof lastUser?.content === "string" ? unsupportedReminderReply(lastUser.content) : null;
+    // Clearly identified questions about this assistant are answered from configuration and registered tools, not by the model.
+    const refusal = reminderRefusal ?? (typeof lastUser?.content === "string" ? await answerSelfKnowledge(lastUser.content, {
+      tools: () => ollamaEnableTools ? llmTools.map(tool => tool.function.name) : [],
+      readCapabilities: whisplayVoiceControlEnabled() ? async () => {
+        const limit = new AbortController();
+        const timer = setTimeout(() => limit.abort(), 3000);
+        const relay = () => limit.abort();
+        deadline.signal.addEventListener("abort", relay, { once: true });
+        try { return await whisplayRequest("control.read", { scope: "capabilities" }, limit.signal); }
+        finally { clearTimeout(timer); deadline.signal.removeEventListener("abort", relay); }
+      } : undefined,
+    }) : null);
     if (refusal) {
       // No generation, prefetch or tool dispatch. Retain the actual exchange so
       // the next turn sees the refusal, rather than an unfulfilled action.
