@@ -39,7 +39,7 @@ import {
 } from "../../config/web-search-router";
 import { interpretHeldAnswer, startsWithMarkup } from "../../config/spoken-text-guard";
 import { isDirectAnswerRequest, needsSystemHealth, toolsRelevantTo } from "../../config/tool-router";
-import { withoutDuplicateMemoryProfiles } from "../../config/local-memory";
+import { memoryProfileSystemSuffix, withoutDuplicateMemoryProfiles } from "../../config/local-memory";
 import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
 import { needsWhisplayCapabilities, requiresWhisplayTool, deviceCallFormat, withWhisplayQuestion, whisplayVoiceControlEnabled } from "../../config/whisplay-tools";
 import { changeTvAudioAndReply, changeTvPlaybackAndReply, getTvAudioCommand, getTvNavigationButton, getTvPlaybackAction, getTvScreenAction, getYoutubeSearchQuery, searchYoutubeAndReply, isTvNotification, setTvScreenAndReply, showTvNotificationAndReply, isOpenYoutubeOnTv, isTurnOffTv, isTurnOnTv, isTvVolumeDown, lowerTvVolumeAndReply, navigateTvAndReply, openYoutubeAndReply, turnOffTvAndReply, turnOnTvAndReply } from "../../device/lg-c1-volume";
@@ -129,10 +129,14 @@ const chatHistoryFileName = `ollama_chat_history_${moment().format(
   "YYYY-MM-DD_HH-mm-ss",
 )}.json`;
 
+// The fixed memory profile is part of the first system message (not re-inserted each turn),
+// so every request starts with the same prefix and Ollama can reuse its prompt cache.
+const ollamaSystemPrompt = `${systemPrompt}${memoryProfileSystemSuffix()}`;
+
 const messages: OllamaMessage[] = [
   {
     role: "system",
-    content: systemPrompt,
+    content: ollamaSystemPrompt,
   },
 ];
 
@@ -225,7 +229,7 @@ const resetChatHistory = (): void => {
   messages.length = 0;
   messages.push({
     role: "system",
-    content: systemPrompt,
+    content: ollamaSystemPrompt,
   });
 };
 

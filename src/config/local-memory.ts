@@ -67,6 +67,12 @@ const memoryMaxSearchResults = parseInt(
 );
 const memoryWakeupMaxItems = parseInt(process.env.MEMORY_WAKEUP_MAX_ITEMS || "5", 10);
 const memoryProfileText = (process.env.MEMORY_PROFILE_TEXT || "").trim();
+// The configured profile never changes while the process runs. With Ollama it is part of the
+// first system message, so the per-turn memory message stays identical from turn to turn and
+// the model's prompt cache stays valid. Other providers keep it in the per-turn message.
+const profileInSystemPrompt = (process.env.LLM_SERVER || "").toLowerCase() === "ollama";
+const MEMORY_HEADER =
+  "Local memory about this user. Use it only when relevant to the current request, not to decorate greetings. A past mention or liking is not necessarily a lasting favorite. Current instructions take precedence. Answer in English and never invent details that are not listed here.";
 const memorySummaryPromptPrefix =
   process.env.MEMORY_SUMMARY_PROMPT_PREFIX ||
   "Summarize the following user-assistant conversation into a concise memory for future recall. Preserve user preferences, facts, decisions, open tasks, and important context. Do not quote the transcript verbatim. Write in English. Keep it under 80 words:";
@@ -620,6 +626,12 @@ export function withoutDuplicateMemoryProfiles<T extends object>(messages: T[]):
   return messages.filter((message, index) => index >= newest || profileBlocks.get(message) !== true);
 }
 
+/** Text appended to the first system message when the profile lives there ("" otherwise). */
+export const memoryProfileSystemSuffix = (): string =>
+  memoryEnabled && profileInSystemPrompt && memoryProfileText
+    ? `\n\n${MEMORY_HEADER}\n\nUser profile:\n${memoryProfileText}`
+    : "";
+
 export const prepareMemoryMessage = (userText: string): Message | null => {
   if (!memoryEnabled) return null;
   try {
@@ -652,7 +664,7 @@ const buildMemoryMessage = (userText: string): Message | null => {
     });
   const searchResults = shouldSearchHistory(userText) ? searchStore(userText) : [];
   const sections = [
-    memoryProfileText ? `User profile:\n${memoryProfileText}` : "",
+    memoryProfileText && !profileInSystemPrompt ? `User profile:\n${memoryProfileText}` : "",
     wakeupItems.length > 0
       ? `Facts the user told you about themselves (when you mention them, talk to the user as "you"):\n${wakeupItems.join("\n")}`
       : "",
@@ -666,11 +678,11 @@ const buildMemoryMessage = (userText: string): Message | null => {
     role: "system",
     contextScope: "turn",
     content: [
-      "Local memory about this user. Use it only when relevant to the current request, not to decorate greetings. A past mention or liking is not necessarily a lasting favorite. Current instructions take precedence. Answer in English and never invent details that are not listed here.",
+      MEMORY_HEADER,
       ...sections,
     ].join("\n\n"),
   };
-  if (memoryProfileText) profileBlocks.set(message, wakeupItems.length === 0 && searchResults.length === 0);
+  if (memoryProfileText && !profileInSystemPrompt) profileBlocks.set(message, wakeupItems.length === 0 && searchResults.length === 0);
   return message;
 };
 
