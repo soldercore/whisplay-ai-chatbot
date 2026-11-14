@@ -46,7 +46,7 @@ import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { selfKnowledgeTopic } from "../../config/self-knowledge";
 import { toolDisplayOutcome } from "../../config/action-outcome";
-import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, shouldListenAfterAnswer } from "../../utils/pending-clarification";
+import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, conversationFollowUpLimit, isNoiseTranscript, shouldContinueConversation, shouldListenAfterAnswer } from "../../utils/pending-clarification";
 import { uiStatus } from "../../utils/ui-status";
 import { beginTurn, clearTurn, diagnosticsLine, finishTurn, hasTurn, mark as markTiming, toolFinished, toolStarted } from "../../utils/response-timing";
 import fs from "node:fs";
@@ -55,6 +55,7 @@ import { operationDeadline, waitForOperation } from "../../utils/operation-lifec
 
 export const flowStates: Record<FlowName, FlowStateHandler> = {
   sleep: (ctx: ChatFlowContext) => {
+    ctx.conversationCapture = false;   // idle ends any follow-up capture marker
     onButtonPressed(async () => {
       resetCameraModeControl();
       // Stop any playing music when waking up
@@ -70,6 +71,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       await ctx.pauseWakeWordListener();
       if (ctx.currentFlowName !== "sleep") return;
       ctx.answerId += 1;
+      ctx.conversationFollowUps = conversationFollowUpLimit();   // a typed turn never opens the microphone by itself
+      ctx.conversationCapture = false;
       clearTurn();
       text = redactWifiCredentials(text);
       ctx.asrText = text;
@@ -181,6 +184,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.answerId += 1;
     ctx.wakeSessionActive = false;
     ctx.endAfterAnswer = false;
+    ctx.conversationFollowUps = 0;   // a button-started turn begins a new conversation
+    ctx.conversationCapture = false;
     onButtonDoubleClick(null);
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
@@ -293,8 +298,13 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       RGB: "#ff6800",   // recording is over, whatever started it: the LED must not stay on the recording colour
     });
     onButtonDoubleClick(null);
+    const conversational = ctx.conversationCapture;   // set only for an automatic conversational follow-up capture
+    ctx.conversationCapture = false;
     Promise.race([
-      ctx.recognizeAudio(ctx.currentRecordFilePath, ctx.isFromWakeListening),
+      ctx.recognizeAudio(ctx.currentRecordFilePath, ctx.isFromWakeListening).catch((error: unknown) => {
+        console.error("[asr] Recognition failed, treated as silence:", error instanceof Error ? error.message : error);
+        return "";
+      }),
       new Promise<string>((resolve) => {
         onButtonPressed(() => {
           resolve("[UserPress]");
@@ -306,6 +316,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       if (result === "[UserPress]") {
         ctx.transitionTo("listening");
         return;
+      }
+      if (result && conversational && isNoiseTranscript(result)) {
+        console.log("[asr] Follow-up heard only noise or a stock phrase; back to idle.");   // no text is kept or acted on
+        result = "";
       }
       if (result) {
         result = redactWifiCredentials(result);
@@ -398,6 +412,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       partial(text);
     };
     let deviceHandoff: string | undefined;
+    let toolRan = false;     // any tool or host-routed device action in this turn: no automatic follow-up after it
+    let llmFailed = false;
     let resolveLlmDone: () => void = () => {};
     const llmDonePromise = new Promise<void>((resolve) => {
       resolveLlmDone = resolve;
@@ -445,6 +461,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
             ctx.partialThinkingCallback(partialThinking),
           (functionName: string, result?: string) => {
             if (!isCurrentAnswer()) return;
+            toolRan = true;
             if (functionName === "whisplay") {
               const ticket = whisplayHandoffTicket(result);
               if (ticket) deviceHandoff = ticket;
@@ -502,6 +519,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
           },
         ).catch((error) => {
           console.error("[answer] LLM stream failed:", error);
+          llmFailed = true;
           if (isCurrentAnswer()) {
             endPartial();
           }
@@ -547,9 +565,20 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         }
         // A host question is waiting for one short answer: the playback has fully ended, so after a short settle reopen the
         // existing auto-recording state once. Silence ends it back in sleep; it is never taken as an answer.
-        if (isCurrentAnswer() && shouldListenAfterAnswer(ctx)) {
+        // The same reopen serves an ordinary conversational answer (a short, bounded chain; see shouldContinueConversation).
+        const clarificationListen = isCurrentAnswer() && shouldListenAfterAnswer(ctx);
+        const conversationListen = !clarificationListen && isCurrentAnswer() && shouldContinueConversation({
+          used: ctx.conversationFollowUps, limit: conversationFollowUpLimit(), wakeSessionActive: ctx.wakeSessionActive,
+          endAfterAnswer: ctx.endAfterAnswer, toolRan, failed: llmFailed, answered: llmResponseText.trim().length > 0,
+          musicNext: ctx.enterMusicAfterAnswer,
+        });
+        if (clarificationListen || conversationListen) {
           setTimeout(() => {
-            if (ctx.currentFlowName !== "answer" || !isCurrentAnswer()) return;
+            if (ctx.currentFlowName !== "answer" || !isCurrentAnswer()) return;   // interrupted, replaced or ended meanwhile
+            if (conversationListen) {
+              ctx.conversationFollowUps += 1;
+              ctx.conversationCapture = true;
+            }
             ctx.clarificationListen = true;
             ctx.transitionTo("wake_listening");
           }, CLARIFICATION_SETTLE_MS);

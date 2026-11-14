@@ -49,6 +49,8 @@ class ChatFlow implements ChatFlowContext {
   wakeSessionIdleTimeoutMs: number =
     parseInt(process.env.WAKE_WORD_IDLE_TIMEOUT_SEC || "60") * 1000;
   clarificationListen: boolean = false;   // one bounded capture for the answer to a host clarification question
+  conversationFollowUps: number = 0;      // automatic follow-up listens used in this conversation
+  conversationCapture: boolean = false;   // the capture now running is a conversational follow-up
   private capriConfigured = false;
   private capriReady = false;   // the passive Capri listener is running (never a recording)
   private idleRefreshTimer?: ReturnType<typeof setTimeout>;
@@ -175,6 +177,8 @@ class ChatFlow implements ChatFlowContext {
         markTiming("transcribed");
         this.answerId += 1;
         this.endWakeSession();
+        this.conversationFollowUps = 0;   // a new conversation starts with the wake word
+        this.conversationCapture = false;
         const command = /^(?:open|launch|start) you ?tube[.!]?$/i.test(text) ? "Open YouTube on my TV." : text;
         this.asrText = redactWifiCredentials(command);
         console.info("[Capri] Command accepted");

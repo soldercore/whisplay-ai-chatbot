@@ -38,5 +38,42 @@ export const clarificationListenSeconds = (env: NodeJS.ProcessEnv = process.env)
   return Number.isFinite(value) ? Math.min(10, Math.max(3, value)) : 7;
 };
 
+// ---- Conversational follow-ups ------------------------------------------------------------------------------------
+// After an ordinary spoken answer the same bounded listen (the settle and the 7 s window above) can reopen, so a conversation
+// continues without saying "Capri" again. It is a short chain: silence, a device or tool action, a failure, an interruption or
+// an ending phrase all return to normal idle operation.
+
+/** Maximum automatic follow-up turns per conversation. CONVERSATION_FOLLOWUPS=0 disables them (default 3, at most 5). */
+export const conversationFollowUpLimit = (env: NodeJS.ProcessEnv = process.env): number => {
+  const raw = (env.CONVERSATION_FOLLOWUPS ?? "").trim();
+  if (raw === "") return 3;
+  const value = parseInt(raw, 10);
+  return Number.isFinite(value) ? Math.min(5, Math.max(0, value)) : 3;
+};
+
+export interface ConversationState {
+  used: number;                 // follow-ups already taken in this conversation
+  limit: number;
+  wakeSessionActive: boolean;   // the old wake-session loop owns the flow
+  endAfterAnswer: boolean;      // the user said goodbye / stop, or the model ended the conversation
+  toolRan: boolean;             // any tool or host-routed device action ran in this turn
+  failed: boolean;              // the answer did not complete
+  answered: boolean;            // some text was actually produced
+  musicNext: boolean;
+}
+
+/** True when the finished answer is an ordinary conversational reply that may be followed by one more listen. */
+export const shouldContinueConversation = (s: ConversationState): boolean =>
+  s.limit > 0 && s.used < s.limit && !s.wakeSessionActive && !s.endAfterAnswer && !s.toolRan && !s.failed && s.answered
+  && !s.musicNext && clarificationRemainingMs() === 0;   // a pending clarification keeps its own, existing one-shot rules
+
+const NOISE_TRANSCRIPTS = /^(?:you|thank you|thanks|thanks for watching|bye|goodbye|okay|ok|uh|um|hmm|mm|huh|oh|ah)$/;
+
+/** A follow-up capture that heard nothing usable: empty, punctuation only, or the stock phrases speech recognition invents on noise. */
+export const isNoiseTranscript = (text: string): boolean => {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
+  return words.length < 2 || NOISE_TRANSCRIPTS.test(words);
+};
+
 /** Status string for the idle screen: the existing generic state while a question is pending, otherwise "idle". */
 export const idleStatusFor = (remainingMs: number): "Your turn" | "idle" => (remainingMs > 0 ? "Your turn" : "idle");

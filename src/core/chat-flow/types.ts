@@ -32,6 +32,8 @@ export interface ChatFlowContext {
   wakeSessionIdleTimeoutMs: number;
   wakeRecordMaxSec: number;
   clarificationListen: boolean;
+  conversationFollowUps: number;   // automatic follow-up listens used in this conversation
+  conversationCapture: boolean;    // the capture now running is a conversational follow-up (its transcript is checked for noise)
   idleStatus: () => string;
   scheduleIdleRefresh: () => void;
   wakeEndKeywords: string[];
