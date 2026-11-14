@@ -57,12 +57,16 @@ export class WakeWordListener extends EventEmitter {
         const line = this.buffer.slice(0, newlineIndex).trim();
         this.buffer = this.buffer.slice(newlineIndex + 1);
         if (this.capri && line === "CAPRI_READY") {
+          console.log(`[WakeWord] ${line}`);   // unchanged log line: health checks and operators rely on it
           this.emit("ready");   // the passive listener is running; it is not recording a command
         } else if (this.capri && line === "CAPRI_AUDIO") {
+          console.log(`[WakeWord] ${line}`);
           if (this.wanted) this.emit("audio");   // sound passed the start level in the active command capture
         } else if (this.capri && line === "CAPRI_PROCESSING") {
+          console.log(`[WakeWord] ${line}`);
           if (this.wanted) this.emit("processing");   // the command capture ended; transcription follows
         } else if (this.capri && line.startsWith("CAPRI_TIMING ")) {
+          console.log(`[WakeWord] ${line}`);
           const agoMs = Number(line.slice("CAPRI_TIMING ".length));
           this.pendingSpeechEnd = Number.isFinite(agoMs) && agoMs >= 0 && agoMs < 60_000 ? { at: performance.now(), agoMs } : undefined;
         } else if (this.capri && (line === "CAPRI_LISTENING" || line === "CAPRI_IDLE")) {

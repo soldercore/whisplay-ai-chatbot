@@ -221,7 +221,11 @@ test("Capri lifecycle: ready is passive, audio is the active capture, processing
   for (const name of ["ready", "listening", "audio", "processing", "idle", "unavailable", "command"]) listener.on(name, (...args: any[]) => seen.push([name, ...args]));
   listener.start();
   const send = (line: string) => child.stdout.emit("data", Buffer.from(line + "\n"));
+  const logged: string[] = [];
+  const realLog = console.log; console.log = (...args: any[]) => { logged.push(args.join(" ")); };
   send("CAPRI_READY");
+  console.log = realLog;
+  assert.deepEqual(logged, ["[WakeWord] CAPRI_READY"], "the existing log line is kept: the deploy health check and operators read it");
   assert.deepEqual(seen.map(e => e[0]), ["ready"], "the passive listener is ready; that alone is not a recording");
   send("CAPRI_LISTENING"); send("CAPRI_AUDIO"); send("CAPRI_PROCESSING");
   assert.deepEqual(seen.map(e => e[0]), ["ready", "listening", "audio", "processing"]);
