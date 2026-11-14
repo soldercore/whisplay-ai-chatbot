@@ -160,4 +160,7 @@ class Flags:
         emoji = str(env.get("WHISPLAY_UI_EMOJI", "strip") or "strip").strip().lower()
         self.emoji = emoji if emoji in ("strip", "off") else "strip"
         self.fps_cap = _env_int(env, "WHISPLAY_UI_FPS", 30, 5, 30)
+        # Mechanical eye replaces the strip emoji; "off" restores the emoji. Extra idle breathing ticks per second; 0 = the idle eye only changes on frames that are drawn anyway (cursor blink, clock).
+        self.eye = str(env.get("WHISPLAY_UI_EYE", "on") or "on").strip().lower() != "off"
+        self.eye_idle_fps = _env_int(env, "WHISPLAY_UI_EYE_IDLE_FPS", 0, 0, 5)
         self.debug = _env_bool(env, "WHISPLAY_UI_DEBUG", False)

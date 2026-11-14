@@ -131,7 +131,7 @@ MIC_H = theme.CONTENT_SAFE_BOTTOM - theme.PANE_Y
 MIC_STATES = frozenset((vs.IDLE, vs.LISTEN, vs.TRANSCRIBE, vs.THINK))
 
 
-def render_microphone(fonts, state, t, info):
+def render_microphone(fonts, state, t, info, eye_image=None):
     """Physical-button affordance. No touch handler or microphone ownership here."""
     image = Image.new("RGB", (theme.WIDTH, MIC_H), theme.VOID)
     draw = ImageDraw.Draw(image)
@@ -145,7 +145,12 @@ def render_microphone(fonts, state, t, info):
     draw_text(draw, image, fonts.meta_bold, 18, 70, ">", theme.GREEN)
     draw_text(draw, image, fonts.meta_bold, 30, 70, label, theme.TEXT)
     name = "GLADOS"
-    draw_text(draw, image, fonts.meta_bold, int(216-fonts.meta_bold.width(name)), 70, name, theme.TEXT)
+    right = 216
+    if eye_image is not None:
+        # The eye takes the right end of the label row; the name moves left by its width.
+        image.paste(eye_image, (216 - eye_image.width, 70 - eye_image.height // 2))
+        right = 216 - eye_image.width - 6
+    draw_text(draw, image, fonts.meta_bold, int(right-fonts.meta_bold.width(name)), 70, name, theme.TEXT)
     draw.line((120,64,120,76),fill=theme.LINE)
     draw.line((14,83,225,83),fill=theme.LINE)
     cx, cy, radius = 120, 159, 35

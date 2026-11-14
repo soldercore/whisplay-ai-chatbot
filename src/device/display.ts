@@ -24,6 +24,7 @@ export interface Status {
   scroll_sync?: {
     char_end: number;
     duration_ms: number;
+    env?: string; // audio loudness envelope of the sentence, see speech-timing.ts
   };
   brightness: number;
   RGB: string;

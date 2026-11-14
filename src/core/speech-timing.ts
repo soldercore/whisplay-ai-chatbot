@@ -16,7 +16,14 @@ export type SpeechTiming = {
   speechStartMs: number;
   speechEndMs: number;
   pauses: [number, number][]; // [start, end] of silences inside the speech
+  // Loudness of the sentence's own audio for the on-screen eye: one hex digit (0-f) per ENVELOPE_HOP_MS from the first
+  // sample, so index n is the sound n * ENVELOPE_HOP_MS after playback starts. Absolute scale (-48 dBFS = 0, -12 dBFS = f),
+  // not normalised per sentence. Empty when the sentence is too long to describe compactly.
+  levels?: string;
 };
+
+export const ENVELOPE_HOP_MS = 20;
+const ENVELOPE_MAX_STEPS = 2000;
 
 export type RevealStep = { atMs: number; chars: number };
 
@@ -80,7 +87,23 @@ export const speechTimingFromWav = (wav: Buffer): SpeechTiming | undefined => {
     if (run * FRAME_MS >= MIN_PAUSE_MS) pauses.push([(f - run) * FRAME_MS, f * FRAME_MS]);
     run = 0;
   }
-  return { speechStartMs: first * FRAME_MS, speechEndMs: (last + 1) * FRAME_MS, pauses };
+  return { speechStartMs: first * FRAME_MS, speechEndMs: (last + 1) * FRAME_MS, pauses, levels: envelopeFrom(rms) };
+};
+
+/** 10 ms RMS frames -> one hex digit per 20 ms (the louder of the two frames), from dBFS. */
+const envelopeFrom = (rms: number[]): string => {
+  const hop = ENVELOPE_HOP_MS / FRAME_MS;
+  const steps = Math.ceil(rms.length / hop);
+  if (steps > ENVELOPE_MAX_STEPS) return "";
+  let out = "";
+  for (let i = 0; i < steps; i++) {
+    let value = 0;
+    for (let k = 0; k < hop && i * hop + k < rms.length; k++) value = Math.max(value, rms[i * hop + k]);
+    const db = value > 0 ? 20 * Math.log10(value / 32768) : -96;
+    const level = Math.max(0, Math.min(1, (db + 48) / 36));
+    out += Math.round(level * 15).toString(16);
+  }
+  return out;
 };
 
 type Word = { start: number; end: number; weight: number; punctuated: boolean };

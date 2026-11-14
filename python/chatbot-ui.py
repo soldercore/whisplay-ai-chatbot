@@ -75,7 +75,7 @@ current_scroll_sync_duration_ms = None
 current_scroll_sync_target_top = None
 current_scroll_sync_speed = None
 current_scroll_sync_hold_until = 0.0
-current_speech_sync = None  # (seq, char_end, duration_ms) for the terminal UI
+current_speech_sync = None  # (seq, char_end, duration_ms, audio_envelope) for the terminal UI
 current_transaction_id = None
 current_image_path = ""
 current_image = None
@@ -860,10 +860,12 @@ def update_display_data(status=None, emoji=None, text=None,
                     current_scroll_sync_hold_until,
                     time.time() + hold_seconds,
                 )
+                envelope = scroll_sync.get("env", "")
                 current_speech_sync = (
                     (current_speech_sync[0] + 1) if current_speech_sync else 1,
                     current_scroll_sync_char_end,
                     current_scroll_sync_duration_ms,
+                    envelope if isinstance(envelope, str) and len(envelope) <= 4000 else "",
                 )
         except Exception as e:
             print(f"[Display] Invalid scroll_sync payload: {e}")

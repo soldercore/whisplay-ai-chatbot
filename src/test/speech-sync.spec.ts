@@ -206,3 +206,53 @@ test("delayed scheduling catches up to elapsed speech and linear reveal stops on
   t.mock.timers.tick(300);
   assert.equal(reveal.revealed, 0);
 });
+
+// ---- Loudness envelope for the eye animation ----
+
+const toneWav = (segments: [number, number][]): Buffer => {
+  // [amplitude, ms] segments of a 180 Hz tone (amplitude 0 = digital silence)
+  const samples: number[] = [];
+  for (const [amp, ms] of segments) {
+    const n = Math.round((RATE * ms) / 1000);
+    for (let i = 0; i < n; i++) samples.push(Math.round(amp * Math.sin((2 * Math.PI * 180 * i) / RATE)));
+  }
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + samples.length * 2, 4);
+  header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(RATE, 24);
+  header.writeUInt32LE(RATE * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(samples.length * 2, 40);
+  const data = Buffer.alloc(samples.length * 2);
+  samples.forEach((s, i) => data.writeInt16LE(s, i * 2));
+  return Buffer.concat([header, data]);
+};
+
+test("envelope: one hex digit per 20 ms from the first sample, silence is 0, louder audio is a higher digit", () => {
+  const timing = speechTimingFromWav(toneWav([[0, 100], [3000, 200], [0, 200], [20000, 200], [0, 100]]));
+  assert.ok(timing?.levels, "an envelope is produced");
+  const levels = timing!.levels!;
+  assert.equal(levels.length, 40, "800 ms at 20 ms per digit");
+  assert.match(levels, /^[0-9a-f]+$/);
+  const digit = (ms: number) => parseInt(levels[Math.floor(ms / 20)], 16);
+  assert.equal(digit(40), 0, "leading silence");
+  assert.ok(digit(200) > 0, "quiet tone is above zero");
+  assert.ok(digit(560) > digit(200) + 3, `loud ${digit(560)} is clearly above quiet ${digit(200)}`);
+  assert.equal(digit(380), 0, "the pause reads zero");
+  assert.equal(digit(740), 0, "trailing silence");
+});
+
+test("envelope: absolute scale, not normalised per sentence, and bounded for very long audio", () => {
+  const quiet = speechTimingFromWav(toneWav([[1500, 400]]))!.levels!;
+  const loud = speechTimingFromWav(toneWav([[20000, 400]]))!.levels!;
+  assert.ok(parseInt(loud[10], 16) > parseInt(quiet[10], 16) + 5, "a quiet sentence is not stretched to full scale");
+  const long = speechTimingFromWav(toneWav([[9000, 41_000]]))!;
+  assert.equal(long.levels, "", "more than 40 s: no envelope (the display shows a steady speaking eye)");
+  assert.ok(long.speechEndMs > 0, "word timing is unaffected");
+});

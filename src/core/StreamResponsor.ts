@@ -23,6 +23,8 @@ type SentencePlayCallback = (payload: {
   // When each word of the sentence may appear (ms from its audio start), from
   // the speech and pauses measured in the audio; see speech-timing.ts.
   plan?: RevealStep[];
+  // Loudness of the sentence's audio for the eye animation (see speech-timing.ts); undefined when not measurable.
+  levels?: string;
 }) => void;
 
 export class StreamResponser {
@@ -164,7 +166,7 @@ export class StreamResponser {
       if (currentIndex < this.speakQueue.length) {
         this.isPlaying = true;
         const item = this.speakQueue[currentIndex];
-        const announce = (durationMs: number, plan?: RevealStep[]) =>
+        const announce = (durationMs: number, plan?: RevealStep[], levels?: string) =>
           this.sentencePlayCallback?.({
             charStart: this.getCharStartForSentence(item.sentenceIndex),
             charEnd: this.getCharEndForSentence(item.sentenceIndex),
@@ -172,6 +174,7 @@ export class StreamResponser {
             sentenceIndex: item.sentenceIndex,
             sentence: item.sentence,
             plan,
+            levels,
           });
         try {
           const playParams = await item.ttsPromise;
@@ -184,7 +187,7 @@ export class StreamResponser {
           item.timing.playStartAt = now();
           const playing = playAudioData(playParams);
           const speech = durationMs > 0 ? this.measureSpeech(playParams) : undefined;
-          announce(durationMs, durationMs > 0 ? revealPlan(item.sentence, durationMs, speech) : undefined);
+          announce(durationMs, durationMs > 0 ? revealPlan(item.sentence, durationMs, speech) : undefined, speech?.levels || undefined);
           await playing;
           item.timing.playEndAt = now();
           if (durationMs > 0) {

@@ -120,7 +120,7 @@ class ChatFlow implements ChatFlowContext {
           this.updateAnswerDisplayText(text || "");
         }
       },
-      ({ charStart, charEnd, durationMs, plan }) => {
+      ({ charStart, charEnd, durationMs, plan, levels }) => {
         if (!this.isAnswerFlow()) return;
         markAudible(durationMs);   // playback of a synthesised sentence started (see response-timing.ts for what that means)
         this.spokenReveal.sentenceStarted(charStart, charEnd, durationMs, plan);
@@ -129,6 +129,7 @@ class ChatFlow implements ChatFlowContext {
           scroll_sync: {
             char_end: charEnd,
             duration_ms: durationMs,
+            ...(levels ? { env: levels } : {}),
           },
         });
       }
