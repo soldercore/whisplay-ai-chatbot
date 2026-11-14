@@ -131,7 +131,7 @@ def capture(noise=None, live=None, after=None, announce=None):
                     tail=0
                     if followup and not hearing_sent and speech_frames>=7 and now-burst_start>=.16:
                         hearing_sent=True
-                        print("CAPRI_AUDIO",flush=True)
+                        print("CAPRI_AUDIO",flush=True)   # sound passed the start level; energy, not proof of speech
                 else:
                     tail+=1
                     if tail >= 30:
@@ -145,14 +145,14 @@ def capture(noise=None, live=None, after=None, announce=None):
         if followup and (speech_frames < 7 or burst_start is None or last-burst_start < .16): frames=[]
         return b"".join(frames),last,round(noise),False
 
-def recognize(raw,file):
+def recognize(raw,file,hint=None):
     if not raw: return ""
     with wave.open(str(file),"wb") as out:
         out.setparams((1,2,16000,0,"NONE","not compressed"))
         out.writeframes(raw)
     try:
         request=urllib.request.Request("http://127.0.0.1:" + str(int(os.getenv("FASTER_WHISPER_PORT","8803"))) + "/recognize",
-            data=json.dumps({"filePath":str(file),"language":os.getenv("FASTER_WHISPER_LANGUAGE") or "en"}).encode(),headers={"Content-Type":"application/json"})
+            data=json.dumps({"filePath":str(file),"language":os.getenv("FASTER_WHISPER_LANGUAGE") or "en",**({"initial_prompt":hint} if hint else {})}).encode(),headers={"Content-Type":"application/json"})
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request,timeout=8) as response:
             return json.load(response).get("recognition","").strip()
     finally:
@@ -192,7 +192,8 @@ def main():
                 continue
             if not raw or not recording_allowed():
                 continue
-            spoken=recognize(raw,file)
+            # Whisper base rarely writes the name "Capri" unprompted; the hint is for this wake stage only.
+            spoken=recognize(raw,file,hint="Capri.")
             match=re.fullmatch(r"capri\b[\s,.:;!?-]*(.*)",spoken,re.I)
             if not match or not recording_allowed():
                 continue

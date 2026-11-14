@@ -109,6 +109,7 @@ VOCAB = {i: w for i, w in enumerate(["capri"] + CMD)}
 
 def main():
     new = load("new", ROOT / "python" / "capri_wake.py")
+    source = (ROOT / "python" / "capri_wake.py").read_text(encoding="utf8")
     prev_path = os.environ.get("PROD_CAPRI")
     prev = load("prev", prev_path) if prev_path else None
     calib = silence(0.5)
@@ -123,6 +124,7 @@ def main():
     words = ["capri"] + CMD
     one = calib + silence(0.5) + speech(words) + silence(2)
     lines = run_main(new, [one], VOCAB)
+    check("the Capri recognition hint is preserved", 'spoken=recognize(raw,file,hint="Capri.")' in source and '"initial_prompt":hint' in source)
     check("CAPRI_READY is the first line, before any capture", run_main.ready)
     check("single utterance dispatches", command_of(lines) == "turn off the TV screen", repr(command_of(lines)))
     timing = [l for l in lines if l.startswith("CAPRI_TIMING ")]
