@@ -110,11 +110,15 @@ function replyFor<S extends string>(status: S, variants: Record<S, string[]>, ne
 }
 
 // Only whole, explicit English TV commands reach these matchers.
+// A polite modal request ("Could you make the TV louder, please?") is a command; other questions never are.
+const politeTvRequest = /^(?:(?:hey )?glados[, ]+)?(?:can|could|would|will) you (?:please )?(?=(?:turn|switch|put|make|lower|raise|increase|decrease|reduce|bring|mute|unmute|set|power|shut)\b)/i;
 function tvCommandText(question: string): string {
-  if (question.length > 240 || question.includes("?")) return "";
+  const polite = politeTvRequest.test(question.trim());
+  if (question.length > 240 || (polite ? question.trim().replace(/\?+$/, "").includes("?") : question.includes("?"))) return "";
   return question.trim().toLowerCase()
     .replace(/[’]/g, "'").replace(/\s+/g, " ")
-    .replace(/[.!]+$/, "").replace(/^(?:hey )?glados[, ]+/, "")
+    .replace(/[.!?]+$/, "").replace(/^(?:hey )?glados[, ]+/, "")
+    .replace(/^(?:(?:can|could|would|will) you )(?=.)/, polite ? "" : "$&")
     .replace(/^please,? /, "").replace(/,? please$/, "")
     .replace(/\bt[. ]+v\.?(?= |,|'|$)/g, "tv")
     .replace(/\btelevision\b/g, "tv").replace(/\byou tube\b/g, "youtube")
@@ -127,7 +131,9 @@ const tvMatch = (body: string): RegExp => new RegExp("^(?:" + body + ")$");
 const powerPattern = (direction: "on" | "off") => tvMatch(
   "(?:turn|switch|power) (?:" + direction + " " + tvTarget + "|" + tvTarget + " " + direction + ")"
   + "|tv (?:power )?" + direction
-  + (direction === "off" ? "|shut (?:down " + tvTarget + "|" + tvTarget + " down)" : ""));
+  + (direction === "off"
+    ? "|shut (?:down " + tvTarget + "|" + tvTarget + " down)|(?:put|set|send) " + tvTarget + " (?:in|into|on|to) (?:standby|sleep)|tv standby"
+    : "|(?:turn|switch|power) (?:back on " + tvTarget + "|" + tvTarget + " back on)"));
 const powerOn = powerPattern("on");
 const powerOff = powerPattern("off");
 const youtubeOnTv = tvMatch(
@@ -146,25 +152,30 @@ const playback = tvMatch(
   "tv (play|pause|stop|resume|continue)(?: playback| video)?"
   + "|(play|pause|stop|resume|continue)(?: (?:the )?(?:playback|video))? on " + tvTarget
   );
-const lowerVolumeRequest = tvMatch(
+const slightly = "(?: (?:a little(?: bit)?|a bit|slightly))?";   // TV volume moves one step either way
+const lowerVolumeRequest = tvMatch("(?:" +
   "(?:turn|bring) down (?:the )?" + tvVolume + "|(?:turn|bring) (?:the )?" + tvVolume + " down"
+  + "|(?:turn|bring) (?:the )?volume down on " + tvTarget
   + "|(?:lower|reduce|decrease) (?:the )?" + tvVolume + "|tv volume down"
-  + "|make " + tvTarget + " quieter");
-const raiseVolumeRequest = tvMatch(
+  + "|make " + tvTarget + " quieter)" + slightly);
+const raiseVolumeRequest = tvMatch("(?:" +
   "tv volume up|(?:turn|bring) up (?:the )?" + tvVolume + "|(?:turn|bring) (?:the )?" + tvVolume + " up"
-  + "|(?:raise|increase) (?:the )?" + tvVolume + "|make " + tvTarget + " louder");
+  + "|(?:turn|bring) (?:the )?volume up on " + tvTarget
+  + "|(?:raise|increase) (?:the )?" + tvVolume + "|make " + tvTarget + " louder)" + slightly);
 const muteRequest = tvMatch("(mute|unmute) " + tvTarget + "|tv (mute|unmute)|(?:turn|switch) (?:the )?sound (off|on) on " + tvTarget);
 const setVolumeRequest = tvMatch("(?:set|change|adjust) (?:the )?" + tvVolume + " to (.+)"
   + "|set (?:the )?volume to (.+) on " + tvTarget
   + "|tv volume (?:to )?(.+)");
 
-const screenTarget = "(?:" + tvTarget + " (?:screen|display)|(?:the )?display|(?:the )?(?:screen|display) on " + tvTarget + ")";
+const screenTarget = "(?:" + tvTarget + " (?:screen|display|picture)|(?:the )?display|(?:the )?(?:screen|display) on " + tvTarget + ")";
 const screenOn = tvMatch(
   "(?:turn|switch) (?:(?:back )?on " + screenTarget + "|" + screenTarget + " (?:back )?on)"
   + "|wake (?:up " + screenTarget + "|" + screenTarget + " up)"
   + "|tv screen on");
 const screenOff = tvMatch(
-  "(?:turn|switch) (?:off " + screenTarget + "|" + screenTarget + " off)|tv screen off");
+  "(?:turn|switch) (?:off " + screenTarget + "|" + screenTarget + " off)|tv screen off"
+  + "|make " + tvTarget + " (?:screen|display) (?:black|dark)"
+  + "|(?:turn|switch) (?:off (?:the )?picture|(?:the )?picture off) (?:but|and) (?:keep|leave) (?:the )?sound(?: on)?");
 const tvNotification = tvMatch(
   "(?:show|display) (?:me )?(?:a )?(?:glados )?(?:notification|message) on " + tvTarget);
 

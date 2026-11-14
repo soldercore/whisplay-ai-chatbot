@@ -24,7 +24,8 @@ const amount = `(?:a little|a bit|slightly|(?:by |to )?${numberPattern}${unit})`
 const match = (text: string, pattern: string) => new RegExp(`^(?:${pattern})$`).exec(text);
 export const MIN_BRIGHTNESS = 20;
 export const BRIGHTNESS_RANGE_REPLY = `Screen brightness must be between ${MIN_BRIGHTNESS} and 100 percent.`;
-export const TV_UNSUPPORTED_REPLY = "I can adjust this Whisplay, but I cannot control the TV.";
+export const TV_UNSUPPORTED_REPLY = "I can change the TV's volume, screen and power, but I cannot control the TV in any other way.";
+export const TV_VOLUME_PROMPT = "Tell me whether to turn the TV volume up or down.";
 const absoluteSetting = (text: string, target: string) =>
   match(text,`(?:set|change|adjust|make) ${target} (?:to |at )?(${numberPattern})${unit}`);
 
@@ -70,15 +71,23 @@ export function settingFollowUpText(text: string): string | undefined {
 export function isExternalTvRequest(text: string): boolean {
   const q = deviceCommandText(text);
   if (/^(?:(?:no|actually),? )?i meant (?:the |my )?(?:tv|television)$/.test(q)) return true;
-  const change = /^(?:(?:i (?:want|would like) (?:you )?to|i'd like (?:you )?to) )?(?:lower|raise|reduce|increase|decrease|turn|switch|set|change|adjust|make|mute|unmute|power) /;
+  const change = /^(?:(?:i (?:want|would like) (?:you )?to|i'd like (?:you )?to) )?(?:lower|raise|reduce|increase|decrease|turn|switch|set|change|adjust|make|mute|unmute|power|put|send|open|launch|show|display) /;
   if (!change.test(q)) return false;
   const target = q.replace(change,"");
   return /^(?:(?:on|off|up|down) )?(?:(?:the|my|our|your) )?(?:tv|television)\b/.test(target)
-    || /\b(?:volume|sound|speaker|brightness|screen|display) (?:on|of|for) (?:(?:the|my|our|your) )?(?:tv|television)\b/.test(target);
+    || /\b(?:volume|sound|speaker|brightness|screen|display) (?:on|of|for) (?:(?:the|my|our|your) )?(?:tv|television)\b/.test(target)
+    || /\b(?:on|to|for) (?:(?:the|my|our|your) )?(?:tv|television)$/.test(target);
 }
 
+// Whisplay's own controls never apply to a request that names the TV, whatever its wording.
+export const mentionsExternalTv = (text: string): boolean => /\b(?:tv|t\.v\.|television)(?=\W|$)/i.test(text);
+
+// A statement about the TV's sound is not a command; ask instead of guessing a direction.
+export const isUnclearTvObservation = (text: string): boolean =>
+  /^(?:i (?:can't|cannot|can not) hear (?:the |my )?(?:tv|television)|(?:the |my )?(?:tv|television) is (?:too )?(?:loud|quiet|soft))$/.test(deviceCommandText(text));
+
 export const isUnclearVolumeObservation = (text: string): boolean =>
-  /^it(?:'s| is) too loud$/.test(deviceCommandText(text));
+  /^it(?:'s| is) too loud(?:[.,!] ?(?:please )?(?:turn|make) it (?:down|quieter))?$/.test(deviceCommandText(text));
 
 const PERSONAL_STATEMENT = /^(?:i feel|i(?:'m| am) feeling) (?:overwhelmed|stressed|anxious|sad|upset|tired|hot|cold)(?: today| right now)?$|^i(?:'m| am) (?:overwhelmed|having a (?:difficult|hard|rough|bad) day)(?: today| right now)?$|^jeg (?:føler meg|er) (?:overveldet|stresset|trist|sliten|varm|kald)(?: i dag| akkurat nå)?$|^jeg har en (?:vanskelig|tung|dårlig) dag$/;
 const NEGATED_MONITORING = /^(?:i(?:'m| am) not asking (?:about|for)|(?:don't|do not) (?:check|show|report|measure)(?: me)?) (?:(?:your|the|cpu|system) )*(?:hardware(?: information)?|system (?:health|status)|cpu(?: temperature| usage)?|ram(?: usage)?|temperature)$|^(?:ikke (?:sjekk|vis|mål)|jeg (?:spør|ber) ikke (?:om|etter)) (?:maskinvaren|systemstatus(?:en)?|cpu-en|ram(?:-bruken)?|(?:cpu-)?temperaturen)(?: på (?:raspberry )?pi-en)?$/;

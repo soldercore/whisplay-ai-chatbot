@@ -165,7 +165,7 @@ export const toolsRelevantTo = <T extends { function: { name: string } }>(
   }
   const web = !casual && (needsCurrentInformation(request) || ASKS_FOR_OPTIONAL_SEARCH.test(request));
   const direct = parseDeviceCommand(request)?.name;
-  const externalTv = isExternalTvRequest(request);
+  const externalTv = isExternalTvRequest(request) || deviceCommands.mentionsExternalTv(request);
   const whisplay = !casual && !externalTv
     && (direct === "whisplay" || requiresWhisplayTool(request) || needsWhisplayCapabilities(request) || !!settingFollowUpText(request));
   const health = !casual && (direct === "getSystemHealth" || !!RULES.get("getSystemHealth")?.(request));

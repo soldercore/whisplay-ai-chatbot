@@ -43,7 +43,7 @@ import { memoryProfileSystemSuffix, withoutDuplicateMemoryProfiles } from "../..
 import { directCpuTemperatureAnswer, hasSystemHealthMeasurements } from "../../config/system-health";
 import { needsWhisplayCapabilities, requiresWhisplayTool, deviceCallFormat, withWhisplayQuestion, whisplayVoiceControlEnabled } from "../../config/whisplay-tools";
 import { changeTvAudioAndReply, changeTvPlaybackAndReply, getTvAudioCommand, getTvNavigationButton, getTvPlaybackAction, getTvScreenAction, getYoutubeSearchQuery, searchYoutubeAndReply, isTvNotification, setTvScreenAndReply, showTvNotificationAndReply, isOpenYoutubeOnTv, isTurnOffTv, isTurnOnTv, isTvVolumeDown, lowerTvVolumeAndReply, navigateTvAndReply, openYoutubeAndReply, turnOffTvAndReply, turnOnTvAndReply } from "../../device/lg-c1-volume";
-import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, isNegatedDeviceAction, isUnclearVolumeObservation, parseDeviceCommand, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY } from "../../config/device-commands";
+import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, isNegatedDeviceAction, isUnclearTvObservation, isUnclearVolumeObservation, parseDeviceCommand, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY, TV_VOLUME_PROMPT } from "../../config/device-commands";
 import { deviceResultSpeech } from "../../config/device-result-speech";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
@@ -643,6 +643,7 @@ const chatWithLLMStreamInternal = async (
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (isExternalTvRequest(question)) reply = TV_UNSUPPORTED_REPLY;
+      else if (isUnclearTvObservation(question)) reply = TV_VOLUME_PROMPT;
       else if (followUp) {
         const users = messages.filter(message => message.role === "user");
         const target = confirmedSettings.get(users[users.length-2] as Message);

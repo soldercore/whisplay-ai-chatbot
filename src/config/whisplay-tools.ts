@@ -1,7 +1,7 @@
 import type { LLMTool } from "../type";
 import { whisplayRequest, trackWhisplayHandoff } from "../device/whisplay-control";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, isNegatedDeviceAction, isUnclearVolumeObservation, MIN_BRIGHTNESS, parseDeviceCommand, preciseDeviceArguments, powerRequest, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY } from "./device-commands";
+import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, mentionsExternalTv, isNegatedDeviceAction, isUnclearVolumeObservation, MIN_BRIGHTNESS, parseDeviceCommand, preciseDeviceArguments, powerRequest, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY } from "./device-commands";
 
 const questions = new AsyncLocalStorage<string>();
 export const withWhisplayQuestion = <T>(question: string, work: () => T): T => questions.run(question, work);
@@ -12,6 +12,7 @@ const asksForLocalIp = (text: string) => /\b(what|which|show|check|tell|give|fin
 // This only requires grounding; the model still chooses the operation/parameters.
 export const requiresWhisplayTool = (text: string): boolean => whisplayVoiceControlEnabled()
   && !suppressesMonitoringTools(text)
+  && !mentionsExternalTv(text)
   && !/\b(joke|poem|story|pretend|imagine)\b|^\s*(explain|define|how does)\b/i.test(text)
   && !/^\s*what(?: is|'s) (?:an? )?(?:ip(?:v[46])? address|wi-?fi|bluetooth)[?.!\s]*$/i.test(text)
   && (/\b(whisplay|device|hardware|controls?|functions?|features?|capabilit\w*|screen|brightness|darker|brighter|speaker|volume|louder|quieter|microphone|recording|wi-?fi|bluetooth|ssh|services?|cpu|ram|storage|temperature|connection|home|reboot|shutdown)\b/i.test(text)
@@ -60,7 +61,7 @@ export const whisplayTool: LLMTool = {
         result = { ...result, scope: action === "capabilities" ? "capabilities" : args.scope };
       } else {
         const question = questions.getStore();
-        if (question && isExternalTvRequest(question)) throw new Error(TV_UNSUPPORTED_REPLY);
+        if (question && (isExternalTvRequest(question) || mentionsExternalTv(question))) throw new Error(TV_UNSUPPORTED_REPLY);
         if (question && brightnessLevelError(question)) throw new Error(BRIGHTNESS_RANGE_REPLY);
         if (question && (isNegatedDeviceAction(question) || asksForLocalIp(question)
           || isUnclearVolumeObservation(question) || settingFollowUpText(question))) {
