@@ -48,7 +48,7 @@ export interface ChatFlowContext {
   composeAnswerDisplayText: (text?: string) => string;
   updateAnswerDisplayText: (text: string) => void;
   appendToolCallDisplay: (functionName: string) => void;
-  finishToolCallDisplay: (functionName: string) => void;
+  finishToolCallDisplay: (functionName: string, outcome?: "ok" | "failed" | "unverified") => void;
   keepCommandToolDisplayRunning: (jobId: string) => void;
   finishCommandToolDisplay: (jobId: string) => void;
   resetToolCallDisplay: () => void;

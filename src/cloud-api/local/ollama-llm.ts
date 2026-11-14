@@ -48,6 +48,8 @@ import { deviceResultSpeech } from "../../config/device-result-speech";
 import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { answerSelfKnowledge } from "../../config/self-knowledge";
+import { hostActionResult } from "../../config/action-outcome";
+import { clearClarification, markClarification } from "../../utils/pending-clarification";
 import { whisplayRequest } from "../../device/whisplay-control";
 import { boundOllamaHistory } from "./ollama-history-limits";
 import { operationDeadline, timeoutSetting, waitForOperation, OperationTimeoutError } from "../../utils/operation-lifecycle";
@@ -589,6 +591,19 @@ const chatWithLLMStreamInternal = async (
     const question = typeof latestUser?.content === "string" ? latestUser.content : "";
     let executionQuestion = question;
     let reply: string | undefined;
+    // Host-routed device actions show the same inline tool tag as model tool calls while they run, then the outcome
+    // taken from the action's own reply. An unrecognised reply leaves a neutral tag; nothing is inferred.
+    const hostAction = async (label: string, run: () => Promise<string>, emptyMeansVerified = false): Promise<string> => {
+      invokeFunctionCallback?.(label);
+      try {
+        const reply = await run();
+        invokeFunctionCallback?.(label, hostActionResult(reply, emptyMeansVerified));
+        return reply;
+      } catch (error) {
+        invokeFunctionCallback?.(label, "[host:unverified]");
+        throw error;
+      }
+    };
     if (whisplayVoiceControlEnabled()) {
       const followUp = settingFollowUpText(question);
       const tvButton = getTvNavigationButton(question, performance.now() < tvNavigationUntil);
@@ -600,6 +615,7 @@ const chatWithLLMStreamInternal = async (
       tvScreenOffUntil = 0;
       const pendingTarget = pendingScreen && now < pendingScreen.until ? pendingScreen.action : undefined;
       pendingScreen = undefined;
+      clearClarification();
       const ambiguousScreen = ambiguousScreenAction(question);
       const targetAnswer = pendingTarget ? screenTargetAnswer(question) : undefined;
       const tvScreen = getTvScreenAction(question)
@@ -610,25 +626,25 @@ const chatWithLLMStreamInternal = async (
       else if (isMixedDeviceRequest(question)) reply = TV_MIXED_REPLY;
       else if (tvScreen || isTvNotification(question)) {
         reply = !ollamaEnableTools ? "Device control is disabled."
-          : tvScreen ? await setTvScreenAndReply(tvScreen, toolLoopState.signal)
-          : await showTvNotificationAndReply(toolLoopState.signal);
+          : tvScreen ? await hostAction("tv-screen", () => setTvScreenAndReply(tvScreen, toolLoopState.signal))
+          : await hostAction("tv-notice", () => showTvNotificationAndReply(toolLoopState.signal));
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
         if (tvScreen === "off" && reply === "Screen off.") tvScreenOffUntil = performance.now() + tvScreenContextMs;
       }
       else if (isTvVolumeDown(question)) {
-        reply = ollamaEnableTools ? await lowerTvVolumeAndReply(toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-volume", () => lowerTvVolumeAndReply(toolLoopState.signal)) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (tvAudio) {
-        reply = ollamaEnableTools ? await changeTvAudioAndReply(tvAudio, toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-audio", () => changeTvAudioAndReply(tvAudio, toolLoopState.signal)) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (youtubeQuery) {
-        reply = ollamaEnableTools ? await searchYoutubeAndReply(youtubeQuery, toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-youtube", () => searchYoutubeAndReply(youtubeQuery, toolLoopState.signal)) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (isOpenYoutubeOnTv(question)) {
-        reply = ollamaEnableTools ? await openYoutubeAndReply(toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-youtube", () => openYoutubeAndReply(toolLoopState.signal)) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (tvButton) {
@@ -640,15 +656,15 @@ const chatWithLLMStreamInternal = async (
         } else reply = "Device control is disabled.";
       }
       else if (tvPlayback) {
-        reply = ollamaEnableTools ? await changeTvPlaybackAndReply(tvPlayback, toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-playback", () => changeTvPlaybackAndReply(tvPlayback, toolLoopState.signal), true) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted || reply === "") { endCallback(); return; }
       }
       else if (isTurnOnTv(question)) {
         let progress = "";
-        reply = ollamaEnableTools ? await turnOnTvAndReply(toolLoopState.signal, text => {
+        reply = ollamaEnableTools ? await hostAction("tv-power", () => turnOnTvAndReply(toolLoopState.signal, text => {
           progress = text;
           partialCallback(text + " ");
-        }) : "Device control is disabled.";
+        })) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
         const finalText = reply === progress ? "" : reply;
         messages.push({ role: "assistant", content: [progress, finalText].filter(Boolean).join(" ") });
@@ -657,11 +673,11 @@ const chatWithLLMStreamInternal = async (
         return;
       }
       else if (isTurnOffTv(question)) {
-        reply = ollamaEnableTools ? await turnOffTvAndReply(toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-power", () => turnOffTvAndReply(toolLoopState.signal)) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (isTvPowerQuestion(question)) {
-        reply = ollamaEnableTools ? await tvPowerStatusAndReply(toolLoopState.signal) : "Device control is disabled.";
+        reply = ollamaEnableTools ? await hostAction("tv-status", () => tvPowerStatusAndReply(toolLoopState.signal)) : "Device control is disabled.";
         if (toolLoopState.signal?.aborted) { endCallback(); return; }
       }
       else if (isTvStateQuestion(question)) reply = TV_STATE_UNVERIFIED_REPLY;
@@ -673,6 +689,7 @@ const chatWithLLMStreamInternal = async (
       }
       else if (ambiguousScreen) {
         pendingScreen = { action: ambiguousScreen, until: performance.now() + screenTargetAnswerMs };
+        markClarification(screenTargetAnswerMs);
         reply = SCREEN_TARGET_PROMPT;
       }
       else if (followUp) {

@@ -33,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from whisplay_ui import clock  # noqa: E402
 from whisplay_ui import theme  # noqa: E402
+from whisplay_ui import visual_state as vs  # noqa: E402
 
 W, H = 240, 280
 FALLBACK_BASE_FONTS = [
@@ -443,6 +444,49 @@ def selftest():
         top = min(y for _, y, _, _ in s.lcd.pushes)
         bottom = max(y + h for _, y, _, h in s.lcd.pushes)
         check(top >= theme.PANE_Y and bottom <= theme.BODY_TOP_STAGE, "listening animates only the stage region")
+    finally:
+        s.close()
+
+    print("[selftest] clarification status keeps the answer and never looks like listening")
+    s = Session()
+    try:
+        s.send(status="answering", emoji="💬", text="Do you mean the TV screen or Whisplay's screen?")
+        s.run_until(8.0)
+        body = lambda top: np.asarray(s.lcd.image())[top:theme.CONTENT_SAFE_BOTTOM].copy()
+        s.send(status="idle", emoji="😴")
+        s.run_until(9.0)
+        before = body(theme.BODY_TOP_STAGE)
+        s.send(status="Your turn", emoji="😴")
+        s.run_until(10.0)
+        check(s.rt.terminal_ui.tracker.state == vs.GENERIC, "pending clarification uses the existing generic state")
+        check(s.rt.terminal_ui.tracker.state not in (vs.LISTEN, vs.CALIBRATE, vs.TRANSCRIBE), "it is not a listening state")
+        check(s.rt.terminal_ui._status_model({}, vs.GENERIC)["label"] == "YOUR TURN", "status bar says YOUR TURN")
+        bright = lambda a: int((a.max(axis=2) > 128).sum())
+        pending = body(theme.BODY_TOP_STAGE)      # the generic state keeps the stage layout
+        check(bright(pending) > 200, f"the answer text is drawn while the clarification is pending ({bright(pending)} bright px)")
+        check(s.cb.current_text == "Do you mean the TV screen or Whisplay's screen?", "the status-only update leaves the answer text untouched")
+        s.send(status="idle", emoji="😴")
+        s.run_until(11.0)
+        check(s.rt.terminal_ui.tracker.state == vs.IDLE, "the pending status clears back to idle")
+        check(np.array_equal(before, body(theme.BODY_TOP_STAGE)), "the idle view is restored exactly")
+        check(s.cb.current_text == "Do you mean the TV screen or Whisplay's screen?", "the answer text is still held after returning to idle")
+    finally:
+        s.close()
+
+    print("[selftest] host action tags show the running and outcome states")
+    s = Session()
+    try:
+        s.send(status="answering...", emoji="🤔", text="")
+        s.run_until(1.0)
+        s.send(status="answering", text="{tool:t1}", tool_placeholders={"t1": "% tv-screen..."})
+        s.run_until(2.0)
+        running = np.asarray(s.lcd.image()).copy()
+        check(s.rt.terminal_ui.tracker.state in (vs.ANSWER, vs.THINK), "a running host action stays in the existing answer view")
+        for outcome in ("ok", "failed", "unverified"):
+            s.send(status="answering", text="{tool:t1} Screen off.", tool_placeholders={"t1": "% tv-screen." + outcome})
+            s.run_until(s.now + 1.5)
+            check(s.lcd.fb.any(), "outcome tag renders: " + outcome)
+        check(not np.array_equal(running, np.asarray(s.lcd.image())), "the outcome changes what is drawn")
     finally:
         s.close()
 

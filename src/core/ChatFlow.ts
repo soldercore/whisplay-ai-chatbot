@@ -24,6 +24,7 @@ import { playWakeupChime } from "../device/audio";
 import { stopMusicPlayback, isMusicPlaying } from "../device/music-player";
 import type { Status } from "../device/display";
 import { appSignal } from "../utils/app-lifecycle";
+import { formatToolTag } from "../config/action-outcome";
 
 dotEnv.config();
 
@@ -72,6 +73,7 @@ class ChatFlow implements ChatFlowContext {
     elapsedSeconds?: number;
     timer?: ReturnType<typeof setInterval>;
     backgroundJobId?: string;
+    outcome?: "ok" | "failed" | "unverified";
   }[] = [];
   private toolDisplaySeq = 0;
   private answerDisplayTimer?: ReturnType<typeof setTimeout>;
@@ -319,10 +321,9 @@ class ChatFlow implements ChatFlowContext {
   private formatToolDisplayItem = (item: {
     name: string;
     elapsedSeconds?: number;
+    outcome?: "ok" | "failed" | "unverified";
   }): string =>
-    item.elapsedSeconds && item.elapsedSeconds >= 10
-      ? `% ${item.name} ${item.elapsedSeconds}s...`
-      : `% ${item.name}...`;
+    formatToolTag(item);
 
   private refreshToolDisplayText = (): void => {
     this.toolDisplayText = this.toolDisplayItems
@@ -393,7 +394,7 @@ class ChatFlow implements ChatFlowContext {
     this.updateAnswerDisplay(true);
   };
 
-  finishToolCallDisplay = (functionName: string): void => {
+  finishToolCallDisplay = (functionName: string, outcome?: "ok" | "failed" | "unverified"): void => {
     const item = [...this.toolDisplayItems]
       .reverse()
       .find((candidate) => candidate.name === functionName && candidate.timer);
@@ -405,6 +406,7 @@ class ChatFlow implements ChatFlowContext {
         startedAt: Date.now(),
         elapsedSeconds: undefined,
         timer: undefined,
+        outcome,
       });
       this.refreshToolDisplayText();
       this.updateAnswerDisplay(true);
@@ -416,6 +418,7 @@ class ChatFlow implements ChatFlowContext {
     }
     const elapsedSeconds = Math.floor((Date.now() - item.startedAt) / 1000);
     item.elapsedSeconds = elapsedSeconds >= 10 ? elapsedSeconds : undefined;
+    item.outcome = outcome;
     this.refreshToolDisplayText();
     this.updateAnswerDisplay(true);
   };

@@ -44,6 +44,8 @@ import { autoSaveExchange, prepareMemoryMessage } from "../../config/local-memor
 import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { selfKnowledgeTopic } from "../../config/self-knowledge";
+import { toolDisplayOutcome } from "../../config/action-outcome";
+import { clarificationRemainingMs, idleStatusFor } from "../../utils/pending-clarification";
 import { whisplayHandoffTicket, presentWhisplayHandoff, cancelWhisplayHandoff } from "../../device/whisplay-control";
 import { operationDeadline, waitForOperation } from "../../utils/operation-lifecycle";
 
@@ -80,8 +82,16 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         ctx.transitionTo("camera");
       });
     }
+    // A host question is waiting for the user's next request. Show that, without suggesting the microphone is open:
+    // the status clears when the window ends, and answering still takes the button or the wake word.
+    const waitingMs = clarificationRemainingMs();
+    if (waitingMs > 0) {
+      setTimeout(() => {
+        if (ctx.currentFlowName === "sleep" && clarificationRemainingMs() <= 0) display({ status: "idle" });
+      }, waitingMs + 50).unref?.();
+    }
     display({
-      status: "idle",
+      status: idleStatusFor(waitingMs),
       emoji: "😴",
       RGB: "#000055",
       rag_icon_visible: false,
@@ -456,7 +466,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
               }
               ctx.finishToolCallDisplay(functionName);
             } else {
-              ctx.finishToolCallDisplay(functionName);
+              ctx.finishToolCallDisplay(functionName, toolDisplayOutcome(result));
             }
           },
         ).catch((error) => {
