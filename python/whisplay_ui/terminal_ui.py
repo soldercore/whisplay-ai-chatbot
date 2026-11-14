@@ -624,10 +624,10 @@ class TerminalUI:
             if mode == STRIP_SPEAKING:
                 fps = max(fps, theme.SPEAKING_FPS)
             elif mode == STRIP_RECEIVING:
-                fps = max(fps, 10 if self.eye is not None else 6)
+                fps = max(fps, 8 if self.eye is not None else 6)
             elif self.eye is not None:
                 if state in (vs.THINK, vs.TOOL, vs.TRANSCRIBE):
-                    fps = max(fps, 10)
+                    fps = max(fps, 8)
                 elif self._eye_state_strip(mode, state, now) == EYE_ERROR and self.eye.error_active(now):
                     fps = max(fps, 8)      # three flashes, then steady red for a few seconds, then back to idle
                 elif self._eye_state_strip(mode, state, now) == EYE_UNSURE and self.eye.error_active(now):
@@ -635,7 +635,7 @@ class TerminalUI:
                 elif self.eye.idle_fps > 0:
                     eye_tick = 1.0 / self.eye.idle_fps
         if kind == KIND_MIC and state in (vs.TRANSCRIBE, vs.THINK):
-            fps = max(fps, 10 if self.eye is not None else 2)
+            fps = max(fps, 8 if self.eye is not None else 2)
         elif kind == KIND_MIC and self.eye is not None:
             if state == vs.LISTEN:
                 fps = max(fps, 4)

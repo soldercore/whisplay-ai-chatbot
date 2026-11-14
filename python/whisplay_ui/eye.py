@@ -207,8 +207,8 @@ class Eye:
             q = int(round(max(0.0, min(1.0, raw)) * LEVELS))
             key, lv = (SPEAK, q, 0), q / LEVELS
         elif state == THINK:
-            steps = 24
-            b = int(now * 10) % steps                   # one turn in 2.4 s
+            steps = 16
+            b = int(now * 8) % steps                    # one turn in 2 s
             key, phase = (THINK, 0, b), b / steps
         elif state == LISTEN:
             b = int(now * 4) % 8                        # slow side-wave pulse, 2 s per cycle
