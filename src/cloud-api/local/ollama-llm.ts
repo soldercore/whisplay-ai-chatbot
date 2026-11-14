@@ -49,6 +49,7 @@ import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { boundOllamaHistory } from "./ollama-history-limits";
 import { operationDeadline, timeoutSetting, waitForOperation, OperationTimeoutError } from "../../utils/operation-lifecycle";
+import { appSignal, onAppShutdown } from "../../utils/app-lifecycle";
 import { purifyTextForTTS } from "../../utils";
 import {
   createOllamaRequestBudget, OllamaRequestBudget, OllamaResourceLimitError,
@@ -201,8 +202,21 @@ const logOllamaTiming = (
 // answers a chat request with no messages with done_reason "load". The former
 // warmup sent the system prompt and all tools (~965 tokens), which took 65 s of
 // prompt evaluation on a Pi 5, and a first question had to wait for it.
-const keepAliveOllama = () => {
-  const deadline = operationDeadline(timeoutSetting("OLLAMA_METADATA_TIMEOUT_MS", 300_000));
+//
+// A failed load is retried a few times: on the Pi the system clock is stepped by NTP shortly after
+// boot, which can make Ollama fail this first load (observed: 500 "timed out waiting for llama-server
+// to start" after 15 s). Attempts never overlap, a pending retry is cancelled at shutdown, and the
+// timer does not keep the process alive. A persistent failure is logged on every attempt.
+const warmupAttempts = Math.min(10, Math.max(1, parseInt(process.env.OLLAMA_WARMUP_ATTEMPTS || "4", 10) || 4));
+const warmupRetryDelayMs = timeoutSetting("OLLAMA_WARMUP_RETRY_DELAY_MS", 10_000);
+let warmupRunning = false;
+let warmupTimer: ReturnType<typeof setTimeout> | undefined;
+onAppShutdown(() => { if (warmupTimer) clearTimeout(warmupTimer); warmupTimer = undefined; });
+
+const keepAliveOllama = (attempt = 1): void => {
+  if (warmupRunning || appSignal.aborted) return;
+  warmupRunning = true;
+  const deadline = operationDeadline(timeoutSetting("OLLAMA_METADATA_TIMEOUT_MS", 300_000), appSignal);
   waitForOperation(axios
     .post(`${ollamaEndpoint}/api/chat`, {
       model: ollamaModel,
@@ -215,8 +229,15 @@ const keepAliveOllama = () => {
       console.log("Ollama keep-alive response:", response.data);
     })
     .catch((err) => {
-      console.error("Error initializing Ollama model:", err.message);
-    }).finally(() => deadline.dispose());
+      if (appSignal.aborted) return;
+      if (attempt >= warmupAttempts) {
+        console.error(`Error initializing Ollama model: ${err.message} (gave up after ${attempt} attempt${attempt === 1 ? "" : "s"}; the model will load on the first question)`);
+        return;
+      }
+      console.error(`Ollama warm-up attempt ${attempt}/${warmupAttempts} failed: ${err.message}; retrying in ${Math.round(warmupRetryDelayMs / 1000)} s`);
+      warmupTimer = setTimeout(() => { warmupTimer = undefined; keepAliveOllama(attempt + 1); }, warmupRetryDelayMs);
+      warmupTimer.unref?.();
+    }).finally(() => { warmupRunning = false; deadline.dispose(); });
 };
 
 if (llmServer.trim().toLowerCase() === "ollama") {
