@@ -153,6 +153,10 @@ const tvScreenContextMs = 120_000;
 const screenTargetAnswerMs = 30_000;
 let tvScreenOffUntil = 0;
 let pendingScreen: { action: "on" | "off"; until: number } | undefined;
+// The unanswered clarification exchange (the user's ambiguous request and our question). It is kept in history only
+// while it is being answered: if the next message is not an answer, the model must not see a request nobody fulfilled.
+let pendingExchange: { user?: OllamaMessage; assistant?: OllamaMessage } | undefined;
+let trackExchange: OllamaMessage | undefined;
 const confirmedSettings = new WeakMap<Message, "volume" | "brightness">();
 
 // ---- Timing diagnostics -------------------------------------------------------
@@ -618,6 +622,16 @@ const chatWithLLMStreamInternal = async (
       clearClarification();
       const ambiguousScreen = ambiguousScreenAction(question);
       const targetAnswer = pendingTarget ? screenTargetAnswer(question) : undefined;
+      if (pendingExchange) {
+        const stale = pendingExchange;
+        pendingExchange = undefined;
+        if (!targetAnswer) {   // not an answer: drop the unfulfilled request and our question from the model's history
+          for (const message of [stale.user, stale.assistant]) {
+            const index = message ? messages.indexOf(message) : -1;
+            if (index >= 0) messages.splice(index, 1);
+          }
+        }
+      }
       const tvScreen = getTvScreenAction(question)
         ?? (ambiguousScreen === "on" && screenContext ? "on" : undefined)
         ?? (targetAnswer === "tv" ? pendingTarget : undefined);
@@ -689,7 +703,8 @@ const chatWithLLMStreamInternal = async (
       }
       else if (ambiguousScreen) {
         pendingScreen = { action: ambiguousScreen, until: performance.now() + screenTargetAnswerMs };
-        markClarification(screenTargetAnswerMs);
+        markClarification(screenTargetAnswerMs, { listen: !pendingTarget });   // a repeated question does not reopen the microphone again
+        trackExchange = latestUser as OllamaMessage | undefined;
         reply = SCREEN_TARGET_PROMPT;
       }
       else if (followUp) {
@@ -705,7 +720,9 @@ const chatWithLLMStreamInternal = async (
       } else reply = brightnessLevelError(question);
     }
     if (reply) {
-      messages.push({role:"assistant",content:reply});
+      const spoken: OllamaMessage = {role:"assistant",content:reply};
+      messages.push(spoken);
+      if (trackExchange) { pendingExchange = { user: trackExchange, assistant: spoken }; trackExchange = undefined; }
       partialCallback(reply);endCallback();return;
     }
     const direct = whisplayVoiceControlEnabled() ? parseDeviceCommand(executionQuestion) : undefined;

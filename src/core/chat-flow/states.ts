@@ -45,7 +45,7 @@ import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { selfKnowledgeTopic } from "../../config/self-knowledge";
 import { toolDisplayOutcome } from "../../config/action-outcome";
-import { clarificationRemainingMs, idleStatusFor } from "../../utils/pending-clarification";
+import { CLARIFICATION_SETTLE_MS, clarificationDisplayMs, clarificationListenSeconds, idleStatusFor, shouldListenAfterAnswer } from "../../utils/pending-clarification";
 import { whisplayHandoffTicket, presentWhisplayHandoff, cancelWhisplayHandoff } from "../../device/whisplay-control";
 import { operationDeadline, waitForOperation } from "../../utils/operation-lifecycle";
 
@@ -84,10 +84,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     }
     // A host question is waiting for the user's next request. Show that, without suggesting the microphone is open:
     // the status clears when the window ends, and answering still takes the button or the wake word.
-    const waitingMs = clarificationRemainingMs();
+    const waitingMs = clarificationDisplayMs();
     if (waitingMs > 0) {
       setTimeout(() => {
-        if (ctx.currentFlowName === "sleep" && clarificationRemainingMs() <= 0) display({ status: "idle" });
+        if (ctx.currentFlowName === "sleep" && clarificationDisplayMs() <= 0) display({ status: "idle" });
       }, waitingMs + 50).unref?.();
     }
     display({
@@ -231,6 +231,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.enterMusicAfterAnswer = false;
     ctx.musicDisplayText = "";
     ctx.isFromWakeListening = true;
+    const clarification = ctx.clarificationListen;   // one-shot: a bounded capture for a clarification answer
+    ctx.clarificationListen = false;
     ctx.answerId += 1;
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
@@ -253,7 +255,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         text: `(Detect level: ${level}%) Listening...`,
         rag_icon_visible: false,
       });
-      recordAudio(ctx.currentRecordFilePath, ctx.wakeRecordMaxSec, level)
+      recordAudio(ctx.currentRecordFilePath, clarification ? clarificationListenSeconds() : ctx.wakeRecordMaxSec, level)
         .then(() => {
           ctx.transitionTo("asr");
         })
@@ -508,6 +510,16 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
             display({ text: "Device handoff failed. Use the physical Home gesture." });
           });
           ctx.transitionTo("sleep");
+          return;
+        }
+        // A host question is waiting for one short answer: the playback has fully ended, so after a short settle reopen the
+        // existing auto-recording state once. Silence ends it back in sleep; it is never taken as an answer.
+        if (isCurrentAnswer() && shouldListenAfterAnswer(ctx)) {
+          setTimeout(() => {
+            if (ctx.currentFlowName !== "answer" || !isCurrentAnswer()) return;
+            ctx.clarificationListen = true;
+            ctx.transitionTo("wake_listening");
+          }, CLARIFICATION_SETTLE_MS);
           return;
         }
         if (ctx.wakeSessionActive || ctx.endAfterAnswer) {

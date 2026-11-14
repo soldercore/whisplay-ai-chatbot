@@ -45,6 +45,7 @@ class ChatFlow implements ChatFlowContext {
   wakeSessionLastSpeechAt: number = 0;
   wakeSessionIdleTimeoutMs: number =
     parseInt(process.env.WAKE_WORD_IDLE_TIMEOUT_SEC || "60") * 1000;
+  clarificationListen: boolean = false;   // one bounded capture for the answer to a host clarification question
   wakeRecordMaxSec: number = parseInt(
     process.env.WAKE_WORD_RECORD_MAX_SEC || "60",
   );
