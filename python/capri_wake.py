@@ -63,6 +63,33 @@ DIAG=os.getenv("CAPRI_DIAGNOSTICS","1")!="0"
 def diag(event,**fields):
     if DIAG: print("CAPRI_DIAG "+event+" "+" ".join("%s=%s"%(k,v) for k,v in fields.items()),file=sys.stderr,flush=True)
 
+# Optional openWakeWord wake detector. CAPRI_OWW_MODEL=/path/capri.onnx replaces the Whisper wake stage; unset, nothing below runs and
+# the behaviour is exactly the Whisper wake stage in main(). It reads the same 20 ms frames from the one microphone this process
+# already owns: no second capture, no second process. If the detector cannot load, the Whisper wake stage is used.
+OWW_MODEL=os.getenv("CAPRI_OWW_MODEL","").strip()
+OWW_THRESHOLD=float(os.getenv("CAPRI_OWW_THRESHOLD") or 0.7)
+OWW_PREROLL=int(os.getenv("CAPRI_OWW_PREROLL_FRAMES") or 6)        # 20 ms frames kept from before the detection (the end of "Capri")
+OWW_PROBE_FRAMES=int(os.getenv("CAPRI_OWW_PROBE_FRAMES") or 30)    # 0.6 s: does the command follow in the same breath?
+OWW_REFRACTORY_S=2.0
+
+class OwwDetector:
+    def __init__(self,path):
+        import numpy
+        from openwakeword.model import Model
+        self.np=numpy
+        self.model=Model(wakeword_models=[path],inference_framework="onnx")
+        self.pending=b""
+    def reset(self):
+        self.model.reset()
+        self.pending=b""
+    def score(self,block):
+        """Feed one 20 ms block. Returns the model score once per 80 ms, otherwise None."""
+        self.pending+=block
+        if len(self.pending)<2560: return None
+        chunk,self.pending=self.pending[:2560],self.pending[2560:]
+        prediction=self.model.predict(self.np.frombuffer(chunk,dtype=self.np.int16))
+        return max(prediction.values()) if prediction else 0.0
+
 def rms(frame):
     samples=array.array("h",frame)
     return math.sqrt(sum(x*x for x in samples)/len(samples))
@@ -87,9 +114,9 @@ def live_mic():
             if proc.poll() is None: proc.terminate()
             reader.join(timeout=1)
 
-def capture(noise=None, live=None, after=None, announce=None):
+def capture(noise=None, live=None, after=None, announce=None, preload=(), wait=None):
     stats={"n":0,"sum":0.0,"peak":0.0,"above":0,"run":0,"maxrun":0,"recent":collections.deque(maxlen=20),"quiet20":None,"pre":None,"calib":None,"gates":None} if DIAG else None
-    result=_capture(noise,live,after,announce,stats)
+    result=_capture(noise,live,after,announce,stats,preload,wait)
     if stats is not None:
         if stats["calib"]: diag("calibrate",min=stats["calib"][0],median=stats["calib"][1],max=stats["calib"][2],start_gate=stats["gates"][0],end_gate=stats["gates"][1])
         if stats["n"]:
@@ -99,8 +126,8 @@ def capture(noise=None, live=None, after=None, announce=None):
                  above_end_pct=round(100*stats["above"]/n),longest_quiet_frames=stats["maxrun"],quietest_400ms=None if stats["quiet20"] is None else round(stats["quiet20"]))
     return result
 
-def _capture(noise, live, after, announce, stats):
-    recent=collections.deque(maxlen=10)
+def _capture(noise, live, after, announce, stats, preload=(), wait=None):
+    recent=collections.deque(preload,maxlen=10)
     frames=[]
     loud=0
     last=None
@@ -128,7 +155,7 @@ def _capture(noise, live, after, announce, stats):
         waited=0
         while True:
             if not frames:
-                if waited>=WAIT_FRAMES: break
+                if waited>=(WAIT_FRAMES if wait is None else wait): break
                 waited+=1
             elif len(frames)>=SPEECH_FRAMES:
                 # Speech is still going at the safety cap: the caller must not act on it.
@@ -210,8 +237,46 @@ def chime():
         if proc.returncode!=0: raise RuntimeError("Bekreftelseslyden kunne ikke spilles")
     return began
 
+def oww_wake(detector,live,file):
+    """Wait for the wake word on the live stream, then take what follows it. Returns (command, speech_last, noise, captured), or
+    None when recording stopped being allowed or the command capture was unusable. An empty command means a bare wake word."""
+    detector.reset()
+    ring=collections.deque(maxlen=OWW_PREROLL)
+    levels=collections.deque(maxlen=150)       # about 3 s of recent levels for the capture gates
+    next_check=0
+    last_fire=-OWW_REFRACTORY_S
+    while True:
+        now,block=live()
+        if now>=next_check:
+            if not recording_allowed(): return None
+            next_check=now+1
+        levels.append(rms(block))
+        ring.append(block)
+        score=detector.score(block)
+        if score is None or score<OWW_THRESHOLD or now-last_fire<OWW_REFRACTORY_S: continue
+        break
+    quiet=sorted(levels)
+    noise=statistics.median(quiet[:max(1,len(quiet)//2)])   # the quiet half: the wake word itself is in the newest frames
+    detected=time.monotonic()
+    diag("oww_detect",score=round(score,2),noise=round(noise))
+    raw,last_loud,noise,complete=capture(noise=noise,live=live,preload=list(ring),wait=OWW_PROBE_FRAMES)
+    if raw and not complete:
+        print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
+        return None
+    if not raw or not recording_allowed():
+        return ("",None,noise,detected) if recording_allowed() else None
+    text=recognize(raw,file)
+    command=re.sub(r"^\W*capri\b[\s,.:;!?-]*","",text,flags=re.I).strip()
+    diag("oww_command",audio_s=round(len(raw)/32000,1),words=len(command.split()))
+    return (command,last_loud,noise,detected)
+
 def main():
     authorize_capture()
+    detector=None
+    if OWW_MODEL:
+        try: detector=OwwDetector(OWW_MODEL)
+        except Exception as error: print("CAPRI_OWW_UNAVAILABLE "+type(error).__name__,file=sys.stderr,flush=True)
+    diag("detector",kind="openwakeword" if detector else "whisper",threshold=OWW_THRESHOLD if detector else "-")
     print("CAPRI_READY",flush=True)
     opens=0
     streak=0    # consecutive captures that reached the speech limit
@@ -228,31 +293,36 @@ def main():
                 live=mic.enter_context(live_mic())
                 opens+=1
                 diag("mic_open",opens=opens,noise_refreshed=1)
-                noise=None
-                complete=False
-                while recording_allowed():
-                    raw,last_loud,noise,complete=capture(noise=noise,live=live)
-                    if raw: break
+                if detector is not None:
+                    found=oww_wake(detector,live,file)
+                    if found is None: continue
+                    command,speech_last,noise,captured=found
                 else:
-                    raw=b""
-                if raw and not complete:
-                    print("CAPRI_INCOMPLETE capture reached the speech limit; not recognized",file=sys.stderr,flush=True)
-                    streak+=1
-                    diag("incomplete",streak=streak,next="microphone reopened and noise re-measured")
-                    continue
-                if not raw or not recording_allowed():
-                    continue
-                streak=0
-                captured=time.monotonic()
-                # Whisper base rarely writes the name "Capri" unprompted; the hint is for this wake stage only.
-                spoken=recognize(raw,file,hint="Capri.")
-                diag("wake_check",audio_s=round(len(raw)/32000,1),asr_s=round(time.monotonic()-captured,1),words=len(spoken.split()),
-                     contains_capri=int("capri" in spoken.lower()),starts_with_capri=int(bool(re.match(r"\W*capri\b",spoken,re.I))))
-                match=re.fullmatch(r"capri\b[\s,.:;!?-]*(.*)",spoken,re.I)
-                if not match or not recording_allowed():
-                    continue
-                command=match[1].strip()
-                speech_last=last_loud
+                    noise=None
+                    complete=False
+                    while recording_allowed():
+                        raw,last_loud,noise,complete=capture(noise=noise,live=live)
+                        if raw: break
+                    else:
+                        raw=b""
+                    if raw and not complete:
+                        print("CAPRI_INCOMPLETE capture reached the speech limit; not recognized",file=sys.stderr,flush=True)
+                        streak+=1
+                        diag("incomplete",streak=streak,next="microphone reopened and noise re-measured")
+                        continue
+                    if not raw or not recording_allowed():
+                        continue
+                    streak=0
+                    captured=time.monotonic()
+                    # Whisper base rarely writes the name "Capri" unprompted; the hint is for this wake stage only.
+                    spoken=recognize(raw,file,hint="Capri.")
+                    diag("wake_check",audio_s=round(len(raw)/32000,1),asr_s=round(time.monotonic()-captured,1),words=len(spoken.split()),
+                         contains_capri=int("capri" in spoken.lower()),starts_with_capri=int(bool(re.match(r"\W*capri\b",spoken,re.I))))
+                    match=re.fullmatch(r"capri\b[\s,.:;!?-]*(.*)",spoken,re.I)
+                    if not match or not recording_allowed():
+                        continue
+                    command=match[1].strip()
+                    speech_last=last_loud
                 if not command:
                     if time.monotonic()-captured>LINGER_S:
                         # A slow decode would have overflowed the reader queue: reopen the microphone as before.
