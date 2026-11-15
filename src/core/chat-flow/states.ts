@@ -46,7 +46,7 @@ import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { selfKnowledgeTopic } from "../../config/self-knowledge";
 import { toolDisplayOutcome } from "../../config/action-outcome";
-import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, conversationFollowUpLimit, isNoiseTranscript, shouldContinueConversation, shouldListenAfterAnswer } from "../../utils/pending-clarification";
+import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, conversationFollowUpLimit, isGenuineQuestion, isNoiseTranscript, questionFollowUpLimit, shouldContinueConversation, shouldListenAfterAnswer } from "../../utils/pending-clarification";
 import { uiStatus } from "../../utils/ui-status";
 import { beginTurn, clearTurn, diagnosticsLine, finishTurn, hasTurn, mark as markTiming, toolFinished, toolStarted } from "../../utils/response-timing";
 import fs from "node:fs";
@@ -71,7 +71,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       await ctx.pauseWakeWordListener();
       if (ctx.currentFlowName !== "sleep") return;
       ctx.answerId += 1;
-      ctx.conversationFollowUps = conversationFollowUpLimit();   // a typed turn never opens the microphone by itself
+      ctx.conversationFollowUps = Math.max(conversationFollowUpLimit(), questionFollowUpLimit());   // a typed turn never opens the microphone by itself
       ctx.conversationCapture = false;
       clearTurn();
       text = redactWifiCredentials(text);
@@ -568,7 +568,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         // The same reopen serves an ordinary conversational answer (a short, bounded chain; see shouldContinueConversation).
         const clarificationListen = isCurrentAnswer() && shouldListenAfterAnswer(ctx);
         const conversationListen = !clarificationListen && isCurrentAnswer() && shouldContinueConversation({
-          used: ctx.conversationFollowUps, limit: conversationFollowUpLimit(), wakeSessionActive: ctx.wakeSessionActive,
+          used: ctx.conversationFollowUps,
+          // every ordinary answer may follow up to the general limit; an answer that ends in a genuine question to the question limit
+          limit: isGenuineQuestion(llmResponseText) ? Math.max(conversationFollowUpLimit(), questionFollowUpLimit()) : conversationFollowUpLimit(),
+          wakeSessionActive: ctx.wakeSessionActive,
           endAfterAnswer: ctx.endAfterAnswer, toolRan, failed: llmFailed, answered: llmResponseText.trim().length > 0,
           musicNext: ctx.enterMusicAfterAnswer,
         });

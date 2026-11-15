@@ -16,4 +16,11 @@ counter resets when a Capri command or a button turn starts; a typed turn never 
 Silence, an empty or failed recognition, or a transcript that is only noise or a stock phrase ("Thank you.", "you", "bye"...)
 returns to idle (`isNoiseTranscript`, conversational follow-ups only; clarification answers are unchanged).
 
-Tests: `src/test/conversation-followup.spec.ts` (with mutation checks documented in the commit).
+## Question-triggered follow-ups
+
+`QUESTION_FOLLOWUPS=N` (default 0 = off, max 5) reopens the same listen when the reply ENDS with a genuine question to the user
+(`isGenuineQuestion`): the final sentence is a question with a subject the user can answer, not quoted, not a tag or stock rhetorical
+question ("isn't it?", "Really?", "Who knows?"), and not followed by more text. It is independent of `CONVERSATION_FOLLOWUPS` and uses the
+same safety rules (no tool or device action, no failure, goodbye ends it, a pending clarification keeps its own rules) and the same counter.
+
+Tests: `src/test/conversation-followup.spec.ts`, `conversation-lifecycle.spec.ts`, `question-followup.spec.ts` (with mutation checks documented in the commit).
