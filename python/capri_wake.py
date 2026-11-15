@@ -1,6 +1,7 @@
 import array, collections, contextlib, json, math, os, re, signal, socket, statistics, queue, threading
 import http.client, subprocess, sys, tempfile, time, urllib.request, wave
 from pathlib import Path
+import shutil
 
 def rpc(cmd, payload):
     with socket.socket(socket.AF_UNIX) as sock:
@@ -61,7 +62,24 @@ def child(command, stdout=None):
 # microphone open and per wake check; CAPRI_DIAGNOSTICS=0 turns them off. They never change what the listener does.
 DIAG=os.getenv("CAPRI_DIAGNOSTICS","1")!="0"
 def diag(event,**fields):
-    if DIAG: print("CAPRI_DIAG "+event+" "+" ".join("%s=%s"%(k,v) for k,v in fields.items()),file=sys.stderr,flush=True)
+    if DIAG: print("CAPRI_DIAG "+event+" ts=%.3f "%time.time()+" ".join("%s=%s"%(k,v) for k,v in fields.items()),file=sys.stderr,flush=True)
+
+# TEMPORARY audio copy for diagnosing wrong transcripts. CAPRI_SAVE_AUDIO_DIR=/path keeps the last CAPRI_SAVE_AUDIO_KEEP (default 10)
+# clips that were sent to Whisper (only those, never ambient audio), in a private folder on this machine; unset = nothing is written.
+SAVE_DIR=os.getenv("CAPRI_SAVE_AUDIO_DIR","").strip()
+SAVE_KEEP=int(os.getenv("CAPRI_SAVE_AUDIO_KEEP") or 10)
+
+def save_clip(file,purpose):
+    if not SAVE_DIR: return
+    try:
+        directory=Path(SAVE_DIR)
+        directory.mkdir(mode=0o700,parents=True,exist_ok=True)
+        os.chmod(directory,0o700)
+        target=directory/("clip-%d-%s.wav"%(round(time.time()*1000),purpose))
+        shutil.copyfile(file,target)
+        os.chmod(target,0o600)
+        for old in sorted(directory.glob("clip-*.wav"))[:-SAVE_KEEP]: old.unlink(missing_ok=True)
+    except OSError: pass            # a diagnostic never gets in the way
 
 # Optional openWakeWord wake detector. CAPRI_OWW_MODEL=/path/capri.onnx replaces the Whisper wake stage; unset, nothing below runs and
 # the behaviour is exactly the Whisper wake stage in main(). It reads the same 20 ms frames from the one microphone this process
@@ -224,6 +242,8 @@ def recognize(raw,file,hint=None):
     with wave.open(str(file),"wb") as out:
         out.setparams((1,2,16000,0,"NONE","not compressed"))
         out.writeframes(raw)
+    save_clip(file,"wake" if hint else "command")
+    asked=time.monotonic()
     try:
         request=urllib.request.Request("http://127.0.0.1:" + str(int(os.getenv("FASTER_WHISPER_PORT","8803"))) + "/recognize",
             data=json.dumps({"filePath":str(file),"language":os.getenv("FASTER_WHISPER_LANGUAGE") or "en",**({"initial_prompt":hint} if hint else {})}).encode(),headers={"Content-Type":"application/json"})
@@ -237,7 +257,9 @@ def recognize(raw,file,hint=None):
             # unavailable, so this utterance is not recognized. One request, no retry; the listener loop carries on.
             print("CAPRI_ASR_UNAVAILABLE "+type(error).__name__,file=sys.stderr,flush=True)
             return ""
-        return data.get("recognition","").strip()
+        text=data.get("recognition","").strip()
+        diag("recognize",purpose="wake" if hint else "command",audio_s=round(len(raw)/32000,1),asr_s=round(time.monotonic()-asked,2),words=len(text.split()))
+        return text
     finally:
         file.unlink(missing_ok=True)
 
@@ -261,6 +283,9 @@ def oww_wake(detector,live,file):
     levels=collections.deque(maxlen=150)       # about 3 s of recent levels for the capture gates
     next_check=0
     last_fire=-OWW_REFRACTORY_S
+    near_max=0.0
+    near_frames=0
+    diag("listening")
     while True:
         now,block=live()
         if now>=next_check:
@@ -269,6 +294,15 @@ def oww_wake(detector,live,file):
         levels.append(rms(block))
         ring.append(block)
         score=detector.score(block)
+        if score is not None:
+            # A stretch of scores that rose above 0.10 but never reached the threshold: the detector heard something wake-word-like and
+            # did not fire (a missed or half-heard "Capri"). Numbers only.
+            if 0.10<=score<OWW_THRESHOLD:
+                near_max=max(near_max,score)
+                near_frames+=1
+            elif score<0.05 and near_frames:
+                if near_frames>=2: diag("oww_near",max=round(near_max,2),frames=near_frames)
+                near_max,near_frames=0.0,0
         if score is None or score<OWW_THRESHOLD or now-last_fire<OWW_REFRACTORY_S: continue
         break
     quiet=sorted(levels)
@@ -361,7 +395,9 @@ def main():
                         live=mic.enter_context(live_mic())
                         live()
                     if not recording_allowed(): continue
+                    chime_asked=time.monotonic()
                     playback=chime()
+                    diag("chime",took_ms=round((time.monotonic()-chime_asked)*1000),began_ms_after_ask="-" if playback is None else round((playback-chime_asked)*1000))
                     # The existing signal has 360 ms of tone, followed by padding.
                     # Discard the tone and a 40 ms guard while keeping post-tone speech.
                     gate=playback+.40 if playback is not None else time.monotonic()
@@ -391,6 +427,7 @@ def main():
                 continue
             if speech_last is not None:
                 print("CAPRI_TIMING %d"%round(max(0.0,time.monotonic()-speech_last)*1000),flush=True)   # ms since the last loud frame
+            diag("command_out",words=len(command.split()))
             print("CAPRI_COMMAND "+json.dumps(command,ensure_ascii=True),flush=True)
             return
 

@@ -2,7 +2,7 @@
 
   python3 -m unittest python/test/test_capri_oww.py -v
 """
-import array, contextlib, importlib.util, io, os, queue, random, sys, tempfile, unittest
+import array, contextlib, importlib.util, io, os, queue, random, sys, tempfile, time, unittest, wave
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "capri_wake.py"
@@ -54,13 +54,14 @@ class FakeDetector:
         return 0.95 if self.is_mark(block) else None
 
 
-def load(timeline, recognized, oww=True, detector=FakeDetector, calls=None):
+def load(timeline, recognized, oww=True, detector=FakeDetector, calls=None, diagnostics=False, env_extra=None):
     env = dict(os.environ)
     for key in ("CAPRI_OWW_MODEL", "CAPRI_OWW_THRESHOLD"):
         os.environ.pop(key, None)
     if oww:
         os.environ["CAPRI_OWW_MODEL"] = "capri.onnx"
-    os.environ["CAPRI_DIAGNOSTICS"] = "0"
+    os.environ["CAPRI_DIAGNOSTICS"] = "1" if diagnostics else "0"
+    os.environ.update(env_extra or {})
     spec = importlib.util.spec_from_file_location("capri_under_test", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -76,6 +77,8 @@ def load(timeline, recognized, oww=True, detector=FakeDetector, calls=None):
         calls["opens"] += 1
         yield timeline.read
     module.live_mic = live_mic
+
+    module.real_recognize = module.recognize
 
     def recognize(raw, file, hint=None):
         if not raw: return ""                      # the real one returns at once, without a request
@@ -230,6 +233,67 @@ class OpenWakeWord(unittest.TestCase):
         line = Timeline([(90, 1.0, *wander), (3000, 0.4, *wander), WORD_END + wander, (2500, 1.2, *wander), (90, 4.0, *wander)])
         out, _ = run(load(line, ["what time is it"], calls=calls))
         self.assertTrue(any(l.startswith("CAPRI_COMMAND") and "what time is it" in l for l in out), out)
+
+    def test_diagnostic_lines_carry_the_wall_clock_and_the_whole_timeline(self):
+        calls = {}
+        line = Timeline([ROOM, WORD, WORD_END, (100, 0.5), (1000, 0.2), (2500, 1.4), (100, 1.5)])
+        _, err = run(load(line, ["what time is it"], calls=calls, diagnostics=True))
+        events = [l.split()[1] for l in err.splitlines() if l.startswith("CAPRI_DIAG")]
+        for needed in ("detector", "listening", "oww_detect", "oww_bare", "chime", "command_out"):
+            self.assertIn(needed, events, events)
+        self.assertTrue(all(" ts=" in l for l in err.splitlines() if l.startswith("CAPRI_DIAG")), "every line has a timestamp")
+
+    def test_a_half_heard_wake_word_is_logged_as_a_near_miss_with_its_score(self):
+        class Near(FakeDetector):
+            def score(self, block):
+                values = array.array("h", block)
+                if values[1] - values[0] == 2 * 2000: return 0.2          # rises, never reaches 0.3
+                result = super().score(block)
+                return 0.0 if result is None else result
+        line = Timeline([ROOM, (2000, 0.3), ROOM, WORD, WORD_END, (2500, 1.2), (100, 1.5)])
+        _, err = run(load(line, ["what time is it"], detector=Near, diagnostics=True))
+        near = [l for l in err.splitlines() if l.startswith("CAPRI_DIAG oww_near")]
+        self.assertEqual(len(near), 1, err)
+        self.assertIn("max=0.2", near[0])
+
+    def _real_recognize(self, module, env_dir=None):
+        class Reply:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, *a): return b'{"recognition": "what time is it"}'
+        class Opener:
+            def open(self, request, timeout=0): return Reply()
+        module.urllib.request.build_opener = lambda *a: Opener()
+        module.recognize = module.real_recognize
+        return module
+
+    def test_audio_copies_are_opt_in_private_and_limited(self):
+        import stat
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "clips"
+            module = self._real_recognize(load(Timeline([ROOM]), [], env_extra={"CAPRI_SAVE_AUDIO_DIR": str(target), "CAPRI_SAVE_AUDIO_KEEP": "3"}))
+            for i in range(6):
+                self.assertEqual(module.recognize(frame(2500) * 40, Path(d) / "work.wav"), "what time is it")
+                time.sleep(0.003)
+            files = sorted(target.glob("clip-*.wav"))
+            self.assertEqual(len(files), 3, "only the newest three are kept")
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(files[0].stat().st_mode), 0o600)
+            with wave.open(str(files[0]), "rb") as w:
+                self.assertEqual((w.getnchannels(), w.getsampwidth(), w.getframerate()), (1, 2, 16000))
+            off = Path(d) / "off"
+            module = self._real_recognize(load(Timeline([ROOM]), []))
+            module.recognize(frame(2500) * 40, Path(d) / "work.wav")
+            self.assertFalse(off.exists())
+            self.assertEqual(list(Path(d).glob("**/clip-*.wav")), files, "nothing is saved unless the setting is present")
+
+    def test_a_folder_that_cannot_be_written_never_breaks_recognition(self):
+        with tempfile.TemporaryDirectory() as d:
+            blocker = Path(d) / "file"
+            blocker.write_text("x")
+            module = self._real_recognize(load(Timeline([ROOM]), [], env_extra={"CAPRI_SAVE_AUDIO_DIR": str(blocker / "sub")}))
+            self.assertEqual(module.recognize(frame(2500) * 40, Path(d) / "work.wav"), "what time is it")
 
     def test_a_soft_command_right_behind_the_wake_word_is_kept(self):
         calls = {}
