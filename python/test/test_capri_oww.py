@@ -72,6 +72,7 @@ def load(timeline, recognized, oww=True, detector=FakeDetector, calls=None):
     def recognize(raw, file, hint=None):
         if not raw: return ""                      # the real one returns at once, without a request
         calls["recognize"].append(dict(seconds=len(raw) / 32000, hint=hint, first_amp=array.array("h", raw[:FRAME])[1]))
+        if len(raw) / 32000 < 1.3: return ""        # the end of the wake word alone: Whisper finds no speech in it
         return recognized.pop(0) if recognized else ""
     module.recognize = recognize
 
@@ -119,7 +120,7 @@ class OpenWakeWord(unittest.TestCase):
     def test_bare_wake_word_chimes_and_listens_for_the_command(self):
         calls = {}
         line = Timeline([ROOM, WORD, WORD_END, (3000, 0.1), (100, 1.6), (3000, 1.0), (100, 1.5)])   # the word still sounds for a moment after the detection
-        out, _ = run(load(line, ["", "turn off the TV"], calls=calls))   # nothing after the wake word, then the follow-up command
+        out, _ = run(load(line, ["turn off the TV"], calls=calls))
         self.assertEqual(calls["chime"], 1)
         self.assertIn("CAPRI_LISTENING", out)
         self.assertIn("CAPRI_PROCESSING", out)
@@ -155,6 +156,45 @@ class OpenWakeWord(unittest.TestCase):
         self.assertIn("CAPRI_OWW_UNAVAILABLE ImportError", err)
         self.assertTrue(any(l.startswith("CAPRI_COMMAND") for l in out), out)
         self.assertEqual(calls["recognize"][0]["hint"], "Capri.")
+
+    def test_a_bare_wake_word_chimes_at_once_even_if_there_is_sound_later(self):
+        """The live failure: the user says "Capri", hears nothing, and says it again; the first one must already have chimed."""
+        calls = {}
+        line = Timeline([ROOM, WORD, WORD_END, (3000, 0.1), (100, 0.9), (3000, 4.0), (100, 1.5)])   # a second utterance 1 s later
+        module = load(line, ["", "what is this"], calls=calls)
+        when = {}
+        original = module.chime
+        def chime():
+            when.setdefault("clock", line.clock)
+            return original()
+        module.chime = chime
+        run(module)
+        detected_at = 1000.0 + (round(1.0 / 0.02) + round(0.4 / 0.02) + 1) * 0.02
+        self.assertEqual(calls["chime"], 1)
+        self.assertLess(when["clock"] - detected_at, 0.9, "the chime comes within the half-second look, not after the later sound")
+
+    def test_a_bare_wake_word_chimes_even_when_the_room_never_goes_quiet(self):
+        """The live failure: recording for the command never ended (sound above the end-of-speech level for 15 s) and no chime came."""
+        calls = {}
+        line = Timeline([ROOM, WORD, WORD_END, (200, 20.0)])      # room noise 100; 200 is above the end gate (170) but not speech
+        module = load(line, [], calls=calls)
+        when = {}
+        original = module.chime
+        def chime():
+            when.setdefault("clock", line.clock)
+            return original()
+        module.chime = chime
+        run(module)
+        detected_at = 1000.0 + (round(1.0 / 0.02) + round(0.4 / 0.02) + 1) * 0.02
+        self.assertEqual(calls["chime"], 1)
+        self.assertLess(when["clock"] - detected_at, 0.9)
+
+    def test_a_soft_command_right_behind_the_wake_word_is_kept(self):
+        calls = {}
+        line = Timeline([ROOM, WORD, WORD_END, (400, 1.2), (100, 1.5)])      # soft (quiet room: noise 100, gate 200)
+        out, _ = run(load(line, ["what time is it"], calls=calls))
+        self.assertEqual(calls["chime"], 0)
+        self.assertTrue(any(l.startswith("CAPRI_COMMAND") for l in out), out)
 
     def test_a_score_below_the_threshold_is_not_a_wake(self):
         class Weak(FakeDetector):

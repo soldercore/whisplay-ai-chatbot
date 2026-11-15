@@ -69,6 +69,10 @@ def diag(event,**fields):
 OWW_MODEL=os.getenv("CAPRI_OWW_MODEL","").strip()
 OWW_THRESHOLD=float(os.getenv("CAPRI_OWW_THRESHOLD") or 0.7)
 OWW_PREROLL=int(os.getenv("CAPRI_OWW_PREROLL_FRAMES") or 6)        # 20 ms frames kept from before the detection (the end of "Capri")
+OWW_PROBE_FRAMES=25      # 0.5 s after the detection in which a command may begin
+OWW_SKIP_FRAMES=8        # the first 160 ms are the end of the wake word itself
+OWW_SPEECH_FRAMES=6      # loud frames (of the 17 that follow) that mean "a command is being spoken", not a pop or a breath
+OWW_PROBE_GATE=2.4       # times the room noise
 OWW_REFRACTORY_S=2.0
 
 class OwwDetector:
@@ -155,7 +159,7 @@ def _capture(noise, live, after, announce, stats, preload=(), immediate=False):
         if immediate:
             # Right after a wake word the command may start softly or at once: record from the pre-roll on and let the usual
             # end-of-speech silence close it, instead of waiting for the start gate (a quiet first word would be lost).
-            frames=list(recent)
+            frames=list(preload) if preload else list(recent)
         while True:
             if not frames:
                 if waited>=WAIT_FRAMES: break
@@ -262,7 +266,21 @@ def oww_wake(detector,live,file):
     noise=statistics.median(quiet[:max(1,len(quiet)//2)])   # the quiet half: the wake word itself is in the newest frames
     detected=time.monotonic()
     diag("oww_detect",score=round(score,2),noise=round(noise))
-    raw,last_loud,noise,complete=capture(noise=noise,live=live,preload=list(ring),immediate=True)
+    # Is a command being spoken right behind the wake word? Look for half a second. If not, this is a bare "Capri": chime at once
+    # (the follow-up capture then waits for the command) instead of recording for as long as anything keeps sounding, which left the
+    # user without a chime for up to 15 s. A command is loud for most of the window; a breath or a click is not.
+    gate=max(150,noise*OWW_PROBE_GATE)
+    probe=[]
+    loud=0
+    for index in range(OWW_PROBE_FRAMES):
+        _,block=live()
+        probe.append(block)
+        if index>=OWW_SKIP_FRAMES and rms(block)>=gate: loud+=1
+        if loud>=OWW_SPEECH_FRAMES: break
+    if loud<OWW_SPEECH_FRAMES:
+        diag("oww_bare",probe_s=round(len(probe)*0.02,2),loud_frames=loud)
+        return ("",None,noise,detected) if recording_allowed() else None
+    raw,last_loud,noise,complete=capture(noise=noise,live=live,preload=list(ring)+probe,immediate=True)
     if raw and not complete:
         print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
         return None
