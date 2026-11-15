@@ -95,8 +95,12 @@ class OwwDetector:
         return max(prediction.values()) if prediction else 0.0
 
 def rms(frame):
+    # Energy of the frame WITHOUT its mean. The microphone carries a DC offset (about +330) and slow rumble below 50 Hz that moves the
+    # mean of a 20 ms frame between about -300 and +1000; counted as energy it kept the end-of-speech gate exceeded for seconds
+    # (a capture then ran to the 15 s limit) and made every threshold depend on the offset at the moment it was measured.
     samples=array.array("h",frame)
-    return math.sqrt(sum(x*x for x in samples)/len(samples))
+    mean=sum(samples)/len(samples)
+    return math.sqrt(sum((x-mean)*(x-mean) for x in samples)/len(samples))
 
 @contextlib.contextmanager
 def live_mic():

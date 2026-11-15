@@ -2,24 +2,27 @@
 
   python3 -m unittest python/test/test_capri_oww.py -v
 """
-import array, contextlib, importlib.util, io, os, queue, sys, tempfile, unittest
+import array, contextlib, importlib.util, io, os, queue, random, sys, tempfile, unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "capri_wake.py"
 FRAME = 640
 
 
-def frame(amp):
-    """One 20 ms frame whose rms is `amp` (a square wave: no DC)."""
-    return array.array("h", [amp if i % 2 else -amp for i in range(FRAME // 2)]).tobytes()
+def frame(amp, dc=0):
+    """One 20 ms frame whose AC rms is `amp` (a square wave) on top of a DC offset."""
+    return array.array("h", [dc + (amp if i % 2 else -amp) for i in range(FRAME // 2)]).tobytes()
 
 
 class Timeline:
     """seconds of (amplitude, seconds) segments, played as 20 ms frames with a simulated clock."""
     def __init__(self, segments):
         self.frames = []
-        for amp, seconds in segments:
-            self.frames += [frame(amp)] * round(seconds / 0.02)
+        rng = random.Random(5)
+        for amp, seconds, *wander in segments:
+            for _ in range(round(seconds / 0.02)):
+                # wander=(low, high): the frame mean moves like the real microphone's (DC offset plus rumble)
+                self.frames.append(frame(amp, rng.randint(*wander[0]) if wander else 0))
         self.pos = 0
 
     @property
@@ -42,8 +45,13 @@ class FakeDetector:
 
     def reset(self): pass
 
+    @staticmethod
+    def is_mark(block):
+        values = array.array("h", block)
+        return values[1] - values[0] == 2 * FakeDetector.MARK        # the amplitude, whatever the DC offset
+
     def score(self, block):
-        return 0.95 if array.array("h", block)[1] == self.MARK else None
+        return 0.95 if self.is_mark(block) else None
 
 
 def load(timeline, recognized, oww=True, detector=FakeDetector, calls=None):
@@ -214,6 +222,15 @@ class OpenWakeWord(unittest.TestCase):
         self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
         self.assertEqual(calls["recognize"], [])
 
+    def test_a_room_whose_dc_offset_wanders_does_not_keep_the_capture_open(self):
+        """The measured live failure: 28 of 34 captures never ended, because the microphone's DC offset and rumble (frame mean moving
+        between about -300 and +1000) counted as sound above the end-of-speech level. Real silence in the room is quiet (AC 90)."""
+        wander = ((-300, 900),)
+        calls = {}
+        line = Timeline([(90, 1.0, *wander), (3000, 0.4, *wander), WORD_END + wander, (2500, 1.2, *wander), (90, 4.0, *wander)])
+        out, _ = run(load(line, ["what time is it"], calls=calls))
+        self.assertTrue(any(l.startswith("CAPRI_COMMAND") and "what time is it" in l for l in out), out)
+
     def test_a_soft_command_right_behind_the_wake_word_is_kept(self):
         calls = {}
         line = Timeline([ROOM, WORD, WORD_END, (400, 1.2), (100, 1.5)])      # soft (quiet room: noise 100, gate 200)
@@ -224,7 +241,7 @@ class OpenWakeWord(unittest.TestCase):
     def test_a_score_below_the_threshold_is_not_a_wake(self):
         class Weak(FakeDetector):
             def score(self, block):
-                return 0.5 if array.array("h", block)[1] == self.MARK else None
+                return 0.5 if self.is_mark(block) else None
         calls = {}
         out, _ = run(load(Timeline([ROOM, WORD, WORD_END, (2500, 1.2), (100, 1.5)]), ["x"], detector=Weak, calls=calls))
         self.assertEqual(calls["chime"], 0)
