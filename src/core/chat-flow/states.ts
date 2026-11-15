@@ -16,6 +16,7 @@ import {
   recordAudioManually,
   recordFileFormat,
   getDynamicVoiceDetectLevel,
+  recorderOnsetFix,
   voiceDetectEndSilenceSec,
 } from "../../device/audio";
 import { chatWithLLMStream, llmServer } from "../../cloud-api/server";
@@ -248,21 +249,16 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       ctx.transitionTo("listening");
     });
     onButtonReleased(noop);
-    display({
-      status: "detecting",
-      emoji: DEFAULT_EMOJI,
-      RGB: "#00ff00",
-      text: "Detecting voice level...",
-      rag_icon_visible: false,
-    });
-    getDynamicVoiceDetectLevel().then((level) => {
+    // The ambient-level calibration only feeds the old start-level trigger. With RECORDER_ONSET_FIX the recorder ignores
+    // that level (vad trigger), so the calibration and its screen are skipped and the capture starts at once.
+    const startCapture = (level: number): void => {
       const maxSec = clarification ? (followUpSeconds ?? clarificationListenSeconds()) : ctx.wakeRecordMaxSec;
       const mode = clarification ? `answer:${maxSec}` : "auto";
       display({
         status: uiStatus("listening", mode),
         emoji: DEFAULT_EMOJI,
         RGB: "#00ff00",
-        text: `(Detect level: ${level}%) Listening...`,
+        text: recorderOnsetFix ? "Listening..." : `(Detect level: ${level}%) Listening...`,
         rag_icon_visible: false,
       });
       // The recorder writes nothing until sound passes its start level, so growth of its file is real speech detection.
@@ -292,7 +288,19 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
           ctx.endWakeSession();
           ctx.transitionTo("sleep");
         });
-    });
+    };
+    if (recorderOnsetFix) {
+      startCapture(0);
+    } else {
+      display({
+        status: "detecting",
+        emoji: DEFAULT_EMOJI,
+        RGB: "#00ff00",
+        text: "Detecting voice level...",
+        rag_icon_visible: false,
+      });
+      getDynamicVoiceDetectLevel().then(startCapture);
+    }
   },
   asr: (ctx: ChatFlowContext) => {
     display({

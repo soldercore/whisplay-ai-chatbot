@@ -57,7 +57,7 @@ const voiceDetectEndLevelRatio =
     ? voiceDetectEndLevelRatioRaw
     : 0.5;
 
-const recorderOnsetFix = process.env.RECORDER_ONSET_FIX === "1";
+export const recorderOnsetFix = process.env.RECORDER_ONSET_FIX === "1";
 const recorderOnsetEndLevelRaw = parseFloat(process.env.RECORDER_ONSET_END_LEVEL || "1");
 const recorderOnsetEndLevel =
   Number.isFinite(recorderOnsetEndLevelRaw) && recorderOnsetEndLevelRaw > 0 ? recorderOnsetEndLevelRaw : 1;

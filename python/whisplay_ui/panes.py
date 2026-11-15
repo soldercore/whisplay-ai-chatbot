@@ -56,7 +56,9 @@ def render_strip(fonts, mode, t, emoji_image=None, progress=None, tokens=None):
     end = draw_text(draw, image, fonts.pixel8, x + 9, mid, label, color)
     hint = ""
     if mode == STRIP_RESPONSE:
-        if tokens.get("pend") == "capri":
+        if "heard" in tokens:
+            hint = "CAPRI HEARD"
+        elif tokens.get("pend") == "capri":
             hint = "CAPRI TO ANSWER"
         elif "pend" in tokens:
             hint = "HOLD TO ANSWER"
@@ -178,7 +180,9 @@ def render_microphone(fonts, state, t, info, eye_image=None):
         if said:
             instruction = '"' + said.replace("\n", " ") + '"'
     elif state == vs.IDLE:
-        if tokens.get("pend") == "capri":
+        if "heard" in tokens:
+            instruction = "[ Capri heard ]"
+        elif tokens.get("pend") == "capri":
             instruction = "[ Say Capri to answer ]"
         elif "pend" in tokens:
             instruction = "[ Hold to answer ]"

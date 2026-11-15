@@ -29,6 +29,7 @@ import { formatToolTag } from "../config/action-outcome";
 import { composeIdleStatus, uiStatus } from "../utils/ui-status";
 import { beginTurn, mark as markTiming, markAudible, recentMetric } from "../utils/response-timing";
 import { clarificationRemainingMs } from "../utils/pending-clarification";
+import { recordingHasAudio } from "../utils/empty-recording";
 
 dotEnv.config();
 
@@ -156,6 +157,12 @@ class ChatFlow implements ChatFlowContext {
         this.capriReady = false;
         if (this.currentFlowName === "sleep") display({ status: this.idleStatus() });
       });
+      this.wakeWordListener.on("heard", (agoMs?: number) => {
+        // Acknowledge the wake word immediately, in the idle layout. "Listening" is shown only when the command capture runs.
+        if (this.currentFlowName !== "sleep") return;
+        display({ status: uiStatus("idle", "capri", "heard") });
+        console.info(`[Capri] Wake heard${agoMs === undefined ? "" : `; display update sent ${Math.round(agoMs)} ms after detection`}`);
+      });
       this.wakeWordListener.on("listening", () => {
         if (this.currentFlowName !== "sleep") return;
         console.info("[Capri] Listening after wake");
@@ -275,6 +282,11 @@ class ChatFlow implements ChatFlowContext {
   }
 
   async recognizeAudio(path: string, isFromAutoListening?: boolean): Promise<string> {
+    if (!recordingHasAudio(path)) {
+      // Nothing was recorded (no answer in a follow-up window): silence is not an error, and Whisper is not called.
+      console.log("[asr] No speech was recorded; recognition skipped.");
+      return Promise.resolve("");
+    }
     if (!isFromAutoListening && (await getRecordFileDurationMs(path)) < 500) {
       console.log("Record audio too short, skipping recognition.");
       return Promise.resolve("");

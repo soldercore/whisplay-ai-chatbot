@@ -308,6 +308,7 @@ def oww_wake(detector,live,file):
     quiet=sorted(levels)
     noise=statistics.median(quiet[:max(1,len(quiet)//2)])   # the quiet half: the wake word itself is in the newest frames
     detected=time.monotonic()
+    print("CAPRI_WAKE %.3f"%time.time(),flush=True)   # immediate acknowledgement for the display; the probe, chime and capture follow
     diag("oww_detect",score=round(score,2),noise=round(noise))
     # Is a command being spoken right behind the wake word? Look for half a second. If not, this is a bare "Capri": chime at once
     # (the follow-up capture then waits for the command) instead of recording for as long as anything keeps sounding, which left the
@@ -360,7 +361,9 @@ def main():
                 diag("mic_open",opens=opens,noise_refreshed=1)
                 if detector is not None:
                     found=oww_wake(detector,live,file)
-                    if found is None: continue
+                    if found is None:
+                        if recording_allowed(): print("CAPRI_IDLE",flush=True)   # the wake acknowledgement on screen must not be left standing
+                        continue
                     command,speech_last,noise,captured=found
                 else:
                     noise=None

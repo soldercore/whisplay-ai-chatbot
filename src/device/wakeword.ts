@@ -62,6 +62,11 @@ export class WakeWordListener extends EventEmitter {
         } else if (this.capri && line === "CAPRI_AUDIO") {
           console.log(`[WakeWord] ${line}`);
           if (this.wanted) this.emit("audio");   // sound passed the start level in the active command capture
+        } else if (this.capri && line.startsWith("CAPRI_WAKE ")) {
+          // The detector fired: acknowledge at once. The command capture is NOT running yet (probe and chime follow).
+          const sentAt = Number(line.slice("CAPRI_WAKE ".length));
+          const agoMs = Number.isFinite(sentAt) ? Math.max(0, Date.now() - sentAt * 1000) : undefined;
+          if (this.wanted) this.emit("heard", agoMs);
         } else if (this.capri && line === "CAPRI_PROCESSING") {
           console.log(`[WakeWord] ${line}`);
           if (this.wanted) this.emit("processing");   // the command capture ended; transcription follows

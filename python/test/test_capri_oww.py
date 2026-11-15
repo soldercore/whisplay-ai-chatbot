@@ -311,6 +311,33 @@ class OpenWakeWord(unittest.TestCase):
         self.assertEqual(calls["chime"], 0)
         self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
 
+    def test_the_wake_word_is_acknowledged_before_the_capture_is_ready(self):
+        line = Timeline([ROOM, WORD, WORD_END, (3000, 0.1), (100, 1.6), (3000, 1.0), (100, 1.5)])
+        out, _ = run(load(line, ["turn off the TV"]))
+        wake = [i for i, l in enumerate(out) if l.startswith("CAPRI_WAKE ")]
+        self.assertEqual(len(wake), 1, out)
+        self.assertGreater(float(out[wake[0]].split()[1]), 1e9, "a wall-clock timestamp, for the latency measurement")
+        self.assertLess(out.index("CAPRI_READY"), wake[0])
+        self.assertLess(wake[0], out.index("CAPRI_LISTENING"), "acknowledged first; listening only when the capture runs")
+
+    def test_a_command_in_the_same_breath_is_also_acknowledged_and_never_shows_listening(self):
+        out, _ = run(load(Timeline([ROOM, WORD, WORD_END, (2500, 1.2), (100, 1.5)]), ["what time is it"]))
+        self.assertEqual(len([l for l in out if l.startswith("CAPRI_WAKE ")]), 1, out)
+        self.assertNotIn("CAPRI_LISTENING", out)
+
+    def test_no_detection_no_acknowledgement(self):
+        class Weak(FakeDetector):
+            def score(self, block):
+                return 0.5 if self.is_mark(block) else None
+        out, _ = run(load(Timeline([ROOM, WORD, WORD_END, (2500, 1.2), (100, 1.5)]), ["x"], detector=Weak))
+        self.assertFalse(any(l.startswith("CAPRI_WAKE") for l in out), out)
+
+    def test_an_acknowledged_wake_whose_command_never_ends_is_released_with_idle(self):
+        out, _ = run(load(Timeline([ROOM, WORD, WORD_END, (3000, 20.0)]), ["x"]))
+        self.assertTrue(any(l.startswith("CAPRI_WAKE ") for l in out), out)
+        self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
+        self.assertEqual(out[-1], "CAPRI_IDLE", "the acknowledgement on screen is not left standing")
+
     def test_ready_is_printed_once_before_listening(self):
         out, _ = run(load(Timeline([ROOM, WORD, WORD_END, (3000, 1.0), (100, 1.5)]), ["go"]))
         self.assertEqual(out.count("CAPRI_READY"), 1)
