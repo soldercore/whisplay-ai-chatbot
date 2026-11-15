@@ -189,6 +189,31 @@ class OpenWakeWord(unittest.TestCase):
         self.assertEqual(calls["chime"], 1)
         self.assertLess(when["clock"] - detected_at, 0.9)
 
+    def test_speech_that_starts_while_the_chime_plays_is_kept(self):
+        """The reported failure: "Capri", the chime, and the user starts speaking before the chime has finished."""
+        calls = {}
+        # detection, 0.5 s look (silence), the chime starts: 0.2 s of chime alone, then speech over the rest of the chime and beyond
+        line = Timeline([ROOM, WORD, WORD_END, (100, 0.5), (1000, 0.2), (2500, 1.4), (100, 1.5)])
+        out, _ = run(load(line, ["what time is it"], calls=calls))
+        self.assertTrue(any(l.startswith("CAPRI_COMMAND") and "what time is it" in l for l in out), out)
+        self.assertEqual(len(calls["recognize"]), 1)
+        self.assertGreaterEqual(calls["recognize"][0]["seconds"], 2.1, "the words spoken during the chime are in the audio")
+
+    def test_the_chime_alone_is_never_a_command(self):
+        calls = {}
+        line = Timeline([ROOM, WORD, WORD_END, (100, 0.5), (1000, 0.36), (100, 8.0)])
+        out, _ = run(load(line, ["thank you so much"], calls=calls))
+        self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
+        self.assertEqual(calls["recognize"], [], "nothing but the chime: Whisper is not asked")
+        self.assertIn("CAPRI_IDLE", out)
+
+    def test_a_blip_after_the_chime_is_not_sent_to_whisper(self):
+        calls = {}
+        line = Timeline([ROOM, WORD, WORD_END, (100, 0.5), (1000, 0.36), (100, 0.2), (2500, 0.2), (100, 8.0)])
+        out, _ = run(load(line, ["thank you so much"], calls=calls))
+        self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
+        self.assertEqual(calls["recognize"], [])
+
     def test_a_soft_command_right_behind_the_wake_word_is_kept(self):
         calls = {}
         line = Timeline([ROOM, WORD, WORD_END, (400, 1.2), (100, 1.5)])      # soft (quiet room: noise 100, gate 200)

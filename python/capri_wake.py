@@ -73,6 +73,7 @@ OWW_PROBE_FRAMES=25      # 0.5 s after the detection in which a command may begi
 OWW_SKIP_FRAMES=8        # the first 160 ms are the end of the wake word itself
 OWW_SPEECH_FRAMES=6      # loud frames (of the 17 that follow) that mean "a command is being spoken", not a pop or a breath
 OWW_PROBE_GATE=2.4       # times the room noise
+OWW_MIN_SPEECH_FRAMES=15   # a command is at least 0.3 s of speech; less (the end of the chime, a click) is not sent to Whisper
 OWW_REFRACTORY_S=2.0
 
 class OwwDetector:
@@ -117,9 +118,9 @@ def live_mic():
             if proc.poll() is None: proc.terminate()
             reader.join(timeout=1)
 
-def capture(noise=None, live=None, after=None, announce=None, preload=(), immediate=False):
+def capture(noise=None, live=None, after=None, announce=None, preload=(), immediate=False, hold=False, min_speech=7):
     stats={"n":0,"sum":0.0,"peak":0.0,"above":0,"run":0,"maxrun":0,"recent":collections.deque(maxlen=20),"quiet20":None,"pre":None,"calib":None,"gates":None} if DIAG else None
-    result=_capture(noise,live,after,announce,stats,preload,immediate)
+    result=_capture(noise,live,after,announce,stats,preload,immediate,hold,min_speech)
     if stats is not None:
         if stats["calib"]: diag("calibrate",min=stats["calib"][0],median=stats["calib"][1],max=stats["calib"][2],start_gate=stats["gates"][0],end_gate=stats["gates"][1])
         if stats["n"]:
@@ -129,8 +130,9 @@ def capture(noise=None, live=None, after=None, announce=None, preload=(), immedi
                  above_end_pct=round(100*stats["above"]/n),longest_quiet_frames=stats["maxrun"],quietest_400ms=None if stats["quiet20"] is None else round(stats["quiet20"]))
     return result
 
-def _capture(noise, live, after, announce, stats, preload=(), immediate=False):
+def _capture(noise, live, after, announce, stats, preload=(), immediate=False, hold=False, min_speech=7):
     recent=collections.deque(preload,maxlen=10)
+    held=collections.deque(maxlen=40)          # frames that arrived while the chime was playing (see hold below)
     frames=[]
     loud=0
     last=None
@@ -142,6 +144,7 @@ def _capture(noise, live, after, announce, stats, preload=(), immediate=False):
         def read():
             stamp,block=read_live()
             while after is not None and stamp<after:
+                if hold: held.append(block)
                 stamp,block=read_live()
             return stamp,block
         if noise is None:
@@ -179,7 +182,9 @@ def _capture(noise, live, after, announce, stats, preload=(), immediate=False):
                     if stats is not None: stats["pre"]=round(statistics.mean(rms(f) for f in recent))
                     burst_start=now
                     speech_frames=loud
-                    frames=list(recent)
+                    # hold: the user may already be speaking while the chime plays. Those frames are not looked at for the start of
+                    # speech (the chime itself is loud in the microphone), but when speech begins right after the chime they belong to it.
+                    frames=(list(held) if hold and after is not None and now-after<=0.3 else [])+list(recent)
                     last=now
             else:
                 frames.append(frame)
@@ -200,14 +205,14 @@ def _capture(noise, live, after, announce, stats, preload=(), immediate=False):
                 else:
                     tail+=1
                     if tail >= 30:
-                        if followup and (speech_frames < 7 or last-burst_start < .16):
+                        if followup and (speech_frames < min_speech or last-burst_start < .16):
                             recent.clear()
                             frames=[]
                             loud=tail=speech_frames=0
                             last=burst_start=None
                             continue
                         return b"".join(frames),last,round(noise),True
-        if followup and (speech_frames < 7 or burst_start is None or last-burst_start < .16): frames=[]
+        if followup and (speech_frames < min_speech or burst_start is None or last-burst_start < .16): frames=[]
         return b"".join(frames),last,round(noise),False
 
 def recognize(raw,file,hint=None):
@@ -356,7 +361,8 @@ def main():
                     # The existing signal has 360 ms of tone, followed by padding.
                     # Discard the tone and a 40 ms guard while keeping post-tone speech.
                     gate=playback+.40 if playback is not None else time.monotonic()
-                    follow,last_follow,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING")
+                    follow,last_follow,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING",
+                                                          **(dict(hold=True,min_speech=OWW_MIN_SPEECH_FRAMES) if detector is not None else {}))
                     speech_last=last_follow
             finally:
                 mic.close()
