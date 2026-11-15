@@ -24,6 +24,7 @@ import { playWakeupChime } from "../device/audio";
 import { stopMusicPlayback, isMusicPlaying } from "../device/music-player";
 import type { Status } from "../device/display";
 import { appSignal } from "../utils/app-lifecycle";
+import { tvDucker } from "../device/tv-ducking";
 import { formatToolTag } from "../config/action-outcome";
 import { composeIdleStatus, uiStatus } from "../utils/ui-status";
 import { beginTurn, mark as markTiming, markAudible, recentMetric } from "../utils/response-timing";
@@ -141,6 +142,7 @@ class ChatFlow implements ChatFlowContext {
     }
 
     this.transitionTo("sleep");
+    void tvDucker.recover().catch(() => undefined);   // finish a restore that a crash or restart interrupted (fresh, matching state only)
 
     const wakeEnabled = (process.env.WAKE_WORD_ENABLED || "").toLowerCase();
     if (process.env.CAPRI_WAKE_WORD_ENABLED?.toLowerCase() === "true") {
@@ -157,6 +159,7 @@ class ChatFlow implements ChatFlowContext {
       this.wakeWordListener.on("listening", () => {
         if (this.currentFlowName !== "sleep") return;
         console.info("[Capri] Listening after wake");
+        tvDucker.begin();   // background, never awaited: the command capture is already running
         // The wake word was heard and the command capture is running now: this is the only recording state of Capri.
         display({ status: uiStatus("listening", "capri"), emoji: DEFAULT_EMOJI, RGB: "#00ff00", text: "Listening..." });
       });
@@ -169,6 +172,7 @@ class ChatFlow implements ChatFlowContext {
         if (this.currentFlowName === "sleep") display({ status: "recognizing", RGB: "#ff6800" });
       });
       this.wakeWordListener.on("idle", () => {
+        if (this.currentFlowName === "sleep") tvDucker.end();   // wake word without a command: nothing continues
         if (this.currentFlowName === "sleep") display({ status: this.idleStatus(), RGB: "#000055", text: "Ready" });
       });
       this.wakeWordListener.on("command", (text: string, speechEndAt?: number) => {
@@ -308,6 +312,8 @@ class ChatFlow implements ChatFlowContext {
       this.capriReady = false;   // stopped for this flow; the new process reports ready again
       if (this.idleRefreshTimer) { clearTimeout(this.idleRefreshTimer); this.idleRefreshTimer = undefined; }
     }
+    tvDucker.touch();
+    if (flowName === "sleep") tvDucker.end();   // the only way a conversation ends; follow-ups use wake_listening
     console.log(`[${getCurrentTimeTag()}] switch to:`, flowName);
     this.stateMachine.transitionTo(flowName);
     if (flowName === "sleep") {
