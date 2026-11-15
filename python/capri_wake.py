@@ -69,7 +69,6 @@ def diag(event,**fields):
 OWW_MODEL=os.getenv("CAPRI_OWW_MODEL","").strip()
 OWW_THRESHOLD=float(os.getenv("CAPRI_OWW_THRESHOLD") or 0.7)
 OWW_PREROLL=int(os.getenv("CAPRI_OWW_PREROLL_FRAMES") or 6)        # 20 ms frames kept from before the detection (the end of "Capri")
-OWW_PROBE_FRAMES=int(os.getenv("CAPRI_OWW_PROBE_FRAMES") or 30)    # 0.6 s: does the command follow in the same breath?
 OWW_REFRACTORY_S=2.0
 
 class OwwDetector:
@@ -114,9 +113,9 @@ def live_mic():
             if proc.poll() is None: proc.terminate()
             reader.join(timeout=1)
 
-def capture(noise=None, live=None, after=None, announce=None, preload=(), wait=None):
+def capture(noise=None, live=None, after=None, announce=None, preload=(), immediate=False):
     stats={"n":0,"sum":0.0,"peak":0.0,"above":0,"run":0,"maxrun":0,"recent":collections.deque(maxlen=20),"quiet20":None,"pre":None,"calib":None,"gates":None} if DIAG else None
-    result=_capture(noise,live,after,announce,stats,preload,wait)
+    result=_capture(noise,live,after,announce,stats,preload,immediate)
     if stats is not None:
         if stats["calib"]: diag("calibrate",min=stats["calib"][0],median=stats["calib"][1],max=stats["calib"][2],start_gate=stats["gates"][0],end_gate=stats["gates"][1])
         if stats["n"]:
@@ -126,7 +125,7 @@ def capture(noise=None, live=None, after=None, announce=None, preload=(), wait=N
                  above_end_pct=round(100*stats["above"]/n),longest_quiet_frames=stats["maxrun"],quietest_400ms=None if stats["quiet20"] is None else round(stats["quiet20"]))
     return result
 
-def _capture(noise, live, after, announce, stats, preload=(), wait=None):
+def _capture(noise, live, after, announce, stats, preload=(), immediate=False):
     recent=collections.deque(preload,maxlen=10)
     frames=[]
     loud=0
@@ -153,9 +152,13 @@ def _capture(noise, live, after, announce, stats, preload=(), wait=None):
         if announce: print(announce,flush=True)
         next_check=0
         waited=0
+        if immediate:
+            # Right after a wake word the command may start softly or at once: record from the pre-roll on and let the usual
+            # end-of-speech silence close it, instead of waiting for the start gate (a quiet first word would be lost).
+            frames=list(recent)
         while True:
             if not frames:
-                if waited>=(WAIT_FRAMES if wait is None else wait): break
+                if waited>=WAIT_FRAMES: break
                 waited+=1
             elif len(frames)>=SPEECH_FRAMES:
                 # Speech is still going at the safety cap: the caller must not act on it.
@@ -259,12 +262,13 @@ def oww_wake(detector,live,file):
     noise=statistics.median(quiet[:max(1,len(quiet)//2)])   # the quiet half: the wake word itself is in the newest frames
     detected=time.monotonic()
     diag("oww_detect",score=round(score,2),noise=round(noise))
-    raw,last_loud,noise,complete=capture(noise=noise,live=live,preload=list(ring),wait=OWW_PROBE_FRAMES)
+    raw,last_loud,noise,complete=capture(noise=noise,live=live,preload=list(ring),immediate=True)
     if raw and not complete:
         print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
         return None
-    if not raw or not recording_allowed():
-        return ("",None,noise,detected) if recording_allowed() else None
+    if not recording_allowed(): return None
+    if not raw or last_loud is None:
+        return ("",None,noise,detected)             # nothing was said after the wake word: a bare wake word
     text=recognize(raw,file)
     command=re.sub(r"^\W*capri\b[\s,.:;!?-]*","",text,flags=re.I).strip()
     diag("oww_command",audio_s=round(len(raw)/32000,1),words=len(command.split()))

@@ -118,8 +118,8 @@ class OpenWakeWord(unittest.TestCase):
 
     def test_bare_wake_word_chimes_and_listens_for_the_command(self):
         calls = {}
-        line = Timeline([ROOM, WORD, WORD_END, (100, 1.6), (3000, 1.0), (100, 1.5)])
-        out, _ = run(load(line, ["turn off the TV"], calls=calls))
+        line = Timeline([ROOM, WORD, WORD_END, (3000, 0.1), (100, 1.6), (3000, 1.0), (100, 1.5)])   # the word still sounds for a moment after the detection
+        out, _ = run(load(line, ["", "turn off the TV"], calls=calls))   # nothing after the wake word, then the follow-up command
         self.assertEqual(calls["chime"], 1)
         self.assertIn("CAPRI_LISTENING", out)
         self.assertIn("CAPRI_PROCESSING", out)
@@ -132,7 +132,7 @@ class OpenWakeWord(unittest.TestCase):
         out, _ = run(load(line, [], calls=calls))
         self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
         self.assertIn("CAPRI_IDLE", out)
-        self.assertEqual(calls["recognize"], [], "no Whisper request without speech")
+        self.assertEqual([r for r in calls["recognize"] if r["seconds"] > 0.5], [], "no Whisper request without speech")
 
     def test_unrecognised_speech_after_a_detection_ends_idle_not_as_a_command(self):
         line = Timeline([ROOM, WORD, WORD_END, (3000, 1.0), (100, 1.0), (100, 8.0)])
