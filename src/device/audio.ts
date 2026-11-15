@@ -57,6 +57,11 @@ const voiceDetectEndLevelRatio =
     ? voiceDetectEndLevelRatioRaw
     : 0.5;
 
+const recorderOnsetFix = process.env.RECORDER_ONSET_FIX === "1";
+const recorderOnsetLevelRaw = parseFloat(process.env.RECORDER_ONSET_LEVEL || "2");
+const recorderOnsetLevel =
+  Number.isFinite(recorderOnsetLevelRaw) && recorderOnsetLevelRaw > 0 ? recorderOnsetLevelRaw : 2;
+
 const defaultAsrAudioFormat: AudioFormat = [
   ASRServer.vosk,
   ASRServer.whisper,
@@ -171,10 +176,12 @@ const recordAudio = async (
   }
 
   return new Promise((resolve, reject) => {
-    const voiceDetectEndLevel = Math.max(
-      1,
-      voiceDetectLevel * voiceDetectEndLevelRatio,
-    );
+    // Opt-in onset fix: the microphone has a DC offset (~1.2%) that the dynamic level mistakes for noise, so the
+    // start level is 4-6% and soft words are clipped or dropped. A 50 Hz high-pass in front of `silence` removes it,
+    // which allows a 2% start level and a short start trigger. Off by default (unchanged behavior).
+    const startLevel = recorderOnsetFix ? recorderOnsetLevel : voiceDetectLevel;
+    const startDuration = recorderOnsetFix ? "0.03" : "0.1";
+    const voiceDetectEndLevel = Math.max(1, startLevel * voiceDetectEndLevelRatio);
     const args = [
       "-t",
       "alsa",
@@ -186,16 +193,17 @@ const recordAudio = async (
       "-r",
       "16000",
       outputPath,
+      ...(recorderOnsetFix ? ["highpass", "50"] : []),
       "silence",
       "1",
-      "0.1",
-      `${voiceDetectLevel}%`,
+      startDuration,
+      `${startLevel}%`,
       "1",
       `${voiceDetectEndSilenceSec}`,
       `${voiceDetectEndLevel}%`,
     ];
     console.log(
-      `Starting recording, maximum ${duration} seconds (start=${voiceDetectLevel}%, stop=${voiceDetectEndLevel}% for ${voiceDetectEndSilenceSec}s)...`,
+      `Starting recording, maximum ${duration} seconds (start=${startLevel}%${recorderOnsetFix ? " onset-fix" : ""}, stop=${voiceDetectEndLevel}% for ${voiceDetectEndSilenceSec}s)...`,
     );
     currentRecordingReject = reject;
     const recordingProcess = spawn("sox", args);
