@@ -49,6 +49,7 @@ import { readOllamaNDJSON } from "./ollama-ndjson";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { answerSelfKnowledge } from "../../config/self-knowledge";
 import { hostActionResult } from "../../config/action-outcome";
+import { composeChainReply, planChain, runChain } from "../../config/action-chain";
 import { clearClarification, markClarification } from "../../utils/pending-clarification";
 import { whisplayRequest } from "../../device/whisplay-control";
 import { boundOllamaHistory } from "./ollama-history-limits";
@@ -636,7 +637,28 @@ const chatWithLLMStreamInternal = async (
         ?? (ambiguousScreen === "on" && screenContext ? "on" : undefined)
         ?? (targetAnswer === "tv" ? pendingTarget : undefined);
       const youtubeQuery = getYoutubeSearchQuery(question);
+      const chain = isNegatedDeviceAction(question) ? undefined : planChain(question);
       if (isNegatedDeviceAction(question)) reply = "Understood. No device setting changed.";
+      else if (chain) {
+        // Several TV actions in one request: validated as a whole, run in dependency order through the same verified handlers,
+        // announced once. Progress shows as the usual tool tags; nothing is spoken until the end.
+        if (!ollamaEnableTools) reply = "Device control is disabled.";
+        else if ("refusal" in chain) reply = chain.refusal;
+        else {
+          const signal = toolLoopState.signal;
+          const results = await runChain(chain.steps, {
+            powerOn: () => hostAction("tv-power", () => turnOnTvAndReply(signal)),
+            powerOff: () => hostAction("tv-power", () => turnOffTvAndReply(signal)),
+            screen: on => hostAction("tv-screen", () => setTvScreenAndReply(on ? "on" : "off", signal)),
+            volumeDown: () => hostAction("tv-volume", () => lowerTvVolumeAndReply(signal)),
+            audio: command => hostAction("tv-audio", () => changeTvAudioAndReply(command, signal)),
+            search: query => hostAction("tv-youtube", () => searchYoutubeAndReply(query, signal)),
+            youtube: () => hostAction("tv-youtube", () => openYoutubeAndReply(signal)),
+          }, () => !!signal?.aborted);
+          if (signal?.aborted) { endCallback(); return; }
+          reply = composeChainReply(results);
+        }
+      }
       else if (isMixedDeviceRequest(question)) reply = TV_MIXED_REPLY;
       else if (tvScreen || isTvNotification(question)) {
         reply = !ollamaEnableTools ? "Device control is disabled."
