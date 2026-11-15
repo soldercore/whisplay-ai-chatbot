@@ -76,33 +76,20 @@ export const isNoiseTranscript = (text: string): boolean => {
 };
 
 // ---- Question-triggered follow-ups -------------------------------------------------------------------------------
-// When the reply itself ends with a genuine question to the user, the same bounded listen reopens, independently of the general
-// conversational follow-ups above. QUESTION_FOLLOWUPS=N allows up to N follow-ups per conversation (default 0 = off, at most 5).
+// One deterministic rule: when the reply, after trimming, ends with "?", the same bounded listen reopens (after playback ends and
+// the settle), here for 5 seconds. Independent of the general conversational follow-ups above.
+// QUESTION_FOLLOWUPS=N allows up to N consecutive question follow-ups per conversation (default 0 = off, at most 3).
+
+export const QUESTION_LISTEN_SECONDS = 5;
 
 export const questionFollowUpLimit = (env: NodeJS.ProcessEnv = process.env): number => {
   const raw = (env.QUESTION_FOLLOWUPS ?? "").trim();
   if (raw === "") return 0;
   const value = parseInt(raw, 10);
-  return Number.isFinite(value) ? Math.min(5, Math.max(0, value)) : 0;
+  return Number.isFinite(value) ? Math.min(3, Math.max(0, value)) : 0;
 };
 
-const RHETORICAL_TAIL = /\b(?:isn'?t it|aren'?t (?:they|you)|wasn'?t it|doesn'?t it|don'?t you think|wouldn'?t you say|am i wrong|right|correct|okay|ok|no|yes|huh|eh|really|seriously|who knows|who cares|who would have thought|can you believe it|how (?:surprising|shocking|fascinating|wonderful))\s*\?$/i;
-const RHETORICAL_OPEN = /^(?:who (?:knows|cares|would have thought)|what (?:does it matter|difference does it make)|why (?:would|should) (?:anyone|anybody|i|we)|how (?:could|would) (?:anyone|anybody|i))\b/i;
-const ASKS_USER = /\b(?:you|your|yours|yourself)\b|^(?:what|which|who|where|when|why|how|do|does|did|are|is|can|could|would|will|shall|should|have|has)\b/i;
-
-/** True when the reply ENDS with a question put to the user. A question followed by more text, a quoted question, a tag or
- *  stock rhetorical question, or a very short one ("Really?") does not count. */
-export const isGenuineQuestion = (text: string): boolean => {
-  const body = text.replace(/\s+/g, " ").replace(/[\s\p{Extended_Pictographic}️]+$/gu, "").trim();
-  if (!body.endsWith("?")) return false;                                   // also rejects ?" and ?) (inside a quote or an aside)
-  const sentence = (body.split(/(?<=[.!?…])\s+/).pop() ?? "").trim();
-  if (!sentence.endsWith("?")) return false;
-  const quotes = (sentence.match(/["“”]/g) ?? []).length;
-  if (quotes % 2 === 1 || /^["“‘]/.test(sentence)) return false;  // the question sits inside a quotation
-  if (sentence.split(" ").filter(Boolean).length < 3) return false;
-  if (RHETORICAL_TAIL.test(sentence) || RHETORICAL_OPEN.test(sentence)) return false;
-  return ASKS_USER.test(sentence);
-};
+export const endsWithQuestionMark = (text: string): boolean => text.trim().endsWith("?");
 
 /** Status string for the idle screen: the existing generic state while a question is pending, otherwise "idle". */
 export const idleStatusFor = (remainingMs: number): "Your turn" | "idle" => (remainingMs > 0 ? "Your turn" : "idle");

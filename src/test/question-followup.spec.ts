@@ -44,13 +44,14 @@ const noop = () => {};
 const loose = () => new Proxy({}, { get: (_t, key) => (key === "then" ? undefined : noop) });
 let pressed: (() => void) | undefined;
 const events: any[] = [];
+const recordSeconds: number[] = [];
 const stubs: Record<string, any> = {
   "../utils/app-lifecycle": fakeLifecycle,
   "../../device/display": {
     onButtonPressed: (fn: any) => { pressed = fn || undefined; }, onButtonReleased: noop, onButtonDoubleClick: noop, display: noop,
     getCurrentStatus: () => ({ text: "x" }), onCameraCapture: noop, onTextInput: noop, isButtonDown: () => false,
   },
-  "../../device/audio": { recordAudio: async () => { events.push("record"); }, recordAudioManually: () => ({ result: new Promise(() => {}), stop: noop }),
+  "../../device/audio": { recordAudio: async (_f: string, seconds: number) => { events.push("record"); recordSeconds.push(seconds); }, recordAudioManually: () => ({ result: new Promise(() => {}), stop: noop }),
     recordFileFormat: "wav", getDynamicVoiceDetectLevel: async () => 25, voiceDetectEndSilenceSec: 1.5 },
   "../../cloud-api/server": { chatWithLLMStream: noop, llmServer: "ollama" },
   "../../cloud-api/llm": { isImMode: false, summaryTextWithLLM: noop },
@@ -140,34 +141,25 @@ const questionLike = { reply: "AI has enormous potential. What interests you mos
 const statement = { reply: "AI has enormous potential. It also has enormous paperwork." };
 
 // ---- Pure rules ----------------------------------------------------------------------------------------------------------
-test("QUESTION_FOLLOWUPS: off by default, N enables up to N (max 5), garbage is off", () => {
+test("QUESTION_FOLLOWUPS: off by default, N enables up to N (max 3), garbage is off", () => {
   assert.equal(pc.questionFollowUpLimit({}), 0, "disabled until physically verified");
   assert.equal(pc.questionFollowUpLimit({ QUESTION_FOLLOWUPS: "" }), 0);
   assert.equal(pc.questionFollowUpLimit({ QUESTION_FOLLOWUPS: "3" }), 3);
-  assert.equal(pc.questionFollowUpLimit({ QUESTION_FOLLOWUPS: "99" }), 5);
+  assert.equal(pc.questionFollowUpLimit({ QUESTION_FOLLOWUPS: "99" }), 3, "never more than 3 consecutive question follow-ups");
   assert.equal(pc.questionFollowUpLimit({ QUESTION_FOLLOWUPS: "-1" }), 0);
   assert.equal(pc.questionFollowUpLimit({ QUESTION_FOLLOWUPS: "abc" }), 0);
 });
 
-test("a genuine question ends the reply and is put to the user", () => {
+test("the rule is literal: the trimmed reply ends with a question mark", () => {
   for (const text of [
-    "AI has enormous potential. What interests you most about it?",
-    "Fascinating. Do you want to hear more?",
-    "Which of those would you like me to explain?",
-    "I could tell you about black holes. Shall I continue? 😊",
-    "What is your favourite colour?",
-    "How was your day?",
-  ]) assert.equal(pc.isGenuineQuestion(text), true, text);
-});
-
-test("statements, quoted, rhetorical, tag, short and mid-reply questions do not count", () => {
+    "AI has enormous potential. What interests you most about it?", "What is your favourite colour?", "Ready?", "Fascinating, isn't it?",
+    "Is that all?\n", "  Do you want to hear more?  \n\t", "Hm? Really?",
+  ]) assert.equal(pc.endsWithQuestionMark(text), true, JSON.stringify(text));
   for (const text of [
-    "AI has enormous potential.", "", "   ", "The answer is forty-two!", "Welcome back. Shall we begin.",
-    'The riddle goes: "What walks on four legs in the morning?', 'Do you recall the phrase "what walks on four legs?', 'As they say, "What is life?"', 'He asked: "What do you want?"', "“Why is the sky blue?”", "She wondered (what do you want?)",
-    "Who knows? Not me.", "What is the meaning of life? Nobody can say.",
-    "Fascinating, isn't it?", "Isn't that wonderful?", "Right?", "Really?", "You like that, don't you think?", "Who cares?", "That went well, didn't it, right?",
-    "Why would anyone want that?",
-  ]) assert.equal(pc.isGenuineQuestion(text), false, JSON.stringify(text));
+    "AI has enormous potential.", "", "   ", "Who knows? Not me.", "What is life? Nobody can say.",
+    'As they say, "What is life?"', "“Why is the sky blue?”", "She wondered (what do you want?)", "Shall I continue? 😊", "Really…",
+  ]) assert.equal(pc.endsWithQuestionMark(text), false, JSON.stringify(text));
+  assert.equal(pc.QUESTION_LISTEN_SECONDS, 5);
 });
 
 // ---- Whole conversations (the real state handlers) -----------------------------------------------------------------------
@@ -239,16 +231,16 @@ test("silence, noise, goodbye and ASR failure return to idle", async () => {
   assert.equal(broken.listens, 1); assert.equal(broken.visited.at(-1), "sleep"); assert.equal(broken.alive, 1);
 });
 
-test("tool and device actions, failures and quoted or rhetorical questions open nothing", async () => {
+test("tool and device actions, failures and replies not ending in a question mark open nothing", async () => {
   const tool = await conversation({ QUESTION_FOLLOWUPS: "3" }, [{ heard: "q", reply: "Screen off. Anything else you need?", tools: ["setTvScreenAndReply"] }]);
   assert.equal(tool.listens, 0, "device action");
   const failed = await conversation({ QUESTION_FOLLOWUPS: "3" }, [{ heard: "q", fail: true }]);
   assert.equal(failed.listens, 0, "failure");
   const quoted = await conversation({ QUESTION_FOLLOWUPS: "3" }, [{ heard: "q", reply: 'The old riddle goes: "What walks on four legs in the morning?"' }]);
   assert.equal(quoted.listens, 0, "quoted");
-  const rhetorical = await conversation({ QUESTION_FOLLOWUPS: "3" }, [{ heard: "q", reply: "You failed again. Fascinating, isn't it?" }]);
-  assert.equal(rhetorical.listens, 0, "rhetorical");
-  for (const r of [tool, failed, quoted, rhetorical]) assert.equal(r.alive, 1);
+  const notLast = await conversation({ QUESTION_FOLLOWUPS: "3" }, [{ heard: "q", reply: "What is the meaning of life? Nobody can say." }]);
+  assert.equal(notLast.listens, 0, "the question is not the end of the reply");
+  for (const r of [tool, failed, quoted, notLast]) assert.equal(r.alive, 1);
 });
 
 test("an existing clarification question keeps its own one-shot behaviour and is not counted as a conversation", async () => {
@@ -319,4 +311,32 @@ test("repeated question -> silence -> idle -> Capri cycles: 20 cycles, one healt
     assert.equal(r.flow.ctx.conversationCapture, false);
   }
   for (const key of ["QUESTION_FOLLOWUPS", "CONVERSATION_FOLLOWUPS"]) delete process.env[key];
+});
+
+test("the rule is simple and deterministic: even a sarcastic reply that ends with a question mark follows up", async () => {
+  const r = await conversation({ QUESTION_FOLLOWUPS: "3" }, [{ heard: "q", reply: "You failed again. Fascinating, isn't it?" }]);
+  assert.equal(r.listens, 1);
+  assert.equal(r.visited.at(-1), "sleep");
+  assert.equal(r.alive, 1);
+});
+
+test("a question follow-up listens for 5 seconds; clarification and the general feature keep 7", async () => {
+  recordSeconds.length = 0;
+  await conversation({ QUESTION_FOLLOWUPS: "3" }, [q1]);
+  assert.deepEqual(recordSeconds, [5], "question-triggered: 5 s");
+  recordSeconds.length = 0;
+  await conversation({ CONVERSATION_FOLLOWUPS: "3", QUESTION_FOLLOWUPS: "0" }, [{ heard: "q", reply: "A plain statement." }]);
+  assert.deepEqual(recordSeconds, [7], "general conversational follow-up: the unchanged 7 s");
+  recordSeconds.length = 0;
+  for (const key of ["QUESTION_FOLLOWUPS", "CONVERSATION_FOLLOWUPS"]) delete process.env[key];
+  pc.clearClarification(); pc.markClarification(10_000);        // an armed host question
+  const flow = makeFlow({ name: "c", turns: [{ heard: "q", reply: "Do you mean the TV screen or Whisplay's screen?" }] });
+  flow.ctx.asrText = "Make the screen black."; flow.ctx.currentFlowName = "answer";
+  flowStates.answer(flow.ctx);
+  await wait(500);
+  assert.equal(flow.ctx.followUpSeconds, undefined, "a clarification listen does not use the question window");
+  flowStates.wake_listening(flow.ctx);
+  await wait(60);
+  assert.deepEqual(recordSeconds, [7], "clarification: the unchanged 7 s");
+  pc.clearClarification();
 });

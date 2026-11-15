@@ -46,7 +46,7 @@ import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
 import { selfKnowledgeTopic } from "../../config/self-knowledge";
 import { toolDisplayOutcome } from "../../config/action-outcome";
-import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, conversationFollowUpLimit, isGenuineQuestion, isNoiseTranscript, questionFollowUpLimit, shouldContinueConversation, shouldListenAfterAnswer } from "../../utils/pending-clarification";
+import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, QUESTION_LISTEN_SECONDS, conversationFollowUpLimit, endsWithQuestionMark, isNoiseTranscript, questionFollowUpLimit, shouldContinueConversation, shouldListenAfterAnswer } from "../../utils/pending-clarification";
 import { uiStatus } from "../../utils/ui-status";
 import { beginTurn, clearTurn, diagnosticsLine, finishTurn, hasTurn, mark as markTiming, toolFinished, toolStarted } from "../../utils/response-timing";
 import fs from "node:fs";
@@ -239,6 +239,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.isFromWakeListening = true;
     const clarification = ctx.clarificationListen;   // one-shot: a bounded capture for a clarification answer
     ctx.clarificationListen = false;
+    const followUpSeconds = ctx.followUpSeconds;   // one-shot: the shorter window of a question-triggered follow-up
+    ctx.followUpSeconds = undefined;
     ctx.answerId += 1;
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
@@ -254,7 +256,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       rag_icon_visible: false,
     });
     getDynamicVoiceDetectLevel().then((level) => {
-      const maxSec = clarification ? clarificationListenSeconds() : ctx.wakeRecordMaxSec;
+      const maxSec = clarification ? (followUpSeconds ?? clarificationListenSeconds()) : ctx.wakeRecordMaxSec;
       const mode = clarification ? `answer:${maxSec}` : "auto";
       display({
         status: uiStatus("listening", mode),
@@ -567,10 +569,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         // existing auto-recording state once. Silence ends it back in sleep; it is never taken as an answer.
         // The same reopen serves an ordinary conversational answer (a short, bounded chain; see shouldContinueConversation).
         const clarificationListen = isCurrentAnswer() && shouldListenAfterAnswer(ctx);
+        const asksQuestion = endsWithQuestionMark(llmResponseText);
         const conversationListen = !clarificationListen && isCurrentAnswer() && shouldContinueConversation({
           used: ctx.conversationFollowUps,
-          // every ordinary answer may follow up to the general limit; an answer that ends in a genuine question to the question limit
-          limit: isGenuineQuestion(llmResponseText) ? Math.max(conversationFollowUpLimit(), questionFollowUpLimit()) : conversationFollowUpLimit(),
+          // every ordinary answer may follow up to the general limit; a reply that ends with "?" up to the question limit
+          limit: asksQuestion ? Math.max(conversationFollowUpLimit(), questionFollowUpLimit()) : conversationFollowUpLimit(),
           wakeSessionActive: ctx.wakeSessionActive,
           endAfterAnswer: ctx.endAfterAnswer, toolRan, failed: llmFailed, answered: llmResponseText.trim().length > 0,
           musicNext: ctx.enterMusicAfterAnswer,
@@ -581,6 +584,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
             if (conversationListen) {
               ctx.conversationFollowUps += 1;
               ctx.conversationCapture = true;
+              if (asksQuestion) ctx.followUpSeconds = QUESTION_LISTEN_SECONDS;
             }
             ctx.clarificationListen = true;
             ctx.transitionTo("wake_listening");

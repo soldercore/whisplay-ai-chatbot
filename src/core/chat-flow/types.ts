@@ -33,6 +33,7 @@ export interface ChatFlowContext {
   wakeRecordMaxSec: number;
   clarificationListen: boolean;
   conversationFollowUps: number;   // automatic follow-up listens used in this conversation
+  followUpSeconds?: number;        // one-shot capture window for a question-triggered follow-up
   conversationCapture: boolean;    // the capture now running is a conversational follow-up (its transcript is checked for noise)
   idleStatus: () => string;
   scheduleIdleRefresh: () => void;

@@ -18,9 +18,9 @@ returns to idle (`isNoiseTranscript`, conversational follow-ups only; clarificat
 
 ## Question-triggered follow-ups
 
-`QUESTION_FOLLOWUPS=N` (default 0 = off, max 5) reopens the same listen when the reply ENDS with a genuine question to the user
-(`isGenuineQuestion`): the final sentence is a question with a subject the user can answer, not quoted, not a tag or stock rhetorical
-question ("isn't it?", "Really?", "Who knows?"), and not followed by more text. It is independent of `CONVERSATION_FOLLOWUPS` and uses the
-same safety rules (no tool or device action, no failure, goodbye ends it, a pending clarification keeps its own rules) and the same counter.
+`QUESTION_FOLLOWUPS=N` (default 0 = off, at most 3) reopens the same listen for 5 seconds when the reply, trimmed, ends with `?`.
+One literal rule: no classification of rhetorical or quoted questions. Independent of `CONVERSATION_FOLLOWUPS`; same playback-end wait,
+300 ms settle, safety rules (no tool or device action, no failure, goodbye ends it, a pending clarification keeps its own 7 s one-shot
+rules) and counter.
 
 Tests: `src/test/conversation-followup.spec.ts`, `conversation-lifecycle.spec.ts`, `question-followup.spec.ts` (with mutation checks documented in the commit).
