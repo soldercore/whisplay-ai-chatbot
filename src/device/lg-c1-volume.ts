@@ -498,8 +498,8 @@ export async function changeTvAudioAndReply(command: TvAudioCommand, parent?: Ab
   return reply;
 }
 
-// ---- Session ducking support (TV_DUCKING): one connection that reads the audio state, lets the caller decide, then ramps to an exact
-// volume and verifies it. Only audio calls are used: a TV in standby refuses the connection, so this can never switch it on.
+// ---- Session ducking support (TV_DUCKING): one connection that reads the audio state, lets the caller decide, then sets an exact
+// volume with ONE setVolume command (a single webOS overlay) and verifies it. Only audio calls are used: a TV in standby refuses the connection, so this can never switch it on.
 export type TvAudioState = { value: number; output?: string; muted?: boolean };
 export type TvPlan = { target: number } | { skip: string };
 export type TvAdjustResult =
@@ -508,7 +508,7 @@ export type TvAdjustResult =
   | { status: "UNVERIFIED"; before: number; actual?: number }
   | { status: "UNAVAILABLE" };
 
-export async function tvAdjustVolume(decide: (current: TvAudioState) => TvPlan | Promise<TvPlan>, steps = 3): Promise<TvAdjustResult> {
+export async function tvAdjustVolume(decide: (current: TvAudioState) => TvPlan | Promise<TvPlan>): Promise<TvAdjustResult> {
   let sent = false;
   let before = -1;
   try {
@@ -520,14 +520,10 @@ export async function tvAdjustVolume(decide: (current: TvAudioState) => TvPlan |
       const plan = await decide(state);
       if ("skip" in plan) return { status: "SKIPPED", reason: plan.skip, current: state };
       if (!Number.isInteger(plan.target) || plan.target < 0 || plan.target > 100) return { status: "SKIPPED", reason: "invalid target", current: state };
-      const count = Math.max(1, Math.min(5, Math.floor(steps)));
-      for (let i = 1; i <= count; i++) {
-        checkCancelled(signal);
-        if (!client.connected) throw new TvError("TV disconnected before the volume request");
-        if (i > 1) await delay(70, undefined, { signal });
-        sent = true;
-        await waitForOperation(client.request("ssap://audio/setVolume", { volume: Math.round(before + (plan.target - before) * i / count) }), signal);
-      }
+      checkCancelled(signal);
+      if (!client.connected) throw new TvError("TV disconnected before the volume request");
+      sent = true;
+      await waitForOperation(client.request("ssap://audio/setVolume", { volume: plan.target }), signal);
       let actual: number | undefined;
       for (const pause of [0, 125, 275]) {
         if (pause) await delay(pause, undefined, { signal });

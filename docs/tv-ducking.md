@@ -5,7 +5,7 @@ Status: candidate `candidate/tv-ducking`, **not deployed, not physically verifie
 ## Behaviour
 
 * Capri hears the wake word and starts the command capture (`CAPRI_LISTENING`, ChatFlow still in `sleep`): `TvDucker.begin()` runs in the background and is never awaited, so the microphone and the capture do not wait for the TV.
-* One connection to the LG C1 reads `audio/getStatus` (volume, mute, output), decides, ramps `audio/setVolume` in 3 steps (about 70 ms apart) to the target and verifies by reading back. A typical operation takes 150-300 ms (measured in production logs for the same calls).
+* One connection to the LG C1 reads `audio/getStatus` (volume, mute, output), decides, sends ONE `audio/setVolume` (one webOS overlay) to the target and verifies by reading back. A typical operation takes 150-300 ms (measured in production logs for the same calls).
 * Target = `TV_DUCK_PERCENT` (default 40, clamped 10-90) of the current volume, at least 3. Volume 20 becomes 8. A TV at 6 or below, or where ducking would change less than 3 steps, is left alone.
 * A muted TV is never touched. A TV in standby refuses the connection, and only audio calls are ever sent, so nothing can switch it on.
 * Follow-ups (clarification, question) go `answer -> wake_listening`, never through `sleep`, so the TV stays lowered. Every end of a conversation (silence, goodbye, ASR failure, failed answer, interruption, a wake word without a command) returns to `sleep`, and `transitionTo("sleep")` calls `end()`.
@@ -28,6 +28,11 @@ Shutdown makes a best-effort restore through `onAppShutdown`; if the process exi
 * Verified in logs: the volume/mute calls work and verify on the user's C1. Not verified: that volume changes affect the user's actual speaker path (for ARC/optical the read-back check fails and ducking does nothing).
 * The wake-word-only path ("Capri" followed by silence) is ducked briefly and restored when Capri goes idle.
 
+* The TV API has no atomic compare-and-set. Each operation reads the TV and sends its command on the same connection, so a manual change can only be overwritten if it lands within that single round trip (a few milliseconds).
+
 ## Tests
 
 `tv-ducking.spec.ts` (unit, fake TV, including source mutations that must be caught) and `tv-ducking-flow.spec.ts` (real state handlers and real Capri listener lifecycle).
+
+## Rollback without abandoning a ducked volume
+Startup recovery runs even with `TV_DUCKING=0`, so the safe order is: set `TV_DUCKING=0`, restart the application (a fresh duck-state.json is applied if the TV still shows the ducked volume), then restore files. The deploy script `restore` mode does exactly this first.

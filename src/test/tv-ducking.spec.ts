@@ -20,14 +20,16 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tv-duck-"));
 let counter = 0;
 
 class FakeTv {
-  volume = 20; muted = false; output = "tv_speaker"; online = true; dropDuringSet = false;
+  volume = 20; muted = false; output = "tv_speaker"; online = true; dropDuringSet = false; latency = 0; beforeSet: (() => void) | undefined;
   reads = 0; sets: number[] = [];
-  fn = async (decide: (c: any) => any, steps = 3) => {
+  fn = async (decide: (c: any) => any) => {
     this.reads += 1;
+    if (this.latency) await wait(this.latency);   // slow connection / handshake
     if (!this.online) return { status: "UNAVAILABLE" };
     const current = { value: this.volume, output: this.output, muted: this.muted };
     const plan = await decide(current);
     if ("skip" in plan) return { status: "SKIPPED", reason: plan.skip, current };
+    this.beforeSet?.();
     if (this.dropDuringSet) { this.online = false; return { status: "UNVERIFIED", before: current.value }; }
     this.sets.push(plan.target); this.volume = plan.target;
     return { status: "SET", before: current.value, actual: plan.target };
@@ -131,7 +133,7 @@ test("TV disconnects mid-conversation: not claimed restored; the next conversati
   assert.equal(tv.volume, 20, "original volume, not 8 -> 3");
 });
 
-test("ducking fails mid-ramp: the TV is not trusted, the state stays for recovery", async () => {
+test("ducking fails during the command: the TV is not trusted, the state stays for recovery", async () => {
   const { tv, stateFile, ducker, logs } = setup();
   tv.dropDuringSet = true;
   ducker.begin(); await wait(30);
@@ -220,6 +222,100 @@ test("TV_DUCK_PERCENT is clamped", () => {
   assert.equal(plan("", 20), 8); assert.equal(plan("50", 20), 10); assert.equal(plan("0", 20), 3); assert.equal(plan("500", 50), 45);
 });
 
+// ---- Asynchronous safety -----------------------------------------------------------------------------------------------------
+test("a delayed duck can never lower the TV after the conversation has ended", async () => {
+  const { tv, stateFile, ducker } = setup();
+  tv.latency = 80;                                   // the connection is slow
+  ducker.begin(); await wait(20);
+  ducker.end();                                      // the conversation is already over
+  await wait(300);
+  assert.equal(tv.volume, 20); assert.deepEqual(tv.sets, [], "nothing was ever sent"); assert.equal(fs.existsSync(stateFile), false);
+  assert.equal(ducker.active, false);
+});
+
+test("the conversation ends after the duck decision but before the command lands: restored right after", async () => {
+  const { tv, ducker } = setup();
+  tv.beforeSet = () => ducker.end();                 // end() arrives exactly between the decision and the command
+  ducker.begin(); await wait(60);
+  assert.equal(tv.volume, 20); assert.equal(ducker.active, false);
+});
+
+test("rapid start/stop transitions never leave the volume lowered", async () => {
+  let seed = 12345;
+  const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  for (let round = 0; round < 40; round++) {
+    const { tv, ducker } = setup(ducking.TvDucker, {}, { idleMs: 5000 });
+    tv.latency = Math.floor(random() * 25);
+    const operations = 2 + Math.floor(random() * 8);
+    for (let i = 0; i < operations; i++) {
+      if (i % 2 === 0) ducker.begin(); else ducker.end();
+      await wait(Math.floor(random() * 20));
+    }
+    ducker.end();                                    // the final state is always "conversation over"
+    await wait(300);
+    assert.equal(tv.volume, 20, `round ${round}: restored (sets ${tv.sets})`);
+    assert.equal(ducker.active, false, `round ${round}`);
+  }
+});
+
+test("a wake word queued behind a restore is dropped when its conversation ends first", async () => {
+  const { tv, ducker } = setup();
+  ducker.begin(); await wait(30);
+  tv.latency = 40;
+  ducker.end(); ducker.begin(); ducker.end();        // restore running, new wake word, new conversation already over
+  await wait(300);
+  assert.equal(tv.volume, 20); assert.equal(ducker.active, false);
+});
+
+test("manual volume changes beat pending operations", async () => {
+  // the user changes the volume while the duck is still connecting: it works from the volume the TV really has, and restores to that
+  const a = setup(); a.tv.latency = 40; a.ducker.begin(); await wait(10); a.tv.volume = 15; await wait(120);
+  assert.equal(a.tv.volume, 6);
+  a.tv.latency = 0; a.ducker.end(); await wait(40);
+  assert.equal(a.tv.volume, 15, "never jumps to a stale original");
+  // the user changes the volume while a restore is pending
+  const b = setup(); b.ducker.begin(); await wait(30);
+  b.tv.latency = 40; b.ducker.end(); await wait(10); b.tv.volume = 17; await wait(120);
+  assert.equal(b.tv.volume, 17, "the restore re-reads the TV after its connection is up");
+});
+
+test("a crash around any volume operation is recovered or left alone, never guessed", async () => {
+  // crash after the state was saved but before the command was sent: the TV never changed, nothing to restore
+  const a = setup(); a.tv.beforeSet = () => { throw new Error("process died"); };
+  a.ducker.begin(); await wait(30);
+  assert.equal(a.tv.volume, 20);
+  a.tv.beforeSet = undefined; await a.make().recover();
+  assert.equal(a.tv.volume, 20); assert.equal(fs.existsSync(a.stateFile), false);
+  // crash after the command landed: restart restores
+  const b = setup(); b.ducker.begin(); await wait(30);
+  await b.make().recover();
+  assert.equal(b.tv.volume, 20);
+  // recovery is idempotent
+  const c = setup(); c.ducker.begin(); await wait(30);
+  const next = c.make(); await next.recover(); await next.recover();
+  assert.equal(c.tv.volume, 20);
+});
+
+test("disabling the feature does not abandon a recoverable ducked volume", async () => {
+  const { tv, stateFile, ducker, clock } = setup();
+  ducker.begin(); await wait(30);
+  assert.equal(tv.volume, 8);
+  const disabled = new ducking.TvDucker({ tv: tv.fn, env: { TV_DUCKING: "0" }, stateFile, log: noop, now: () => clock.t });   // restart with the feature off
+  assert.equal(disabled.enabled, false);
+  await disabled.recover();
+  assert.equal(tv.volume, 20, "recovery runs even though ducking is now off");
+  assert.equal(fs.existsSync(stateFile), false);
+  disabled.begin(); await wait(30);
+  assert.equal(tv.volume, 20, "and a disabled ducker never lowers again");
+});
+
+test("the real TV adapter sends exactly one setVolume command and no ramp", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "../device/lg-c1-volume.ts"), "utf8").replace(/\r\n/g, "\n");
+  const body = source.slice(source.indexOf("export async function tvAdjustVolume"), source.indexOf('const appList = "ssap'));
+  assert.equal(body.split("audio/setVolume").length - 1, 1);
+  assert.doesNotMatch(body, /for \(let i|while \(|steps/);
+});
+
 // ---- The tests must fail when the safeguards are removed ---------------------------------------------------------------------
 async function violations(Class: any): Promise<string[]> {
   const found: string[] = [];
@@ -234,6 +330,8 @@ async function violations(Class: any): Promise<string[]> {
   { const s = setup(Class); s.ducker.begin(); await wait(30); s.clock.t += 11 * 60_000; await s.make().recover(); check(s.tv.volume === 8, "applied stale recovery data"); }
   { const s = setup(Class); s.ducker.begin(); await wait(30); const state = fs.existsSync(s.stateFile); check(state, "no crash-recovery state before the first command"); }
   { const s = setup(Class); s.ducker.begin(); await wait(30); s.tv.online = false; s.ducker.end(); await wait(30); s.tv.online = true; s.ducker.begin(); await wait(30); s.ducker.end(); await wait(30); check(s.tv.volume === 20, "lost the original volume after a failed restore"); }
+  { const s = setup(Class); s.tv.latency = 80; s.ducker.begin(); await wait(20); s.ducker.end(); await wait(300); check(s.tv.volume === 20 && s.tv.sets.length === 0, "a delayed duck lowered the TV after the conversation"); }
+  { const s = setup(Class); s.ducker.begin(); await wait(30); s.tv.latency = 40; s.ducker.end(); s.ducker.begin(); s.ducker.end(); await wait(300); check(s.tv.volume === 20, "a stale wake word re-ducked after the conversation"); }
   return found;
 }
 
@@ -255,6 +353,8 @@ test("every essential safeguard is caught by the tests when removed", async () =
     ["unreachable TV re-probed", "if (this.now() < this.unreachableUntil) return;", ""],
     ["state not saved before the command", "this.writeState(planned);", ""],
     ["leftover not adopted", "adopted = leftover;", ""],
+    ["delayed duck lands after the conversation ended", 'if (this.wantEnd) return { skip: "conversation already ended" };', ""],
+    ["queued wake word survives a finished conversation", "this.rebegin = false; return; }   // a wake word queued", "return; }   // a wake word queued"],
   ];
   for (const [name, from, to] of mutants) {
     assert.equal(source.split(from).length - 1, 1, `mutation point exists: ${name}`);

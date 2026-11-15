@@ -10,7 +10,7 @@ import { onAppShutdown } from "../utils/app-lifecycle";
 // Follow-ups (clarification, question) never pass through "sleep", so the TV stays lowered across them.
 // A tiny state file lets a restart or crash recover; it is trusted only while fresh and only if the TV still matches it.
 
-type Tv = (decide: (current: TvAudioState) => TvPlan | Promise<TvPlan>, steps?: number) => Promise<TvAdjustResult>;
+type Tv = (decide: (current: TvAudioState) => TvPlan | Promise<TvPlan>) => Promise<TvAdjustResult>;
 type DuckRecord = { before: number; ducked: number; output?: string; at: number };
 type Options = { tv?: Tv; env?: NodeJS.ProcessEnv; now?: () => number; stateFile?: string; log?: (line: string) => void; idleMs?: number };
 
@@ -88,6 +88,7 @@ export class TvDucker {
     let adopted: DuckRecord | undefined;
     let planned: DuckRecord | undefined;
     const result = await this.tv(async current => {
+      if (this.wantEnd) return { skip: "conversation already ended" };   // a slow connection must not lower the TV after the conversation
       if (current.muted) return { skip: "muted" };   // never unmute, never touch a muted TV
       const leftover = this.readState();
       if (leftover && this.fresh(leftover) && leftover.output === current.output && leftover.ducked === current.value) {
@@ -97,7 +98,7 @@ export class TvDucker {
       const target = this.plan(current.value);
       if (target === undefined) return { skip: "already quiet" };
       planned = { before: current.value, ducked: target, output: current.output, at: this.now() };
-      this.writeState(planned);   // persisted BEFORE the first command: a crash mid-ramp is recoverable
+      this.writeState(planned);   // persisted BEFORE the command: a crash around it is recoverable
       return { target };
     });
     const ms = this.now() - started;
@@ -134,6 +135,7 @@ export class TvDucker {
   /** The conversation is over (or never started): restore, but only when the TV still shows the volume we set. */
   end(): void {
     if (this.phase === "ducking") { this.wantEnd = true; return; }
+    if (this.phase === "restoring") { this.rebegin = false; return; }   // a wake word queued behind this restore belongs to a conversation that is already over
     if (this.phase !== "ducked" || !this.record) return;
     if (this.watchdog) { clearTimeout(this.watchdog); this.watchdog = undefined; }
     this.phase = "restoring";
