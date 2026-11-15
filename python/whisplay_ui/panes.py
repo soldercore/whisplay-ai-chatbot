@@ -67,7 +67,7 @@ def render_strip(fonts, mode, t, emoji_image=None, progress=None, tokens=None):
     if hint:
         right = theme.CHROME_RIGHT - (emoji_image.width + 6 if emoji_image is not None else 0)
         text = fit_text(fonts.pixel8, hint, right - end - 8)
-        draw_text(draw, image, fonts.pixel8, int(right - fonts.pixel8.width(text)), mid, text, theme.DIM)
+        draw_text(draw, image, fonts.pixel8, int(right - fonts.pixel8.width(text)), mid, text, theme.GREEN if "heard" in tokens else theme.DIM)
     if mode == STRIP_SPEAKING:
         # Actual speech state, not a simulated audio-level meter.
         draw.ellipse((int(end)+8, mid-2, int(end)+11, mid+1), fill=theme.GREEN)

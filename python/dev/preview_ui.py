@@ -348,6 +348,9 @@ def scenario(session):
     s.send(status="idle|capri", text="")
     wait(0.8)
     s.shot("ux_idle_capri")
+    s.send(status="idle|capri,heard", text="")
+    wait(0.8)
+    s.shot("ux_idle_capri_heard")
     for name, status in (("ux_rec_hold", "listening"), ("ux_rec_capri", "listening|capri"), ("ux_rec_auto", "listening|auto"),
                          ("ux_rec_answer", "listening|answer:7"), ("ux_rec_audio", "listening|answer:7,audio")):
         s.send(status=status, text="Listening...")
@@ -566,6 +569,12 @@ def selftest():
         check(look("idle", "idle") == vs.IDLE, "idle without Capri")
         check(look("idle_capri", "idle|capri") == vs.IDLE, "idle with Capri running is still idle, not recording")
         check(not np.array_equal(frames["idle"], frames["idle_capri"]), "the instruction line tells that Capri is available")
+        check(look("idle_heard", "idle|capri,heard") == vs.IDLE, "the wake acknowledgement stays in the idle layout and is not a recording state")
+        check(not np.array_equal(frames["idle_capri"], frames["idle_heard"]), "the wake acknowledgement is visible")
+        s.send(status="answering", emoji="😊", text="It is 14:05."); s.run_until(s.now + 2.5)
+        check(look("answer_idle", "idle|capri", "It is 14:05.") == vs.IDLE, "a completed answer stays shown in idle")
+        check(look("answer_heard", "idle|capri,heard", "It is 14:05.") == vs.IDLE, "the acknowledgement also shows over a retained answer")
+        check(not np.array_equal(frames["answer_idle"], frames["answer_heard"]), "retained answer: the acknowledgement is visible")
         states = {n: look(n, st, "Listening...", settle=2.2) for n, st in
                   (("hold", "listening"), ("auto", "listening|auto"), ("answer", "listening|answer:7"), ("audio", "listening|answer:7,audio"), ("capri_rec", "listening|capri"))}
         check(all(v == vs.LISTEN for v in states.values()), "every active capture is the recording state")
