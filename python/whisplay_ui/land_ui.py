@@ -47,9 +47,11 @@ class LandscapeUI(TerminalUI):
         self.trace_keys = {}
         self.fade_from = None
         self.fade_at = -1e9
+        self.fade_through = False
         self.cur_kind = None
         self.cur_state = None
         self.settled = True
+        self.mini_at = None
         self.last_state_for_fade = None
 
     # ---------------------------------------------------------------- output
@@ -121,6 +123,7 @@ class LandscapeUI(TerminalUI):
         changed = (kind != self.cur_kind) or (state != self.cur_state and kind in (KIND_LIVE, KIND_COMPACT, KIND_HOME))
         if changed and self.cur_kind is not None and not self.full:
             self.fade_from = self.frame.crop((0, PANE_Y, theme.WIDTH, BODY_BOTTOM)).copy()
+            self.fade_through = kind != self.cur_kind       # a different layout dips through black; the same layout cross-fades
             self.fade_at = now
         self.cur_kind, self.cur_state = kind, state
         fade_p = (now - self.fade_at) / FADE
@@ -153,7 +156,12 @@ class LandscapeUI(TerminalUI):
         dirty.extend(pane_dirty)
         if fading:
             new = self.frame.crop((0, PANE_Y, theme.WIDTH, BODY_BOTTOM))
-            self.frame.paste(Image.blend(self.fade_from, new, ease_in_out(fade_p)), (0, PANE_Y))
+            if self.fade_through:
+                black = Image.new("RGB", new.size, theme.VOID)
+                blended = Image.blend(self.fade_from, black, min(1.0, 2.0 * fade_p)) if fade_p < 0.5 else Image.blend(black, new, 2.0 * fade_p - 1.0)
+            else:
+                blended = Image.blend(self.fade_from, new, ease_in_out(fade_p))
+            self.frame.paste(blended, (0, PANE_Y))
             dirty.append((0, PANE_Y, theme.WIDTH, BODY_BOTTOM))
         elif pending_clear:
             self.fade_from = None
@@ -244,12 +252,14 @@ class LandscapeUI(TerminalUI):
             key = (strip_mode, tuple(sorted(tokens.items())))
             if self.keys.get("pane") != key:
                 self.keys["pane"] = key
-                image, end = land.render_strip(fonts, strip_mode, tokens)
+                image, end, hint_x = land.render_strip(fonts, strip_mode, tokens)
                 self.frame.paste(image, (0, PANE_Y))
                 rects.append((0, PANE_Y, theme.WIDTH, PANE_Y + land.STRIP_H))
                 self.keys.pop("trace", None)
-            mode = "speak" if strip_mode == land.STRIP_SPEAKING else "think" if strip_mode == land.STRIP_RECEIVING else "rest"
-            self._trace(self.trace_mini, mode, t, now, (MINI_X, PANE_Y + 3), rects, pulse=self._word_pulse(now), ticks=False)
+                self.mini_at = end + 14 if hint_x - 8 - (end + 14) >= MINI_W else None      # no room next to a long hint: no mini trace
+            if self.mini_at is not None:
+                mode = "speak" if strip_mode == land.STRIP_SPEAKING else "think" if strip_mode == land.STRIP_RECEIVING else "rest"
+                self._trace(self.trace_mini, mode, t, now, (self.mini_at, PANE_Y + 3), rects, pulse=self._word_pulse(now), ticks=False)
         else:
             key = snapshot.get("terminal_text") or ""
             if self.keys.get("pane") != key:

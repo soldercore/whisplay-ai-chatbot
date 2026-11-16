@@ -470,6 +470,7 @@ def render_strip(fonts, mode, tokens):
     d.rectangle([LEFT, mid - 2, LEFT + 4, mid + 2], fill=theme.ACCENT if live else theme.INK3)
     end = tracked(d, image, fonts.cap_bold, LEFT + 12, mid, mode, theme.INK if live else theme.INK2)
     hint = ""
+    hint_x = RIGHT
     if mode == STRIP_RESPONSE:
         measured = _seconds(tokens.get("act")) if "act" in tokens else _seconds(tokens.get("resp")) if "resp" in tokens else ""
         if "heard" in tokens:
@@ -483,10 +484,11 @@ def render_strip(fonts, mode, tokens):
         if measured and not hint:
             hint = ("action " if "act" in tokens else "") + measured
     if hint:
-        text = fit_text(fonts.cap, hint, 96)
-        draw_text(d, image, fonts.cap, RIGHT - int(fonts.cap.width(text)), mid, text, theme.ACCENT if "heard" in tokens else theme.INK3)
+        text = fit_text(fonts.cap, hint, 132)
+        hint_x = RIGHT - int(fonts.cap.width(text))
+        draw_text(d, image, fonts.cap, hint_x, mid, text, theme.ACCENT if "heard" in tokens else theme.INK3)
     d.line([(LEFT, STRIP_H - 1), (RIGHT - 1, STRIP_H - 1)], fill=theme.HAIR)
-    return image, int(end)
+    return image, int(end), hint_x
 
 
 # ------------------------------------------------------------------ terminal output + confirmation
