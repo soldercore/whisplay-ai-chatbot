@@ -264,6 +264,12 @@ class TerminalUI:
     def _ingest_text(self, snapshot, state, now):
         text = _snap(snapshot, "text", "")
         text = text if isinstance(text, str) else str(text)
+        # What the user said stays in the snapshot until the first words of the answer replace it; it must not be shown
+        # as the answer when the optic gives way to the response while it is still the old text.
+        if state in (vs.TRANSCRIBE, vs.THINK) and text.strip():
+            self._said_text = text
+        elif state == vs.ANSWER and getattr(self, "_said_text", None) is not None and text == self._said_text:
+            text = ""
         if state in (vs.LISTEN, vs.CALIBRATE):
             self.response_text = None
         elif state == vs.ANSWER and text.strip():
