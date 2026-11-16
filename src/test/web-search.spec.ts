@@ -569,3 +569,16 @@ test("other tools keep working (setVolume)", async () => {
   assert.equal(chatRequests[1].messages.find((m) => m.role === "tool")?.content, "[success]Volume set to 50%");
   assert.equal(answer, "Done, the volume is 50 percent.");
 });
+
+test("day words alone and hypotheticals do not trigger a search, real events still do", () => {
+  for (const question of ["If tomorrow is Wednesday, what day is today?", "If today is Friday, what day was it two days ago?",
+    "What should I cook tonight?", "Was yesterday a weekday?", "I am tired today.", "What does yesterday mean in French?",
+    "If it rains tomorrow, what should I wear?", "Why do people say tomorrow never comes?", "Spell the word tomorrow."]) {
+    assert.equal(needsCurrentInformation(question), false, question);
+  }
+  for (const question of ["Is it going to rain tonight?", "What's the weather tomorrow?", "Who is playing in the football match tonight?",
+    "What happened in the stock market yesterday?", "What's trending today?", "Who won the game last night?", "What's the news today?",
+    "Is the pharmacy open today?", "What's new in AI today?", "How is Apple doing today?", "What's happening today?"]) {
+    assert.equal(needsCurrentInformation(question), true, question);
+  }
+});
