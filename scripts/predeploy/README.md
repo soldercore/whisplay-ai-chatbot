@@ -1,6 +1,7 @@
 # Pre-deploy gate
 
-This branch is the source that reproduces what runs on the Pi (captured 2026-11-14).
+This branch is the source that reproduces what runs on the Pi (manifests refreshed from
+the Pi on 2026-11-16; see `docs/production-baseline.md`).
 Run the gate from the project root before copying any compiled file to the Pi:
 
     node scripts/predeploy/check.cjs --expect <compiled files this change is meant to alter>
