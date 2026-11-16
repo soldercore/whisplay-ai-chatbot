@@ -16,9 +16,12 @@ from . import clock, theme
 from . import visual_state as vs
 from .body import TONE_ECHO, TONE_MUTED, TONE_TEXT, Body
 from .draw_util import STATE_COLORS, ease_in_out
+from .eye import ERROR as EYE_ERROR, IDLE as EYE_IDLE, LISTEN as EYE_LISTEN, SPEAK as EYE_SPEAK, THINK as EYE_THINK, UNSURE as EYE_UNSURE, Eye
 from .fonts import Fonts
+from . import optic
 from .panes import (
     STRIP_H,
+    MIC_H, MIC_STATES, MIC_FPS, OPTIC, OPTIC_Y, render_microphone, render_heard, heard_height, hero_top,
     STRIP_RECEIVING,
     STRIP_RESPONSE,
     STRIP_SPEAKING,
@@ -42,10 +45,11 @@ from .stage import (
 from .statusbar import StatusBar
 from .typewriter import ECHO, INSTANT, STREAM
 
+KIND_MIC = "microphone"
 KIND_STAGE = "stage"
 KIND_STRIP = "strip"
 KIND_TERMINAL = "terminal"
-PANE_HEIGHTS = {KIND_STAGE: theme.STAGE_H, KIND_STRIP: STRIP_H, KIND_TERMINAL: TERMINAL_H}
+PANE_HEIGHTS = {KIND_MIC: MIC_H, KIND_STAGE: theme.STAGE_H, KIND_STRIP: STRIP_H, KIND_TERMINAL: TERMINAL_H}
 CLASSIC_MAX_SCROLL_SPEED = 0.5  # chatbot-ui.py MAX_SCROLL_SPEED (px per frame)
 IM_TOOL_RE = re.compile(r"^\s*\[([^\]\n]{1,40})\]")
 
@@ -53,8 +57,8 @@ STATE_LABELS = {
     vs.BOOT: "BOOT",
     vs.IDLE: "IDLE",
     vs.CALIBRATE: "CALIBRATE",
-    vs.LISTEN: "LISTEN",
-    vs.TRANSCRIBE: "STT",
+    vs.LISTEN: "LISTENING",
+    vs.TRANSCRIBE: "RECOGNIZE",
     vs.THINK: "THINK",
     vs.TOOL: "TOOL",
     vs.ANSWER: "REPLY",
@@ -83,8 +87,9 @@ class TerminalUI:
     ):
         width = int(getattr(hardware, "LCD_WIDTH", 0))
         height = int(getattr(hardware, "LCD_HEIGHT", 0))
-        if (width, height) != (theme.WIDTH, theme.HEIGHT):
-            raise RuntimeError(f"terminal UI needs a {theme.WIDTH}x{theme.HEIGHT} LCD, got {width}x{height}")
+        expected = (theme.PHYS_WIDTH, theme.PHYS_HEIGHT) if theme.LANDSCAPE else (theme.WIDTH, theme.HEIGHT)
+        if (width, height) != expected:
+            raise RuntimeError(f"terminal UI needs a {expected[0]}x{expected[1]} LCD, got {width}x{height}")
         self.hw = hardware
         self.flags = flags if flags is not None else theme.Flags()
         self.fonts = Fonts(base_font_path, emoji_loader)
@@ -92,8 +97,10 @@ class TerminalUI:
         self.prepare_text = prepare_text
         self.statusbar = StatusBar(self.fonts, status_icon_factories, icon_context)
         self.info = StageInfo(self.fonts, self.flags)
+        self.info.motion = optic.Motion()
         self.body = Body(self.fonts, self.flags)
         self.tracker = vs.StateTracker()
+        self.eye = Eye(20, self.flags.eye_idle_fps) if getattr(self.flags, "eye", False) else None
         self.frame = Image.new("RGB", (theme.WIDTH, theme.HEIGHT), theme.VOID)
         self.on_lcd = None  # RGB888 copy of what the LCD currently shows
         self.full = True
@@ -102,6 +109,7 @@ class TerminalUI:
         self._list_pixels = False
         # text / speech
         self.text = None
+        self.response_text = None
         self.text_offset = 0
         self.transaction = None
         self.speech_seq = None
@@ -119,6 +127,8 @@ class TerminalUI:
         self.pane_img = None
         self.geometry = None
         self.approval_drawn = False
+        self.said_text = ''
+        self.heard_key = None
         self._animating = False
         # transitions
         self.xfade_from = None
@@ -162,8 +172,10 @@ class TerminalUI:
         self.info.quality = self.quality
 
         # ---- geometry and transitions
+        retained_response = state == vs.IDLE and self.response_text is not None
         kind = KIND_TERMINAL if _snap(snapshot, "terminal_text", "") else (
-            KIND_STRIP if state in vs.CONSOLE_STATES else KIND_STAGE
+            KIND_STRIP if retained_response else KIND_MIC if state in MIC_STATES
+            else KIND_STRIP if state in vs.CONSOLE_STATES else KIND_STAGE
         )
         target_h = PANE_HEIGHTS[kind]
         if kind != self.pane_kind:
@@ -193,6 +205,8 @@ class TerminalUI:
         # Body text runs to the side margins, so it stops above the rounded
         # bottom corners (theme.CONTENT_SAFE_BOTTOM) or at the approval bar.
         body_bottom = theme.HEIGHT - theme.APPROVAL_H if approval else theme.CONTENT_SAFE_BOTTOM
+        heard_h = heard_height(self.fonts, self.said_text) if (kind == KIND_STRIP and self.said_text and not approval) else 0
+        body_bottom -= heard_h
         body_h = max(0, body_bottom - body_top)
         self.body.update(now, dt, body_h)
 
@@ -237,6 +251,12 @@ class TerminalUI:
             self.frame.paste(theme.VOID, (0, body_bottom, theme.WIDTH, theme.HEIGHT))
             dirty.append((0, body_bottom, theme.WIDTH, theme.HEIGHT))
         self.approval_drawn = approval
+        if heard_h and (geometry_changed or self.heard_key != (self.said_text, heard_h)):
+            self.heard_key = (self.said_text, heard_h)
+            self.frame.paste(render_heard(self.fonts, self.said_text), (0, body_bottom))
+            dirty.append((0, body_bottom, theme.WIDTH, body_bottom + heard_h))
+        elif not heard_h:
+            self.heard_key = None
 
         self.full = False
         self._push(dirty, full)
@@ -255,6 +275,23 @@ class TerminalUI:
     def _ingest_text(self, snapshot, state, now):
         text = _snap(snapshot, "text", "")
         text = text if isinstance(text, str) else str(text)
+        # What the user said stays in the snapshot until the first words of the answer replace it; it must not be shown
+        # as the answer when the optic gives way to the response while it is still the old text.
+        if state in (vs.TRANSCRIBE, vs.THINK) and text.strip():
+            self._said_text = text
+        elif state == vs.ANSWER and getattr(self, "_said_text", None) is not None and text == self._said_text:
+            text = ""
+        if state in (vs.LISTEN, vs.CALIBRATE):
+            self.response_text = None
+            self.said_text = ''
+        elif state == vs.ANSWER and text.strip():
+            self.response_text = text
+        elif state == vs.IDLE and self.response_text is not None:
+            # Idle/metadata refreshes must not replace the completed answer.
+            text = self.response_text
+        # Only replace the host's startup instruction, never a conversation answer.
+        if state == vs.IDLE and (not text or text.startswith("Long Press the button to say something")):
+            text = "Hold to talk.\nRelease to send."
         transaction = snapshot.get("transaction_id")
         tx_changed = (
             transaction is not None
@@ -305,15 +342,23 @@ class TerminalUI:
         sync = snapshot.get("speech_sync")
         if not sync:
             return
-        seq, char_end, duration_ms = sync
+        seq, char_end, duration_ms = sync[:3]
         if seq == self.speech_seq:
             return
         self.speech_seq = seq
         self.body.speech(char_end, duration_ms, now)
+        if self.eye is not None:
+            # The sentence's audio envelope (Node measured it from the same WAV) starts with its playback.
+            self.eye.speech(sync[3] if len(sync) > 3 else "", duration_ms, now)
 
     def _update_info(self, snapshot, status):
         info = self.info
-        info.raw_status = status or ""
+        info.raw_status, info.hint = vs.split_status(status)
+        info.tokens = vs.parse_tokens(info.hint)
+        # What was recognised, only while the answer is being prepared and only when Node says it came from speech.
+        info.transcript = (self.text or "").strip() if ("said" in info.tokens or self.tracker.state == vs.TRANSCRIBE) else ""
+        if info.transcript:
+            self.said_text = info.transcript      # kept under the answer until the next utterance starts
         info.music_progress = snapshot.get("music_progress")
         info.music_duration_ms = snapshot.get("music_duration_ms")
         label = ""
@@ -330,7 +375,7 @@ class TerminalUI:
     def _status_model(self, snapshot, state):
         hour, minute, _ = clock.wall_hms()
         speaking = state == vs.ANSWER and self.body.speaking(self.last_now)
-        label = "SPEAK" if speaking else STATE_LABELS.get(state)
+        label = "SPEAKING" if speaking else STATE_LABELS.get(state)
         if label is None:
             if state == vs.RESULT:
                 label = (self.info.raw_status or "").strip().upper()
@@ -345,6 +390,7 @@ class TerminalUI:
             "clock": "%02d:%02d" % (hour, minute),
             "battery_level": snapshot.get("battery_level"),
             "battery_color": snapshot.get("battery_color"),
+            "wireless_status": snapshot.get("wireless_status"),
             "wifi_level": snapshot.get("wifi_signal_level") or 0,
             "network_connected": snapshot.get("network_connected"),
             "vpn": snapshot.get("vpn_connected"),
@@ -357,6 +403,29 @@ class TerminalUI:
         y0 = theme.PANE_Y
         full_h = PANE_HEIGHTS[kind]
         rects = []
+        if kind == KIND_MIC:
+            eye_img, eye_key = self._eye_for_mic(state, now)
+            self._step_optic(state, t, now)
+            static = (state, self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key, int(t) if state == vs.LISTEN else None)
+            if self.side_key is not None and self.side_key[0] != static:
+                self.info.motion.moving_until = max(self.info.motion.moving_until, now + 0.45)   # a new pose is coming: animate it smoothly
+            key = (static, self.info.motion.key())
+            if key != self.side_key or force:
+                animation_only = (not force and self.side_key is not None and self.side_key[0] == static
+                                  and self.pane_h >= full_h)
+                self.side_key = key
+                if animation_only:
+                    # Only the optic moved: repaint and push its square, not the whole pane (the words are unchanged).
+                    x = (theme.WIDTH - OPTIC) // 2
+                    top = hero_top(self.info)
+                    self.frame.paste(self.info.motion.render(OPTIC), (x, y0 + top))
+                    rects.append((x, y0 + top, x + OPTIC, y0 + top + OPTIC))
+                else:
+                    self.pane_img = render_microphone(self.fonts, state, t, self.info, eye_img)
+                    self._paste_pane(self.pane_img, full_h)
+                    rects.append((0, y0, theme.WIDTH, y0 + self.pane_h))
+            return rects
+
         if kind == KIND_STAGE:
             changed = self._update_stage(state, t, now)
             pane = self.pane_img
@@ -376,14 +445,19 @@ class TerminalUI:
 
         if kind == KIND_STRIP:
             mode = self._strip_mode(now)
-            emoji = self._emoji_image(_snap(snapshot, "emoji", ""))
+            eye_key = None
+            if self.eye is not None:
+                emoji, eye_key = self.eye.frame(self._eye_state_strip(mode, state, now), now, self._eye_fixed_level(mode))
+            else:
+                emoji = self._emoji_image(_snap(snapshot, "emoji", ""))
             progress = snapshot.get("music_progress")
-            animated = mode in (STRIP_SPEAKING, STRIP_RECEIVING)
-            bucket = int(t * (theme.SPEAKING_FPS if mode == STRIP_SPEAKING else 6)) if animated else -1
-            key = (mode, bucket, id(emoji) if emoji is not None else None, progress)
+            pulse = self._word_pulse(now) if mode == STRIP_SPEAKING else 0.0
+            animated = mode == STRIP_RECEIVING
+            bucket = int(t * 6) if animated else -1
+            key = (mode, bucket, int(round(pulse * 6)), id(emoji) if emoji is not None else None, eye_key, progress, self.info.hint if mode == STRIP_RESPONSE else "")
             if key != self.side_key or force:
                 self.side_key = key
-                self.pane_img = render_strip(self.fonts, mode, t, emoji, progress)
+                self.pane_img = render_strip(self.fonts, mode, t, emoji, progress, self.info.tokens if mode == STRIP_RESPONSE else None, pulse)
                 self._paste_pane(self.pane_img, full_h)
                 rects.append((0, y0, theme.WIDTH, y0 + self.pane_h))
             return rects
@@ -439,6 +513,47 @@ class TerminalUI:
             self.pane_img = pane
         return changed
 
+    def _eye_state_strip(self, mode, state, now):
+        if mode == STRIP_SPEAKING:
+            return EYE_SPEAK
+        if mode == STRIP_RECEIVING or state in (vs.THINK, vs.TOOL, vs.TRANSCRIBE):
+            return EYE_THINK
+        label = (self.info.tool_label or "").lower()
+        if label.endswith(".failed"):
+            return EYE_ERROR            # a confirmed failure: brief red
+        if label.endswith(".unverified"):
+            return EYE_UNSURE           # outcome unknown: restrained amber, never shown as a confirmed failure
+        return EYE_IDLE
+
+    def _eye_fixed_level(self, mode):
+        # Without an envelope (no measurable WAV) the eye shows "speaking" steadily; it never invents movement.
+        if mode == STRIP_SPEAKING and not self.eye.has_env:
+            return 0.45
+        return None
+
+    def _step_optic(self, state, t, now):
+        """Advance the hero optic's pose to `now` (continuous between states, independent of the frame rate)."""
+        motion = self.info.motion
+        if motion.last is not None and now - motion.last > 2.0:
+            motion.last = None          # a long gap: re-seat the pose instead of animating through it
+        tokens = self.info.tokens
+        glance = optic.idle_glance_phase(now) if state == vs.IDLE and "heard" not in tokens else 0.0
+        target, extra = motion.target(state, tokens, t, glance)
+        motion.step(target, extra, now)
+
+    def _word_pulse(self, now):
+        """1 at the moment the speech pipeline reveals a word, decaying to 0 over 0.18 s."""
+        times = self.body.tw.times
+        if not times:
+            return 0.0
+        return max(0.0, 1.0 - (now - times[-1]) / 0.18)
+
+    def _eye_for_mic(self, state, now):
+        if self.eye is None:
+            return None, None
+        which = EYE_LISTEN if state == vs.LISTEN else EYE_THINK if state in (vs.TRANSCRIBE, vs.THINK) else EYE_IDLE
+        return self.eye.frame(which, now)
+
     def _strip_mode(self, now):
         if self.body.speaking(now):
             return STRIP_SPEAKING
@@ -487,10 +602,34 @@ class TerminalUI:
                 if rows.size == 0:
                     continue
                 cols = np.flatnonzero(diff.any(axis=0))
+                parts = self._split_changes(diff, cols, rows)
+                if parts is not None:
+                    # Two distant small changes (for example the blinking cursor and the eye) would otherwise be
+                    # sent as one wide box; send each box alone when that is much less data.
+                    for px0, py0, px1, py1 in parts:
+                        self._send(frame, x0 + px0, y0 + py0, x0 + px1, y0 + py1)
+                    continue
                 x0, x1 = x0 + int(cols[0]), x0 + int(cols[-1]) + 1
                 y0, y1 = y0 + int(rows[0]), y0 + int(rows[-1]) + 1
             self._send(frame, x0, y0, x1, y1)
         self.on_lcd = frame.copy()
+
+    @staticmethod
+    def _split_changes(diff, cols, rows):
+        """Boxes (relative to the diff) when the changed columns form separate groups and sending them alone is
+        less than half the single bounding box; None otherwise."""
+        breaks = np.flatnonzero(np.diff(cols) > 6)
+        if breaks.size == 0 or breaks.size > 3:
+            return None
+        whole = (int(cols[-1]) - int(cols[0]) + 1) * (int(rows[-1]) - int(rows[0]) + 1)
+        boxes, total = [], 0
+        for group in np.split(cols, breaks + 1):
+            gx0, gx1 = int(group[0]), int(group[-1]) + 1
+            grows = np.flatnonzero(diff[:, gx0:gx1].any(axis=1))
+            gy0, gy1 = int(grows[0]), int(grows[-1]) + 1
+            boxes.append((gx0, gy0, gx1, gy1))
+            total += (gx1 - gx0) * (gy1 - gy0)
+        return boxes if total * 2 < whole else None
 
     def _send(self, frame, x0, y0, x1, y1):
         data = to_rgb565(frame[y0:y1, x0:x1])
@@ -524,6 +663,7 @@ class TerminalUI:
 
     def _next_delay(self, state, t, now, kind, morphing, xfading):
         fps = 0
+        eye_tick = None   # idle breathing: a slow tick that is not an animation (no keyframe refresh, other timers kept)
         if morphing or xfading:
             fps = 30
         if kind == KIND_STAGE:
@@ -533,14 +673,32 @@ class TerminalUI:
         elif kind == KIND_STRIP:
             mode = self._strip_mode(now)
             if mode == STRIP_SPEAKING:
-                fps = max(fps, theme.SPEAKING_FPS)
+                fps = max(fps, theme.SPEAKING_FPS if self._word_pulse(now) > 0 else 0)
             elif mode == STRIP_RECEIVING:
-                fps = max(fps, 6)
-        fps = max(fps, self.body.fps_needed(now))
+                fps = max(fps, 8 if self.eye is not None else 6)
+            elif self.eye is not None:
+                if state in (vs.THINK, vs.TOOL, vs.TRANSCRIBE):
+                    fps = max(fps, 8)
+                elif self._eye_state_strip(mode, state, now) == EYE_ERROR and self.eye.error_active(now):
+                    fps = max(fps, 8)      # three flashes, then steady red for a few seconds, then back to idle
+                elif self._eye_state_strip(mode, state, now) == EYE_UNSURE and self.eye.error_active(now):
+                    fps = max(fps, 2)      # steady amber, then back to idle after the same time
+                elif self.eye.idle_fps > 0:
+                    eye_tick = 1.0 / self.eye.idle_fps
+        if kind == KIND_MIC and state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK):
+            fps = max(fps, theme.OPTIC_FPS)
+        if kind == KIND_MIC and self.info.motion.settling(now):
+            fps = max(fps, theme.OPTIC_SETTLE_FPS)     # the shutter is moving between poses: smooth, and only briefly
+        if kind != KIND_MIC:
+            fps = max(fps, self.body.fps_needed(now))
         self._animating = fps > 0
         if fps > 0:
             return 1.0 / min(fps, self._fps_cap())
         waits = [clock.seconds_to_next_minute() + 0.05]
+        if eye_tick is not None:
+            waits.append(eye_tick)
+        if kind == KIND_MIC and state == vs.IDLE:
+            waits.append(optic.next_glance_in(now))      # the dormant optic glances aside now and then
         if kind == KIND_STAGE and state == vs.IDLE:
             waits.append(next_blink_edge(t))
             if rain_active(state, t, self.info):

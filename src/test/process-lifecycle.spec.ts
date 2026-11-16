@@ -134,6 +134,7 @@ test("leaving the real ChatFlow answer state invokes provider cancellation", () 
     "./chat-flow/stateMachine": { FlowStateMachine: Machine }, "./chat-flow/states": { flowStates: {} },
     "../device/music-player": { isMusicPlaying: () => false },
     "../utils/app-lifecycle": { appSignal: new AbortController().signal },
+    "../device/tv-ducking": { tvDucker: { begin: noop, end: noop, touch: noop, recover: async () => {} } },
   };
   const source = fs.readFileSync(path.join(__dirname, "../core/ChatFlow.ts"), "utf8");
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS,

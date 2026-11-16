@@ -24,6 +24,7 @@ export interface Status {
   scroll_sync?: {
     char_end: number;
     duration_ms: number;
+    env?: string; // audio loudness envelope of the sentence, see speech-timing.ts
   };
   brightness: number;
   RGB: string;
@@ -240,7 +241,7 @@ export class WhisplayDisplay {
       this.client = new Socket();
       const socket = this.client;
       socket.setTimeout(5000, () => socket.destroy(new Error("Display connection timed out")));
-      this.client.connect(12345, "0.0.0.0", () => {
+      this.client.connect(12345, "127.0.0.1", () => {
         socket.setTimeout(0);
         console.log("Connected to local display socket");
         this.receiveBuffer = "";

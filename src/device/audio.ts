@@ -45,7 +45,7 @@ const MP3_SOX_GAIN_DB = "2";
 const voiceDetectEndSilenceSecRaw = parseFloat(
   process.env.VOICE_DETECT_END_SILENCE_SEC || "1.5",
 );
-const voiceDetectEndSilenceSec =
+export const voiceDetectEndSilenceSec =
   Number.isFinite(voiceDetectEndSilenceSecRaw) && voiceDetectEndSilenceSecRaw > 0
     ? voiceDetectEndSilenceSecRaw
     : 1.5;
@@ -56,6 +56,11 @@ const voiceDetectEndLevelRatio =
   Number.isFinite(voiceDetectEndLevelRatioRaw) && voiceDetectEndLevelRatioRaw > 0
     ? voiceDetectEndLevelRatioRaw
     : 0.5;
+
+export const recorderOnsetFix = process.env.RECORDER_ONSET_FIX === "1";
+const recorderOnsetEndLevelRaw = parseFloat(process.env.RECORDER_ONSET_END_LEVEL || "1");
+const recorderOnsetEndLevel =
+  Number.isFinite(recorderOnsetEndLevelRaw) && recorderOnsetEndLevelRaw > 0 ? recorderOnsetEndLevelRaw : 1;
 
 const defaultAsrAudioFormat: AudioFormat = [
   ASRServer.vosk,
@@ -171,10 +176,13 @@ const recordAudio = async (
   }
 
   return new Promise((resolve, reject) => {
-    const voiceDetectEndLevel = Math.max(
-      1,
-      voiceDetectLevel * voiceDetectEndLevelRatio,
-    );
+    // Opt-in onset fix: the microphone has a DC offset (~1.2%) that the dynamic level mistakes for noise, so the
+    // start level is 4-6% and soft words ("false") lose their first consonant or are dropped. A 50 Hz high-pass removes the
+    // DC; SoX `vad -p` then starts the recording 0.3 s BEFORE the detected speech (pre-trigger audio), so soft onsets survive.
+    // The end rule is unchanged (VOICE_DETECT_END_SILENCE_SEC of silence below the end level). Off by default.
+    const voiceDetectEndLevel = recorderOnsetFix
+      ? recorderOnsetEndLevel
+      : Math.max(1, voiceDetectLevel * voiceDetectEndLevelRatio);
     const args = [
       "-t",
       "alsa",
@@ -186,16 +194,14 @@ const recordAudio = async (
       "-r",
       "16000",
       outputPath,
-      "silence",
-      "1",
-      "0.1",
-      `${voiceDetectLevel}%`,
-      "1",
+      ...(recorderOnsetFix
+        ? ["highpass", "50", "vad", "-t", "4", "-p", "0.3", "silence", "0", "1"]
+        : ["silence", "1", "0.1", `${voiceDetectLevel}%`, "1"]),
       `${voiceDetectEndSilenceSec}`,
       `${voiceDetectEndLevel}%`,
     ];
     console.log(
-      `Starting recording, maximum ${duration} seconds (start=${voiceDetectLevel}%, stop=${voiceDetectEndLevel}% for ${voiceDetectEndSilenceSec}s)...`,
+      `Starting recording, maximum ${duration} seconds (${recorderOnsetFix ? "onset-fix: vad pre-trigger 0.3s" : `start=${voiceDetectLevel}%`}, stop=${voiceDetectEndLevel}% for ${voiceDetectEndSilenceSec}s)...`,
     );
     currentRecordingReject = reject;
     const recordingProcess = spawn("sox", args);

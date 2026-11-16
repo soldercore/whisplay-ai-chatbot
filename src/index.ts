@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   installAppShutdown();
   const device = ["true", "1"].includes((process.env.WHISPLAY_DEVICE_ENABLED || "true").toLowerCase())
     || fs.existsSync("/tmp/whisplay-daemon.sock");
-  if (device && !await portAvailable(12345)) throw new Error("Display port 12345 is occupied; duplicate/unknown display was not adopted");
+  if (device && !await portAvailable(12345, "127.0.0.1")) throw new Error("Display port 12345 is occupied; duplicate/unknown display was not adopted");
   // Establish daemon focus/exit handling while cold speech services load.
   // Importing ChatFlow/providers still waits for service readiness below.
   require("./device/display");

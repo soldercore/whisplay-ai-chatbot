@@ -195,14 +195,26 @@ test("oversized newest input fails closed before the actual generation HTTP boun
     OLLAMA_ENABLE_TOOLS: "false", OLLAMA_PREDICT_NUM: "128", CONTEXT_AUTO_COMPACT_ENABLED: "false" });
   let generated = 0;
   t.mock.method(axios, "get", async () => ({ data: { models: [] } }));
-  t.mock.method(axios, "post", async () => { generated++; throw new Error("must not generate"); });
+  t.mock.method(axios, "post", async (_url: string, body: any) => {
+    generated++;
+    assert.ok(body.messages.every((message: any) => message.content.length < 20000));
+    const stream = new PassThrough();
+    setImmediate(() => stream.end(JSON.stringify({ message: { content: "Ready." }, done: true }) + "\n"));
+    return { data: stream };
+  });
   const file = require.resolve("../cloud-api/local/ollama-llm"); delete require.cache[file];
   const provider = require(file).default;
   let answer = "", ends = 0;
   await provider.chatWithLLMStream([{ role: "user", content: "x".repeat(20000) }],
     (text: string) => answer += text, () => ends++);
   assert.equal(generated, 0); assert.equal(ends, 1);
-  assert.match(answer, /Resource limit exceeded: required prompt exceeds the effective runtime context budget/);
+  assert.equal(answer, "I lost track of the context. Please repeat the key detail.");
+  answer = "";
+  await provider.chatWithLLMStream([{ role: "user", content: "A normal follow-up." }],
+    (text: string) => answer += text, () => ends++);
+  assert.equal(generated, 1);
+  assert.equal(ends, 2);
+  assert.equal(answer, "Ready.");
 });
 
 test("memory summary reserves its existing 160 output tokens and rejects an oversized transcript", async t => {

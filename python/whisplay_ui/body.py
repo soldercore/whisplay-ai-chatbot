@@ -13,7 +13,7 @@ SENTENCE_END = frozenset(".!?…。！？")
 
 SCRAMBLE = "#$%&*+<>?@=/\\01"
 AUTO_HOLD = 1.5
-DECODE_TAIL = 3          # only the newest few glyphs get the decode scramble
+DECODE_TAIL = 7          # only the newest few glyphs get the decode scramble
 LINE_CACHE_MAX = 256
 FOCUS_TIMEOUT = 3.0
 FOLLOW_EPS = 0.4

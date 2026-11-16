@@ -4,6 +4,8 @@
 
 ## Custom integration entry point
 
+- Production baseline: read `docs/production-baseline.md` first. Branch `production/pi5-baseline` reproduces what runs on the Pi (verified by hash 2026-11-16). The Pi's `src/` is stale: never run a build or `whisplay update` on the Pi until source is deployed consistently.
+
 - Read `docs/CUSTOM_BUILD.md`, `docs/UPSTREAM_UPDATES.md` and `upstream-integration.json` before updating this custom build. Historical phase documents are not proof of deployment or current test results.
 - GLaDOS A remains default; `GLADOS_PERSONA_VARIANT=D` is an explicit opt-in candidate only with `ASSISTANT_PERSONA=glados`. Read `docs/glados-personality-d.md`; deterministic tests do not establish model quality, and A/B/C evaluation history must be preserved.
 - D failed actual Pi acceptance. Read `docs/glados-d-hardware-regression.md` and its summary before raw evaluation JSONL. The 72 measured generations did not establish a replacement; keep A available and PR #2 open. Never equate completed inference or unit-test passes with personality acceptance.

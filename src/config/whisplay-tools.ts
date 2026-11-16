@@ -1,0 +1,155 @@
+import type { LLMTool } from "../type";
+import { whisplayRequest, trackWhisplayHandoff } from "../device/whisplay-control";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { brightnessLevelError, BRIGHTNESS_RANGE_REPLY, isExternalTvRequest, mentionsExternalTv, isNegatedDeviceAction, isUnclearVolumeObservation, MIN_BRIGHTNESS, parseDeviceCommand, preciseDeviceArguments, powerRequest, settingFollowUpText, suppressesMonitoringTools, TV_UNSUPPORTED_REPLY } from "./device-commands";
+
+const questions = new AsyncLocalStorage<string>();
+export const withWhisplayQuestion = <T>(question: string, work: () => T): T => questions.run(question, work);
+
+export const whisplayVoiceControlEnabled = () => process.env.WHISPLAY_VOICE_CONTROL_ENABLED === "true";
+const asksForLocalIp = (text: string) => /\b(what|which|show|check|tell|give|find|read|report)\b/i.test(text)
+  && /\b(?:your|whisplay's|this (?:device|pi|raspberry pi)'s) (?:(?:current|local|wi-?fi) )*(?:ip|ipv4)(?: address)?\b/i.test(text);
+// This only requires grounding; the model still chooses the operation/parameters.
+export const requiresWhisplayTool = (text: string): boolean => whisplayVoiceControlEnabled()
+  && !suppressesMonitoringTools(text)
+  && !mentionsExternalTv(text)
+  && !/\b(joke|poem|story|pretend|imagine)\b|^\s*(explain|define|how does)\b/i.test(text)
+  && !/^\s*what(?: is|'s) (?:an? )?(?:ip(?:v[46])? address|wi-?fi|bluetooth)[?.!\s]*$/i.test(text)
+  && (/\b(whisplay|device|hardware|controls?|functions?|features?|capabilit\w*|screen|brightness|darker|brighter|speaker|volume|louder|quieter|microphone|recording|wi-?fi|bluetooth|ssh|services?|cpu|ram|storage|temperature|connection|home|reboot|shutdown)\b/i.test(text)
+    || /\bwhat[\s\S]*\brunning\b/i.test(text) || parseDeviceCommand(text)?.metric === "ip"
+    || asksForLocalIp(text));
+export const needsWhisplayCapabilities = (text: string): boolean => whisplayVoiceControlEnabled()
+  && !/\b(please|now|set|make|take|disable|enable|restart|shutdown)\b/i.test(text)
+  && (/\b(what|which)\b[\s\S]*\b(capabilit\w*|functions?|features?|turn on or off)\b/i.test(text)
+      && /\b(you|your|whisplay|device|available|on or off)\b/i.test(text)
+    || /\bwhat\b[\s\S]*\bcan\b[\s\S]*\b(you|whisplay)\b[\s\S]*\bdo\b/i.test(text));
+
+export const whisplayTool: LLMTool = {
+  execution: "abortable", type: "function",
+  function: {
+    name: "whisplay",
+    description: "Discover live capabilities/state; control only supported operations. Read wifi/bluetooth status before choosing a unique discovered target. CPU/RAM/temperature/storage use getSystemHealth. home closes GLaDOS, never the Pi. Safe settings/radio toggles stay here; risky operations/pairing/power need fresh local Cancel-first confirmation after speech. Questions, hypotheticals and troubleshooting are read-only. Wi-Fi disruption is blocked until offline recovery is verified. Passwords stay local; never send/speak credentials or ticket IDs. Screen wake uses the button.",
+    parameters: {
+      type: "object", additionalProperties: false,
+      properties: {
+        action: { type: "string", enum: ["capabilities", "status", "brightness", "volume", "mute", "home", "lock", "recording", "wifi", "wifi_scan", "wifi_profile", "wifi_join", "bluetooth", "bluetooth_scan", "bluetooth_device", "service", "reboot", "shutdown"] },
+        scope: { type: "string", enum: ["apps", "display", "audio", "network", "wifi", "bluetooth", "services"] },
+        level: { type: "integer", minimum: 0, maximum: 100, description: "Absolute percent; use exactly one of level or change." },
+        change: { type: "integer", minimum: -100, maximum: 100, description: "Requested percentage-point adjustment. Host enforces small/default 10-point steps and explicit values; negative is darker/quieter." },
+        enabled: { type: "boolean" },
+        service: { type: "string", enum: ["ssh", "ollama", "whisper", "piper"] },
+        operation: { type: "string", enum: ["start", "restart", "connect", "disconnect", "pair", "forget"] },
+        device: {type:"string",minLength:1,maxLength:128,description:"Unique Bluetooth device name or address from actual Bluetooth status."},
+        profile: {type:"string",minLength:1,maxLength:128,description:"Saved Wi-Fi profile name or ID from actual Wi-Fi status."},
+        network: {type:"string",minLength:1,maxLength:128,description:"SSID from actual Wi-Fi scan. Passwords are entered only locally; never include credentials."},
+      }, required: ["action"],
+    },
+  },
+  func: async (params: any) => {
+    if (!whisplayVoiceControlEnabled()) return "[error]Whisplay voice integration is disabled.";
+    try {
+      const { action, ...args } = params;
+      let result: any;
+      if (action === "capabilities" || action === "status") {
+        if (Object.keys(args).some(key => key !== "scope") || action === "capabilities" && args.scope !== undefined
+          || action === "status" && !args.scope) throw new Error("Specify only a valid read scope");
+        result = await whisplayRequest("control.read", { scope: action === "capabilities" ? "capabilities" : args.scope });
+        if (action === "capabilities" && (result?.api !== 1 || !Array.isArray(result.readable)
+          || !result.actions || typeof result.actions !== "object" || Array.isArray(result.actions))) {
+          throw new Error("Paired daemon did not provide a valid capability report");
+        }
+        result = { ...result, scope: action === "capabilities" ? "capabilities" : args.scope };
+      } else {
+        const question = questions.getStore();
+        if (question && (isExternalTvRequest(question) || mentionsExternalTv(question))) throw new Error(TV_UNSUPPORTED_REPLY);
+        if (question && brightnessLevelError(question)) throw new Error(BRIGHTNESS_RANGE_REPLY);
+        if (question && (isNegatedDeviceAction(question) || asksForLocalIp(question)
+          || isUnclearVolumeObservation(question) || settingFollowUpText(question))) {
+          throw new Error("The current request does not authorize this device change");
+        }
+        const expected = question ? parseDeviceCommand(question) : undefined;
+        const exactRadioOff = expected?.name === "whisplay" && ["wifi","bluetooth"].includes(expected.args.action)
+          && expected.args.action === action && expected.args.enabled === false && params.enabled === false;
+        if (expected && (expected.name !== "whisplay" || expected.args.action !== action
+          || ["wifi","bluetooth"].includes(action) && expected.args.enabled !== params.enabled
+          || ["wifi_profile","bluetooth_device"].includes(action) && expected.args.operation !== params.operation)) {
+          throw new Error("Proposed action does not match the user's request; no change sent");
+        }
+        if (question && (!exactRadioOff && /\b(not|don't|dont|never|ikke|aldri|if|unless|when|after|before|except|tomorrow|later)\b/i.test(question.replace(/[’]/g,"'"))
+          || /^\s*(?:how (?:do|can|would)|what (?:if|happens)|(?:can|could) i|(?:tell|write) (?:me )?(?:a )?(?:story|joke)|explain|pretend|imagine)\b/i.test(question))) {
+          throw new Error("Conditional, negated or explanatory requests cannot change the device");
+        }
+        if (["reboot","shutdown"].includes(action) && powerRequest(question||"") !== action) {
+          throw new Error("Do you mean the entire Raspberry Pi? A clear request and fresh physical confirmation are required");
+        }
+        if (["wifi","wifi_scan","wifi_join","wifi_profile","bluetooth","bluetooth_scan","bluetooth_device"].includes(action)
+          && question && !expected
+          && (!/^\s*(?:(?:hey )?glados[, ]+)?(?:please\b|(?:can|could|would|will) you\b|i (?:want|need|would like)\b|i'd like\b|let's\b|(?:enable|disable|activate|deactivate|turn|switch|connect|disconnect|pair|scan|find|search|look)\b)/i.test(question)
+            || /\b(?:already|isn't|is not|what if|happens|lose my connection)\b/i.test(question))) {
+          throw new Error("A status observation or troubleshooting question cannot change wireless settings");
+        }
+        if (["volume","brightness"].includes(action)) {
+          if (!question?.trim()) throw new Error("Requested setting target is unclear");
+          if (/\b(?:tv|television)\b/i.test(question)) throw new Error("Requested setting target is unclear");
+          if (Object.keys(params).some(key => !["action","level","change"].includes(key))
+            || ("level" in params) === ("change" in params)) throw new Error("Supply exactly one setting level or change");
+        }
+        let request = preciseDeviceArguments(params, question);
+        if (action === "brightness" && "level" in request
+          && (!Number.isInteger(request.level) || request.level < MIN_BRIGHTNESS || request.level > 100)) {
+          throw new Error(BRIGHTNESS_RANGE_REPLY);
+        }
+        if (typeof request.change === "number" && Math.abs(request.change) > 20) {
+          if (!questions.getStore()) throw new Error("Large adjustments require an explicit user request");
+          const current = await whisplayRequest("control.read", { scope: action === "volume" ? "audio" : "display" });
+          const value = action === "volume" ? current.speaker_percent : current.brightness_percent;
+          if (!Number.isInteger(value)) throw new Error("Current setting unavailable; no change sent");
+          request = {action,level:Math.max(action === "brightness" ? MIN_BRIGHTNESS : 0,Math.min(100,value+request.change))};
+        }
+        if (JSON.stringify(request) !== JSON.stringify(params)) console.log(`[Whisplay precision] proposed=${JSON.stringify(params)} applied=${JSON.stringify(request)}`);
+        result = await whisplayRequest("control.execute", request);
+        if (!["completed", "awaiting_physical_confirmation", "awaiting_speech_handoff"].includes(result?.status)) {
+          throw new Error("Daemon did not confirm an operation state");
+        }
+        if (result.ticket) trackWhisplayHandoff(result.ticket);
+      }
+      return "[success]" + JSON.stringify(result);
+    } catch (error) {
+      return "[error]" + JSON.stringify({ status: "unavailable_or_failed", changed: "not_confirmed",
+        reason: (error as Error).message, note: "Do not claim success. Paired daemon API is required; do not use shell fallback." });
+    }
+  },
+};
+
+// Ollama grammar constraint for device intent. Execution still uses the existing
+// offered-list/JSON fallback validator, never this decoder schema as permission.
+export function deviceCallFormat(tools: readonly { function: { name: string } }[] = [], question = ""): object | undefined {
+  const names = new Set(tools.map(tool => tool.function.name));
+  // Same purpose as existing tool routing: keep a measurements-only question
+  // out of unrelated control branches. No action or argument is inferred here.
+  const metricsOnly = /\b(cpu|ram|temperature|storage|disk)\b/i.test(question)
+    && !/\b(screen|brightness|volume|speaker|wi-?fi|bluetooth|services?|ssh|home|controls?|capabilit\w*|functions?|turn|on|off)\b/i.test(question);
+  if (metricsOnly && names.has("getSystemHealth")) names.delete("whisplay");
+  const variants: object[] = [];
+  const props = (whisplayTool.function.parameters as any).properties;
+  if (names.has("whisplay")) {
+    const shapes: [string,string[]][] = [
+      ["capabilities",[]], ["status",["scope"]], ["brightness",["level"]], ["brightness",["change"]],
+      ["volume",["level"]], ["volume",["change"]], ["mute",["enabled"]], ["home",[]], ["lock",[]],
+      ["recording",["enabled"]], ["wifi",["enabled"]], ["bluetooth",["enabled"]],
+      ["service",["service","operation"]], ["reboot",[]], ["shutdown",[]],
+      ["wifi_scan",[]], ["wifi_profile",["operation","profile"]], ["wifi_profile",["operation"]], ["wifi_join",["network"]],
+      ["bluetooth_scan",[]], ["bluetooth_device",["operation","device"]],
+    ];
+    for (const [action, keys] of shapes) variants.push({ type:"object", additionalProperties:false,
+      properties:{ name:{type:"string",enum:["whisplay"]}, arguments:{type:"object",additionalProperties:false,
+        properties:{action:{type:"string",enum:[action]},...Object.fromEntries(keys.map(key=>[key,
+          key === "operation" ? {...props[key],enum:action === "service"?["start","restart"]:action === "wifi_profile"?(keys.includes("profile")?["connect"]:["disconnect"]):["connect","disconnect","pair","forget"]}:
+          action === "brightness" && key === "level" ? {...props[key],minimum:MIN_BRIGHTNESS} : props[key]]))},
+        required:["action",...keys]} }, required:["name","arguments"] });
+  }
+  if (names.has("getSystemHealth")) variants.push({type:"object",additionalProperties:false,
+    properties:{name:{type:"string",enum:["getSystemHealth"]},arguments:{type:"object",properties:{},additionalProperties:false}},
+    required:["name","arguments"]});
+  return variants.length ? { oneOf: variants } : undefined;
+}

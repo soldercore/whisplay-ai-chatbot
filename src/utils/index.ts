@@ -268,6 +268,12 @@ export const purifyTextForTTS = (text: string): string => {
   return text
     .replace(/https?:\/\/\S+/giu, " link ")
     .replace(/www\.\S+/giu, " link ")
+    // Operators between operands are spoken; elsewhere these symbols keep being dropped below.
+    .replace(/(?<=\d)\s*\+\s*(?=\d)/gu, " plus ")
+    .replace(/(?<=\d)\s*[×*]\s*(?=\d)/gu, " times ")
+    .replace(/(?<=\d)\s*÷\s*(?=\d)|(?<=\d)\s+\/\s+(?=\d)/gu, " divided by ")
+    .replace(/(?<=\d)\s*−\s*(?=\d)|(?<=\d)\s+[-–]\s+(?=\d+\s*=)/gu, " minus ")
+    .replace(/(?<=[\p{L}\p{N}])\s*=\s*(?=[\p{L}\p{N}])/gu, " equals ")
     .replace(/[`*_#~^=+|\\/<>$@•·●○◆◇■□▪▫✓✔✕✖→←↑↓⇒⇐⇧⇩]/gu, " ")
     .replace(/[{}\u200b-\u200f\u202a-\u202e\ufe0e\ufe0f]/gu, "")
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "")

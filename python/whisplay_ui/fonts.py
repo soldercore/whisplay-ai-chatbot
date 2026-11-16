@@ -258,6 +258,9 @@ class Fonts:
         self.meta_bold = FontStack([face(mono_bold, 10), base(10)])
         self.pixel8 = FontStack([face(pixel, 8, True), face(mono_bold, 8), base(8)])
         self.pixel16 = FontStack([face(pixel, 16, True), face(mono_bold, 14), base(14)])
+        self.title = FontStack([face(mono_bold, 15), base(15)])
+        self.small = FontStack([face(mono, 12), base(12)])
+        self.small_bold = FontStack([face(mono_bold, 12), base(12)])
         self.emoji_loader = emoji_loader
         self.loaded = {
             "mono": self.body.primary.path == mono,

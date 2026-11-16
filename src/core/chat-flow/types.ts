@@ -31,6 +31,12 @@ export interface ChatFlowContext {
   wakeSessionLastSpeechAt: number;
   wakeSessionIdleTimeoutMs: number;
   wakeRecordMaxSec: number;
+  clarificationListen: boolean;
+  conversationFollowUps: number;   // automatic follow-up listens used in this conversation
+  followUpSeconds?: number;        // one-shot capture window for a question-triggered follow-up
+  conversationCapture: boolean;    // the capture now running is a conversational follow-up (its transcript is checked for noise)
+  idleStatus: () => string;
+  scheduleIdleRefresh: () => void;
   wakeEndKeywords: string[];
   endAfterAnswer: boolean;
   pendingExternalReply: string;
@@ -48,7 +54,7 @@ export interface ChatFlowContext {
   composeAnswerDisplayText: (text?: string) => string;
   updateAnswerDisplayText: (text: string) => void;
   appendToolCallDisplay: (functionName: string) => void;
-  finishToolCallDisplay: (functionName: string) => void;
+  finishToolCallDisplay: (functionName: string, outcome?: "ok" | "failed" | "unverified") => void;
   keepCommandToolDisplayRunning: (jobId: string) => void;
   finishCommandToolDisplay: (jobId: string) => void;
   resetToolCallDisplay: () => void;

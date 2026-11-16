@@ -72,7 +72,7 @@ const removeFile = (file: string): void => {
   } catch {}
 };
 
-const piperHttpTTS = async (
+const synthesize = async (
   text: string
 ): Promise<TTSResult> => {
   return new Promise((resolve, reject) => {
@@ -212,6 +212,21 @@ const piperHttpTTS = async (
       resolve({ duration: 0 });
     });
   });
+};
+
+// Reuse one verified clip for the fixed TV acknowledgement. Other speech,
+// including conversational output, continues through normal synthesis.
+let youtubeAcknowledgement: TTSResult | undefined;
+const piperHttpTTS = async (text: string): Promise<TTSResult> => {
+  if (text !== "Opening YouTube.") return synthesize(text);
+  const cached = youtubeAcknowledgement;
+  if (cached?.filePath && fs.existsSync(cached.filePath)) return { ...cached };
+  youtubeAcknowledgement = undefined;
+  const result = await synthesize(text);
+  if (result.filePath && Number.isFinite(result.duration) && result.duration > 0) {
+    youtubeAcknowledgement = { ...result };
+  }
+  return result;
 };
 
 export default piperHttpTTS;

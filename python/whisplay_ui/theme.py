@@ -12,25 +12,47 @@ def _hex(value):
 
 
 # ---- Palette -------------------------------------------------------------
-VOID = _hex("000000")
-RAISED = _hex("080C08")
-PANEL = _hex("101810")
-LINE = _hex("182821")
-DIM = _hex("5A6D5A")
-MUTED = _hex("9CAA9C")
-TEXT = _hex("E7F7DE")
-BRIGHT = _hex("FFFFFF")
-GREEN = _hex("4AEB7B")
-GREEN_MID = _hex("29A24A")
-GREEN_DIM = _hex("186931")
-GREEN_DEEP = _hex("083018")
-CYAN = _hex("5ACBDE")
-CYAN_DIM = _hex("215152")
-AMBER = _hex("FFB231")
-AMBER_MID = _hex("B57D21")
-AMBER_DIM = _hex("634510")
-RED = _hex("FF5952")
-RED_DIM = _hex("521818")
+# One warm neutral ramp and a single accent (the optic's light). Amber is used only for what is
+# live or needs attention; nothing else is coloured. Old token names stay as aliases so every
+# scene keeps working; they now point into this ramp.
+def _q(r, g, b):
+    """Snap to the nearest-below RGB565-exact value (bit-replicated channels)."""
+    r5, g6, b5 = r >> 3, g >> 2, b >> 3
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+
+
+VOID = (0, 0, 0)               # true black: it must disappear into the bezel of the LCD
+HAIR = _q(40, 36, 32)          # hairlines
+INK = _q(238, 231, 220)        # primary text
+INK2 = _q(170, 162, 150)       # secondary text
+INK3 = _q(134, 127, 116)       # tertiary text (>= 4.5:1 on VOID)
+TICK = _q(70, 64, 58)          # decorative marks only (idle dial ticks)
+ACCENT = _q(255, 160, 32)      # the optic
+ACCENT_MID = _q(190, 118, 24)
+ACCENT_DIM = _q(106, 66, 16)
+ACCENT_DEEP = _q(46, 29, 9)
+ALERT = _q(255, 90, 74)
+ALERT_DIM = _q(104, 34, 28)
+WHITE = _q(255, 255, 255)
+
+RAISED = _q(18, 15, 12)
+PANEL = _q(24, 20, 16)
+LINE = HAIR
+DIM = INK3
+MUTED = INK2
+TEXT = INK
+BRIGHT = WHITE
+GREEN = ACCENT
+GREEN_MID = ACCENT_MID
+GREEN_DIM = ACCENT_DIM
+GREEN_DEEP = ACCENT_DEEP
+AMBER = ACCENT
+AMBER_MID = ACCENT_MID
+AMBER_DIM = ACCENT_DIM
+CYAN = INK2
+CYAN_DIM = INK3
+RED = ALERT
+RED_DIM = ALERT_DIM
 
 # ---- Layout (absolute pixels unless noted) -------------------------------
 WIDTH = 240
@@ -81,8 +103,8 @@ MORPH = 0.22
 LED_LERP = 0.15
 TEXT_FADE = 0.12
 TAG_FADE = 0.12
-DECODE_BASE = 0.06
-DECODE_STAGGER = 0.012
+DECODE_BASE = 0.07
+DECODE_STAGGER = 0.016
 BLINK_PERIOD = 1.06
 BLINK_ON = 0.53
 BLINK_EDGE = 0.06
@@ -111,11 +133,11 @@ AUTO_SCROLL_PX = 15.0
 STATE_FPS = {
     "BOOT": 8,
     "IDLE": 0,
-    "CALIBRATE": 20,
-    "LISTEN": 30,
-    "TRANSCRIBE": 20,
-    "THINK": 20,
-    "TOOL": 20,
+    "CALIBRATE": 12,
+    "LISTEN": 12,
+    "TRANSCRIBE": 12,
+    "THINK": 12,
+    "TOOL": 12,
     "ANSWER": 0,
     "ERROR": 10,
     "APPROVAL": 0,
@@ -125,12 +147,73 @@ STATE_FPS = {
     "GENERIC": 3,
 }
 RAIN_FPS = 8
-SPEAKING_FPS = 24
+SPEAKING_FPS = 20
+OPTIC_FPS = 20            # steady optic animation (listening, recognizing, thinking)
+OPTIC_SETTLE_FPS = 30     # while the shutter is moving between poses (a few tenths of a second)
 
 # Adaptive quality thresholds (milliseconds of render time, EMA)
 DEGRADE_1_MS = 12.0
 DEGRADE_2_MS = 25.0
 RECOVER_MS = 6.0
+
+
+# ---- Landscape layout -------------------------------------------------------
+# WHISPLAY_UI_LAYOUT=landscape draws a 280x240 canvas and turns it 90 degrees onto the 240x280 panel (terminal_ui._send).
+# The scene modules for this layout are land.py and land_ui.py; the portrait design above is unchanged and stays the default.
+LAYOUT = (os.environ.get("WHISPLAY_UI_LAYOUT") or "portrait").strip().lower()
+LANDSCAPE = LAYOUT == "landscape"
+PHYS_WIDTH = 240
+PHYS_HEIGHT = 280
+ROTATE = (os.environ.get("WHISPLAY_UI_ROTATE") or "cw").strip().lower()   # which edge of the panel becomes the top
+
+
+def _scale(rgb, k):
+    return _q(int(rgb[0] * k), int(rgb[1] * k), int(rgb[2] * k))
+
+
+ACCENTS = {   # one technical accent over a cool graphite ramp; the alert colour must never be mistaken for it
+    "lime": ((184, 240, 0), (255, 86, 62)),
+    "ice": ((92, 214, 255), (255, 86, 62)),
+    "vermilion": ((255, 86, 52), (255, 200, 0)),
+    "ultra": ((126, 140, 255), (255, 86, 62)),
+}
+
+if LANDSCAPE:
+    WIDTH = 280
+    HEIGHT = 240
+    HAIR = _q(36, 42, 48)
+    INK = _q(226, 232, 236)
+    INK2 = _q(152, 164, 173)
+    INK3 = _q(112, 124, 134)
+    TICK = _q(62, 72, 80)
+    _name = (os.environ.get("WHISPLAY_UI_ACCENT") or "lime").strip().lower()
+    _acc, _alert = ACCENTS.get(_name, ACCENTS["lime"])
+    ACCENT = _q(*_acc)
+    ACCENT_MID = _scale(_acc, 0.72)
+    ACCENT_DIM = _scale(_acc, 0.42)
+    ACCENT_DEEP = _scale(_acc, 0.16)
+    ALERT = _q(*_alert)
+    ALERT_DIM = _scale(_alert, 0.4)
+    RAISED = _q(10, 13, 16)
+    PANEL = _q(16, 20, 24)
+    LINE = HAIR
+    DIM = INK3
+    MUTED = INK2
+    TEXT = INK
+    GREEN, GREEN_MID, GREEN_DIM, GREEN_DEEP = ACCENT, ACCENT_MID, ACCENT_DIM, ACCENT_DEEP
+    AMBER, AMBER_MID, AMBER_DIM = ACCENT, ACCENT_MID, ACCENT_DIM
+    CYAN, CYAN_DIM = INK2, INK3
+    RED, RED_DIM = ALERT, ALERT_DIM
+    # Rounded panel corners (radius about 40 px, checked at 44): content keeps inside these insets.
+    STATUS_SAFE_LEFT = 24
+    STATUS_SAFE_RIGHT = 256
+    STATUS_CENTER_Y = 12
+    CONTENT_SAFE_BOTTOM = 224
+    CHROME_LEFT = 14
+    CHROME_RIGHT = 266
+    TEXT_LEFT = 12
+    TEXT_WIDTH = 256         # 28 cells of 9 px
+    CURSOR_RIGHT_LIMIT = 269
 
 
 def _env_bool(env, key, default):
@@ -153,11 +236,14 @@ class Flags:
 
     def __init__(self, env=None):
         env = os.environ if env is None else env
-        self.rain = _env_bool(env, "WHISPLAY_UI_RAIN", True)
-        self.scanlines = _env_bool(env, "WHISPLAY_UI_SCANLINES", True)
+        self.rain = _env_bool(env, "WHISPLAY_UI_RAIN", False)
+        self.scanlines = _env_bool(env, "WHISPLAY_UI_SCANLINES", False)
         self.decode = _env_bool(env, "WHISPLAY_UI_DECODE", True)
         self.speech_focus = _env_bool(env, "WHISPLAY_UI_SPEECH_FOCUS", True)
-        emoji = str(env.get("WHISPLAY_UI_EMOJI", "strip") or "strip").strip().lower()
-        self.emoji = emoji if emoji in ("strip", "off") else "strip"
+        emoji = str(env.get("WHISPLAY_UI_EMOJI", "off") or "off").strip().lower()
+        self.emoji = emoji if emoji in ("strip", "off") else "off"
         self.fps_cap = _env_int(env, "WHISPLAY_UI_FPS", 30, 5, 30)
+        # Mechanical eye replaces the strip emoji; "off" restores the emoji. Extra idle breathing ticks per second; 0 = the idle eye only changes on frames that are drawn anyway (cursor blink, clock).
+        self.eye = str(env.get("WHISPLAY_UI_EYE", "off") or "off").strip().lower() == "on"   # the optic is the identity element now
+        self.eye_idle_fps = _env_int(env, "WHISPLAY_UI_EYE_IDLE_FPS", 0, 0, 5)
         self.debug = _env_bool(env, "WHISPLAY_UI_DEBUG", False)

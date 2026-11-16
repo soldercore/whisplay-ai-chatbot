@@ -75,7 +75,7 @@ current_scroll_sync_duration_ms = None
 current_scroll_sync_target_top = None
 current_scroll_sync_speed = None
 current_scroll_sync_hold_until = 0.0
-current_speech_sync = None  # (seq, char_end, duration_ms) for the terminal UI
+current_speech_sync = None  # (seq, char_end, duration_ms, audio_envelope) for the terminal UI
 current_transaction_id = None
 current_image_path = ""
 current_image = None
@@ -175,6 +175,7 @@ class RenderThread(threading.Thread):
             "emoji": current_emoji,
             "text": apply_tool_placeholders(current_text),
             "terminal_text": current_terminal_text,
+            "wireless_status": getattr(self.whisplay, "wireless_status", None),
             "battery_level": current_battery_level,
             "battery_color": current_battery_color,
             "network_connected": current_network_connected,
@@ -625,9 +626,9 @@ class RenderThread(threading.Thread):
         top_height = status_font_size + emoji_font_size + 20
 
         # Draw status centered
-        status_bbox = status_font.getbbox(current_status)
+        status_bbox = status_font.getbbox(current_status.partition("|")[0])
         status_w = status_bbox[2] - status_bbox[0]
-        TextUtils.draw_mixed_text(draw, image, current_status, status_font, (whisplay.CornerHeight, 0))
+        TextUtils.draw_mixed_text(draw, image, current_status.partition("|")[0], status_font, (whisplay.CornerHeight, 0))
 
         # Keep the emoji centered normally. While a command is running, use the
         # XiaoZhi layout: emoji on the left and terminal output beside it.
@@ -706,7 +707,11 @@ class RenderThread(threading.Thread):
 
         if battery_level is not None:
             icons.append(BatteryStatusIcon(battery_level, battery_color, battery_font, status_font_size))
-        if context.get("wifi_signal_level"):
+        wireless = getattr(self.whisplay, "wireless_status", None)
+        if wireless is not None:
+            from wireless_icons import WirelessStatusIcon
+            icons.append(WirelessStatusIcon(wireless))
+        elif context.get("wifi_signal_level"):
             icons.append(WifiStatusIcon(status_font_size, context.get("wifi_signal_level")))
         if context.get("vpn_connected"):
             icons.append(WireguardStatusIcon(status_font_size))
@@ -855,10 +860,12 @@ def update_display_data(status=None, emoji=None, text=None,
                     current_scroll_sync_hold_until,
                     time.time() + hold_seconds,
                 )
+                envelope = scroll_sync.get("env", "")
                 current_speech_sync = (
                     (current_speech_sync[0] + 1) if current_speech_sync else 1,
                     current_scroll_sync_char_end,
                     current_scroll_sync_duration_ms,
+                    envelope if isinstance(envelope, str) and len(envelope) <= 4000 else "",
                 )
         except Exception as e:
             print(f"[Display] Invalid scroll_sync payload: {e}")
@@ -1106,7 +1113,7 @@ def handle_client(client_socket, addr, whisplay):
         del clients[addr]
         client_socket.close()
 
-def start_socket_server(render_thread, host='0.0.0.0', port=12345):
+def start_socket_server(render_thread, host='127.0.0.1', port=12345):
     # Register button events
     whisplay.on_button_press(on_button_pressed)
     whisplay.on_button_release(on_button_release)
@@ -1142,8 +1149,10 @@ if __name__ == "__main__":
     
     # start render thread
     render_thread = RenderThread(whisplay, custom_font_path or "NotoSansSC-Bold.ttf", fps=30)
+    if hasattr(whisplay, "status_update_callback"):
+        whisplay.status_update_callback = render_thread.render_event.set
     render_thread.start()
-    start_socket_server(render_thread, host='0.0.0.0', port=12345)
+    start_socket_server(render_thread, host='127.0.0.1', port=12345)
     
     def cleanup_and_exit(signum, frame):
         print("[System] Exiting...")

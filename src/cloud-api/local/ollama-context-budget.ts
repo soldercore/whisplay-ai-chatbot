@@ -6,6 +6,8 @@ import { ollamaTurnStart } from "./ollama-history-limits";
 export type RuntimeContext = { effective: number; source: "/api/ps" | "fallback" };
 export type PromptMessage = { role: string; content: string; [key: string]: unknown };
 
+export class OllamaContextBudgetError extends OllamaResourceLimitError {}
+
 const canonicalModel = (name: string): string =>
   name.substring(name.lastIndexOf("/") + 1).includes(":") ? name : `${name}:latest`;
 
@@ -34,7 +36,10 @@ export async function discoverRuntimeContext(endpoint: string, model: string, si
 // The separate 15% (minimum 256 token) margin covers template/tokenizer variance.
 export const promptMessageTokens = ({ contextScope, ...message }: PromptMessage): number =>
   16 + Math.ceil(Buffer.byteLength(JSON.stringify(message), "utf8") / 3);
-const toolTokens = (tools?: unknown): number => tools ? 64 + Math.ceil(Buffer.byteLength(JSON.stringify(tools), "utf8") / 3) : 0;
+// An empty tools array contains no schemas, so it must not reserve token space.
+const toolTokens = (tools?: unknown): number =>
+  Array.isArray(tools) && tools.length === 0 ? 0
+    : tools ? 64 + Math.ceil(Buffer.byteLength(JSON.stringify(tools), "utf8") / 3) : 0;
 
 export function fitOllamaPrompt<T extends PromptMessage>(
   messages: T[], tools: unknown, runtime: RuntimeContext, advertised?: number,
@@ -55,8 +60,8 @@ export function fitOllamaPrompt<T extends PromptMessage>(
   const contextReserve = messages.reduce((sum, message, index) => sum + (index > 0 && message.role === "system" && protectedMessage(index) ? costs[index] : 0), 0);
   const activeReserve = messages.reduce((sum, message, index) => sum + (index > 0 && message.role !== "system" && protectedMessage(index) ? costs[index] : 0), 0);
   const historyBudget = requestBudget - toolsReserve - systemReserve - contextReserve - activeReserve;
-  console.log(`[Ollama] advertised_context=${advertised ?? "unknown"} effective_context=${runtime.effective} request_budget=${requestBudget} history_budget=${Math.max(0, historyBudget)} source=${runtime.source} reserves=system:${systemReserve},context:${contextReserve},active:${activeReserve},tools:${toolsReserve},output:${outputReserve},safety:${safetyReserve}`);
-  if (historyBudget < 0) throw new OllamaResourceLimitError("required prompt exceeds the effective runtime context budget");
+  console.log(`[Ollama] advertised_context=${advertised ?? "unknown"} effective_context=${runtime.effective} request_budget=${requestBudget} history_budget=${historyBudget} estimated_before=${toolsReserve + costs.reduce((sum, cost) => sum + cost, 0)} source=${runtime.source} reserves=system:${systemReserve},context:${contextReserve},active:${activeReserve},tools:${toolsReserve},output:${outputReserve},safety:${safetyReserve}`);
+  if (historyBudget < 0) throw new OllamaContextBudgetError("required prompt exceeds the effective runtime context budget");
 
   let kept = messages.map((_, index) => index);
   const total = () => toolsReserve + kept.reduce((sum, index) => sum + costs[index], 0);
@@ -72,7 +77,7 @@ export function fitOllamaPrompt<T extends PromptMessage>(
     kept = kept.filter(index => index < start || index >= end || protectedMessage(index));
   }
   const estimatedTokens = total();
-  if (estimatedTokens > requestBudget) throw new OllamaResourceLimitError("prompt cannot fit without dropping required context");
+  if (estimatedTokens > requestBudget) throw new OllamaContextBudgetError("prompt cannot fit without dropping required context");
   if (kept.length !== messages.length) console.log(`[Ollama] prompt_trimmed=${messages.length - kept.length} estimated_before=${before} estimated_after=${estimatedTokens} request_budget=${requestBudget}`);
   return { messages: kept.map(index => messages[index]), requestBudget, historyBudget, estimatedTokens,
     reserves: { system: systemReserve, context: contextReserve, active: activeReserve, tools: toolsReserve, output: outputReserve, safety: safetyReserve } };

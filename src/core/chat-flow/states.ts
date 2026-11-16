@@ -1,4 +1,5 @@
 import moment from "moment";
+import { redactWifiCredentials } from "../../config/whisplay-privacy";
 import { compact, noop } from "lodash";
 import {
   onButtonPressed,
@@ -15,6 +16,8 @@ import {
   recordAudioManually,
   recordFileFormat,
   getDynamicVoiceDetectLevel,
+  recorderOnsetFix,
+  voiceDetectEndSilenceSec,
 } from "../../device/audio";
 import { chatWithLLMStream, llmServer } from "../../cloud-api/server";
 import { isImMode, summaryTextWithLLM } from "../../cloud-api/llm";
@@ -39,11 +42,21 @@ import {
 } from "./camera-mode";
 import { DEFAULT_EMOJI } from "../../utils";
 import { isMusicPlaying, getCurrentTrackTitle, stopMusicPlayback, startPendingMusicPlayback, onMusicTrackChange, onMusicPlaybackEnd } from "../../device/music-player";
-import { autoSaveExchange, prepareMemoryPrompt } from "../../config/local-memory";
+import { autoSaveExchange, prepareMemoryMessage } from "../../config/local-memory";
+import type { Message } from "../../type";
 import { unsupportedReminderReply } from "../../config/unsupported-reminder";
+import { selfKnowledgeTopic } from "../../config/self-knowledge";
+import { toolDisplayOutcome } from "../../config/action-outcome";
+import { CLARIFICATION_SETTLE_MS, clarificationListenSeconds, QUESTION_LISTEN_SECONDS, conversationFollowUpLimit, endsWithQuestionMark, isNoiseTranscript, questionFollowUpLimit, shouldContinueConversation, shouldListenAfterAnswer } from "../../utils/pending-clarification";
+import { uiStatus } from "../../utils/ui-status";
+import { beginTurn, clearTurn, diagnosticsLine, finishTurn, hasTurn, mark as markTiming, toolFinished, toolStarted } from "../../utils/response-timing";
+import fs from "node:fs";
+import { whisplayHandoffTicket, presentWhisplayHandoff, cancelWhisplayHandoff } from "../../device/whisplay-control";
+import { operationDeadline, waitForOperation } from "../../utils/operation-lifecycle";
 
 export const flowStates: Record<FlowName, FlowStateHandler> = {
   sleep: (ctx: ChatFlowContext) => {
+    ctx.conversationCapture = false;   // idle ends any follow-up capture marker
     onButtonPressed(async () => {
       resetCameraModeControl();
       // Stop any playing music when waking up
@@ -59,6 +72,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       await ctx.pauseWakeWordListener();
       if (ctx.currentFlowName !== "sleep") return;
       ctx.answerId += 1;
+      ctx.conversationFollowUps = Math.max(conversationFollowUpLimit(), questionFollowUpLimit());   // a typed turn never opens the microphone by itself
+      ctx.conversationCapture = false;
+      clearTurn();
+      text = redactWifiCredentials(text);
       ctx.asrText = text;
       display({ status: "recognizing", text, text_input_enabled: false });
       ctx.transitionTo("answer");
@@ -74,8 +91,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         ctx.transitionTo("camera");
       });
     }
+    // A host question is waiting for the user's next request. Show that, without suggesting the microphone is open:
+    // the status clears when the window ends, and answering still takes the button or the wake word.
+    ctx.scheduleIdleRefresh();
     display({
-      status: "idle",
+      status: ctx.idleStatus(),
       emoji: "😴",
       RGB: "#000055",
       rag_icon_visible: false,
@@ -165,6 +185,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.answerId += 1;
     ctx.wakeSessionActive = false;
     ctx.endAfterAnswer = false;
+    ctx.conversationFollowUps = 0;   // a button-started turn begins a new conversation
+    ctx.conversationCapture = false;
     onButtonDoubleClick(null);
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
@@ -187,6 +209,7 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         ctx.transitionTo("sleep");
         return;
       }
+      beginTurn("button", performance.now());   // end of speech = button release
       stop();
       display({
         RGB: "#ff6800",
@@ -215,6 +238,10 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.enterMusicAfterAnswer = false;
     ctx.musicDisplayText = "";
     ctx.isFromWakeListening = true;
+    const clarification = ctx.clarificationListen;   // one-shot: a bounded capture for a clarification answer
+    ctx.clarificationListen = false;
+    const followUpSeconds = ctx.followUpSeconds;   // one-shot: the shorter window of a question-triggered follow-up
+    ctx.followUpSeconds = undefined;
     ctx.answerId += 1;
     ctx.currentRecordFilePath = `${ctx.recordingsDir
       }/user-${Date.now()}.${recordFileFormat}`;
@@ -222,39 +249,72 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       ctx.transitionTo("listening");
     });
     onButtonReleased(noop);
-    display({
-      status: "detecting",
-      emoji: DEFAULT_EMOJI,
-      RGB: "#00ff00",
-      text: "Detecting voice level...",
-      rag_icon_visible: false,
-    });
-    getDynamicVoiceDetectLevel().then((level) => {
+    // The ambient-level calibration only feeds the old start-level trigger. With RECORDER_ONSET_FIX the recorder ignores
+    // that level (vad trigger), so the calibration and its screen are skipped and the capture starts at once.
+    const startCapture = (level: number): void => {
+      const maxSec = clarification ? (followUpSeconds ?? clarificationListenSeconds()) : ctx.wakeRecordMaxSec;
+      const mode = clarification ? `answer:${maxSec}` : "auto";
       display({
-        status: "listening",
+        status: uiStatus("listening", mode),
         emoji: DEFAULT_EMOJI,
         RGB: "#00ff00",
-        text: `(Detect level: ${level}%) Listening...`,
+        text: recorderOnsetFix ? "Listening..." : `(Detect level: ${level}%) Listening...`,
         rag_icon_visible: false,
       });
-      recordAudio(ctx.currentRecordFilePath, ctx.wakeRecordMaxSec, level)
+      // The recorder writes nothing until sound passes its start level, so growth of its file is real speech detection.
+      const recordingFile = ctx.currentRecordFilePath;
+      const startedAt = performance.now();
+      let poll: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+        try {
+          if (fs.statSync(recordingFile).size > 1024) {
+            display({ status: uiStatus("listening", mode, "audio") });   // the recorder wrote sound: energy over its start level
+            if (poll) { clearInterval(poll); poll = undefined; }
+          }
+        } catch { /* the file does not exist yet */ }
+      }, 250);
+      const stopPolling = () => { if (poll) { clearInterval(poll); poll = undefined; } };
+      recordAudio(recordingFile, maxSec, level)
         .then(() => {
+          stopPolling();
+          // The recorder stops only after its end-silence, so the speech ended that long before it stopped (unless the time limit ended it).
+          const ended = performance.now();
+          const bySilence = ended - startedAt < maxSec * 1000 - 250;
+          beginTurn("auto", bySilence ? ended - voiceDetectEndSilenceSec * 1000 : ended);
           ctx.transitionTo("asr");
         })
         .catch((err) => {
+          stopPolling();
           console.error("Error during auto recording:", err);
           ctx.endWakeSession();
           ctx.transitionTo("sleep");
         });
-    });
+    };
+    if (recorderOnsetFix) {
+      startCapture(0);
+    } else {
+      display({
+        status: "detecting",
+        emoji: DEFAULT_EMOJI,
+        RGB: "#00ff00",
+        text: "Detecting voice level...",
+        rag_icon_visible: false,
+      });
+      getDynamicVoiceDetectLevel().then(startCapture);
+    }
   },
   asr: (ctx: ChatFlowContext) => {
     display({
       status: "recognizing",
+      RGB: "#ff6800",   // recording is over, whatever started it: the LED must not stay on the recording colour
     });
     onButtonDoubleClick(null);
+    const conversational = ctx.conversationCapture;   // set only for an automatic conversational follow-up capture
+    ctx.conversationCapture = false;
     Promise.race([
-      ctx.recognizeAudio(ctx.currentRecordFilePath, ctx.isFromWakeListening),
+      ctx.recognizeAudio(ctx.currentRecordFilePath, ctx.isFromWakeListening).catch((error: unknown) => {
+        console.error("[asr] Recognition failed, treated as silence:", error instanceof Error ? error.message : error);
+        return "";
+      }),
       new Promise<string>((resolve) => {
         onButtonPressed(() => {
           resolve("[UserPress]");
@@ -267,9 +327,15 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         ctx.transitionTo("listening");
         return;
       }
+      if (result && conversational && isNoiseTranscript(result)) {
+        console.log("[asr] Follow-up heard only noise or a stock phrase; back to idle.");   // no text is kept or acted on
+        result = "";
+      }
       if (result) {
+        result = redactWifiCredentials(result);
         console.log("Audio recognized result:", result);
         ctx.asrText = result;
+        markTiming("transcribed");
         ctx.endAfterAnswer = ctx.shouldEndAfterAnswer(result);
         if (ctx.wakeSessionActive) {
           ctx.wakeSessionLastSpeechAt = Date.now();
@@ -296,11 +362,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     ctx.resetToolCallDisplay();
     ctx.answerDisplayText = "";
     display({
-      status: "answering...",
+      status: uiStatus("answering...", hasTurn() && "said"),   // "said": the text on screen is what speech recognition returned
       RGB: "#00c8a3",
     });
     const currentAnswerId = ctx.answerId;
-    const unsupportedReminder = llmServer === "ollama" && unsupportedReminderReply(ctx.asrText) !== null;
+    const unsupportedReminder = llmServer === "ollama" && (unsupportedReminderReply(ctx.asrText) !== null || selfKnowledgeTopic(ctx.asrText) !== undefined);
     if (isImMode) {
       const prompt: {
         role: "system" | "user";
@@ -350,10 +416,14 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       currentAnswerId === ctx.answerId && ctx.currentFlowName === "answer";
     const trackingPartial = (text: string): void => {
       if (!isCurrentAnswer()) return;
+      markTiming("firstText");
       llmResponseText += text;
       // The screen shows the answer as it is spoken (see SpokenTextReveal).
       partial(text);
     };
+    let deviceHandoff: string | undefined;
+    let toolRan = false;     // any tool or host-routed device action in this turn: no automatic follow-up after it
+    let llmFailed = false;
     let resolveLlmDone: () => void = () => {};
     const llmDonePromise = new Promise<void>((resolve) => {
       resolveLlmDone = resolve;
@@ -363,9 +433,9 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
     Promise.all([
       [() => Promise.resolve().then(() => ""), getSystemPromptWithKnowledge]
       [enableRAG && !unsupportedReminder ? 1 : 0](ctx.asrText),
-      Promise.resolve().then(() => prepareMemoryPrompt(ctx.asrText)),
+      Promise.resolve().then(() => prepareMemoryMessage(ctx.asrText)),
     ])
-      .then(([res, memoryPrompt]: [string, string]) => {
+      .then(([res, memoryMessage]) => {
         const knowledgePrompt = res;
         if (res) {
           console.log("Retrieved knowledge for RAG:\n", res);
@@ -373,18 +443,8 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
         display({
           rag_icon_visible: Boolean(enableRAG && knowledgePrompt),
         });
-        const prompt: {
-          role: "system" | "user";
-          content: string;
-          contextScope?: "turn";
-        }[] = compact([
-          memoryPrompt
-            ? {
-              role: "system",
-              content: memoryPrompt,
-              contextScope: "turn" as const,
-            }
-            : null,
+        const prompt: Message[] = compact([
+          memoryMessage,
           knowledgePrompt
             ? {
               role: "system",
@@ -411,6 +471,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
             ctx.partialThinkingCallback(partialThinking),
           (functionName: string, result?: string) => {
             if (!isCurrentAnswer()) return;
+            toolRan = true;
+            if (functionName === "whisplay") {
+              const ticket = whisplayHandoffTicket(result);
+              if (ticket) deviceHandoff = ticket;
+            }
             if (
               functionName === "endConversation" &&
               result?.startsWith("[success]")
@@ -434,6 +499,11 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
               ctx.musicDisplayText = result.replace(/^\[success\]/, "").trim();
             }
             if (!result) {
+              toolStarted();
+            } else {
+              toolFinished(result.startsWith("[host:"));   // a host-routed device action: its outcome time is the action metric
+            }
+            if (!result) {
               ctx.appendToolCallDisplay(functionName);
             } else if (
               functionName === "runCommand" &&
@@ -454,11 +524,12 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
               }
               ctx.finishToolCallDisplay(functionName);
             } else {
-              ctx.finishToolCallDisplay(functionName);
+              ctx.finishToolCallDisplay(functionName, toolDisplayOutcome(result));
             }
           },
         ).catch((error) => {
           console.error("[answer] LLM stream failed:", error);
+          llmFailed = true;
           if (isCurrentAnswer()) {
             endPartial();
           }
@@ -472,12 +543,62 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
           ctx.transitionTo("sleep");
         }
       });
-    llmDonePromise.then(() => getPlayEndPromise()).then(() => {
-      if (isCurrentAnswer()) ctx.revealAllAnswerText();
+    llmDonePromise.then(() => getPlayEndPromise()).then(async () => {
+      if (deviceHandoff && !isCurrentAnswer()) cancelWhisplayHandoff(deviceHandoff);
+      if (isCurrentAnswer()) {
+        const timing = finishTurn();   // playback has ended: publish the one shown value and log the details
+        if (timing) console.info(diagnosticsLine(timing));
+        ctx.revealAllAnswerText();
+      }
       if (ctx.currentFlowName === "answer") {
-        autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder ? undefined : summaryTextWithLLM);
+        const savedExchange = autoSaveExchange(ctx.asrText, llmResponseText, unsupportedReminder || deviceHandoff ? undefined : summaryTextWithLLM);
         clearPendingCapturedImgForChat();
         display({ image_icon_visible: false });
+        if (deviceHandoff && isCurrentAnswer()) {
+          const deadline = operationDeadline(5000);
+          try {
+            await waitForOperation(Promise.resolve(savedExchange), deadline.signal);
+          } catch {
+            cancelWhisplayHandoff(deviceHandoff);
+            display({ text: "Device handoff cancelled: conversation saving was not confirmed." });
+            ctx.transitionTo("sleep");
+            return;
+          } finally { deadline.dispose(); }
+          if (!isCurrentAnswer()) { cancelWhisplayHandoff(deviceHandoff); return; }
+          // Speech has finished. Daemon cleanup owns the actual focus/mic handoff.
+          void presentWhisplayHandoff(deviceHandoff).catch(error => {
+            console.error("[Whisplay] Handoff failed:", error.message);
+            display({ text: "Device handoff failed. Use the physical Home gesture." });
+          });
+          ctx.transitionTo("sleep");
+          return;
+        }
+        // A host question is waiting for one short answer: the playback has fully ended, so after a short settle reopen the
+        // existing auto-recording state once. Silence ends it back in sleep; it is never taken as an answer.
+        // The same reopen serves an ordinary conversational answer (a short, bounded chain; see shouldContinueConversation).
+        const clarificationListen = isCurrentAnswer() && shouldListenAfterAnswer(ctx);
+        const asksQuestion = endsWithQuestionMark(llmResponseText);
+        const conversationListen = !clarificationListen && isCurrentAnswer() && shouldContinueConversation({
+          used: ctx.conversationFollowUps,
+          // every ordinary answer may follow up to the general limit; a reply that ends with "?" up to the question limit
+          limit: asksQuestion ? Math.max(conversationFollowUpLimit(), questionFollowUpLimit()) : conversationFollowUpLimit(),
+          wakeSessionActive: ctx.wakeSessionActive,
+          endAfterAnswer: ctx.endAfterAnswer, toolRan, failed: llmFailed, answered: llmResponseText.trim().length > 0,
+          musicNext: ctx.enterMusicAfterAnswer,
+        });
+        if (clarificationListen || conversationListen) {
+          setTimeout(() => {
+            if (ctx.currentFlowName !== "answer" || !isCurrentAnswer()) return;   // interrupted, replaced or ended meanwhile
+            if (conversationListen) {
+              ctx.conversationFollowUps += 1;
+              ctx.conversationCapture = true;
+              if (asksQuestion) ctx.followUpSeconds = QUESTION_LISTEN_SECONDS;
+            }
+            ctx.clarificationListen = true;
+            ctx.transitionTo("wake_listening");
+          }, CLARIFICATION_SETTLE_MS);
+          return;
+        }
         if (ctx.wakeSessionActive || ctx.endAfterAnswer) {
           if (ctx.endAfterAnswer) {
             ctx.endWakeSession();

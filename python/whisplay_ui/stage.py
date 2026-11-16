@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 from . import theme
 from . import visual_state as vs
+from . import optic
 from .draw_util import (
     STATE_COLORS,
     clamp01,
@@ -32,7 +33,7 @@ CAPTION_MID = theme.CAPTION_MID_Y - theme.STAGE_VISUAL_H - 2
 HEX = "0123456789ABCDEF"
 IDLE_RAIN_SECONDS = 30.0
 RAIN_FADE = 2.0
-ERROR_GLITCH = 0.45
+ERROR_GLITCH = 0.0   # no glitch effect: a failure is shown plainly
 PROMPT_USER = "pi@whisplay"
 PROMPT_PATH = "~"
 
@@ -45,6 +46,9 @@ class StageInfo:
         self.flags = flags
         self.quality = 0
         self.raw_status = ""
+        self.hint = ""
+        self.tokens = {}
+        self.transcript = ""
         self.tool_label = ""
         self.music_progress = None
         self.music_duration_ms = None
@@ -87,18 +91,21 @@ def render_visual(state, t, info):
     image = Image.new("RGB", (theme.WIDTH, VISUAL_H), theme.VOID)
     draw = ImageDraw.Draw(image)
     color = STATE_COLORS.get(state, theme.MUTED)
-    corner_brackets(draw, 8, 3, theme.WIDTH - 9, VISUAL_H - 4, 5, theme.LINE)
+    if state != vs.IDLE:
+        corner_brackets(draw, 8, 3, theme.WIDTH - 9, VISUAL_H - 4, 5, theme.LINE)
     cursor_rect = None
     painter = _PAINTERS.get(state, _generic)
     cursor_rect = painter(image, draw, t, info, color)
-    if info.flags.scanlines and info.quality == 0:
+    if state != vs.IDLE and info.flags.scanlines and info.quality == 0:
         image = _scanlines(image)
     return image, cursor_rect
 
 
 def _scanlines(image):
     arr = np.array(image, dtype=np.uint8)
-    arr[1::2] = (arr[1::2].astype(np.uint16) * 184 >> 8).astype(np.uint8)
+    foreground = np.any(arr[1::2] != np.asarray(theme.VOID), axis=2)
+    rows = arr[1::2]
+    rows[foreground] = (rows[foreground].astype(np.uint16) * 184 >> 8).astype(np.uint8)
     return Image.fromarray(arr, "RGB")
 
 
@@ -107,6 +114,12 @@ def _idle(image, draw, t, info, color):
     if rain_active(vs.IDLE, t, info):
         fade = clamp01(t / 0.5) * clamp01((IDLE_RAIN_SECONDS - t) / RAIN_FADE)
         _rain(image, draw, t, fonts, fade)
+    return terminal_identity(image, draw, t, info)
+
+
+def terminal_identity(image, draw, t, info):
+    """Original prompt and cursor, shared without decorative stage effects."""
+    fonts = info.fonts
     stack = fonts.prompt
     parts = [(PROMPT_USER, theme.GREEN), (":", theme.MUTED), (PROMPT_PATH, theme.CYAN), ("$", theme.MUTED)]
     width = sum(stack.width(text) for text, _ in parts) + 4 + theme.CURSOR_W
@@ -145,16 +158,15 @@ def _rain(image, draw, t, fonts, fade):
 
 def _boot(image, draw, t, info, color):
     fonts = info.fonts
-    title = "WHISPLAY"
-    width = fonts.pixel16.width(title)
-    draw_text(draw, image, fonts.pixel16, int((theme.WIDTH - width) / 2), MID - 8, title, theme.GREEN)
-    x0, x1, y = 40, 200, MID + 14
-    draw.rectangle([x0, y, x1, y + 3], outline=theme.GREEN_DEEP)
+    title = "Whisplay"
+    width = fonts.title.width(title)
+    draw_text(draw, image, fonts.title, int((theme.WIDTH - width) / 2), MID - 8, title, theme.INK)
+    x0, x1, y = 68, 172, MID + 14
+    draw.line([(x0, y), (x1, y)], fill=theme.HAIR)
     p = ease_in_out((t % 2.4) / 2.4)
-    fill_x = x0 + 1 + int((x1 - x0 - 2) * p)
-    if fill_x > x0 + 1:
-        draw.rectangle([x0 + 1, y + 1, fill_x, y + 2], fill=theme.GREEN_MID)
-        draw.rectangle([max(x0 + 1, fill_x - 2), y + 1, fill_x, y + 2], fill=theme.GREEN)
+    seg = 28
+    sx = int(x0 + (x1 - x0 - seg) * p)
+    draw.line([(sx, y), (sx + seg, y)], fill=theme.ACCENT)
     return None
 
 
@@ -242,72 +254,41 @@ def _think(image, draw, t, info, color):
 def _tool(image, draw, t, info, color):
     fonts = info.fonts
     label = info.tool_label or "tool"
-    text = fit_text(fonts.meta_bold, "% " + label, 190)
-    width = fonts.meta_bold.width(text)
-    draw_text(draw, image, fonts.meta_bold, int((theme.WIDTH - width) / 2), MID - 12, text, theme.CYAN)
-    x0, x1, y0, y1 = 20, 220, MID + 4, MID + 11
-    draw.rectangle([x0, y0, x1, y1], outline=theme.AMBER_DIM)
-    inner = x1 - x0 - 4
-    block = 44
-    p = 0.5 - 0.5 * math.cos(t * 2.4)
-    bx = x0 + 2 + int((inner - block) * p)
-    for ghost, shade in ((3, 0.25), (2, 0.45), (1, 0.7)):
-        q = 0.5 - 0.5 * math.cos((t - ghost * 0.05) * 2.4)
-        gx = x0 + 2 + int((inner - block) * q)
-        draw.rectangle([gx, y0 + 2, gx + block, y1 - 2], fill=mix(theme.VOID, theme.AMBER_MID, shade))
-    draw.rectangle([bx, y0 + 2, bx + block, y1 - 2], fill=theme.AMBER)
+    x = 30
+    hero = optic.hero(OPTIC_STAGE, 14.0, int((-24.0 * t) % 60), 0.0, 0.0, 6, 4, -1, int(((360.0 * t / 1.8) % 360.0) / 3.0) * 3, -1, 0, "", 0)
+    image.paste(hero, (x, (VISUAL_H - OPTIC_STAGE) // 2))
+    text = fit_text(fonts.small_bold, label, 110)
+    draw_text(draw, image, fonts.small_bold, x + OPTIC_STAGE + 14, MID, text, theme.INK)
     return None
+
+
+OPTIC_STAGE = 72
+
+
+def _stage_optic(image, **pose):
+    base = dict(opening=5.0, rot=0, dx=0.0, dy=0.0, act=0, bright=2, arc=-1, orbit=-1, scan=-1, notches=0, mark="", jam=0)
+    base.update(pose)
+    hero = optic.hero(OPTIC_STAGE, base["opening"], base["rot"], base["dx"], base["dy"], base["act"], base["bright"], base["arc"],
+                      base["orbit"], base["scan"], base["notches"], base["mark"], base["jam"])
+    x = (theme.WIDTH - OPTIC_STAGE) // 2 if pose.get("_x") is None else pose["_x"]
+    image.paste(hero, (x, (VISUAL_H - OPTIC_STAGE) // 2))
 
 
 def _error(image, draw, t, info, color):
-    fonts = info.fonts
-    x0, y0, size = theme.WIDTH // 2 - 18, MID - 18, 36
-    draw.line([(24, MID), (x0 - 10, MID)], fill=theme.RED_DIM)
-    draw.line([(x0 + size + 10, MID), (theme.WIDTH - 25, MID)], fill=theme.RED_DIM)
-    draw.rectangle([x0, y0, x0 + size - 1, y0 + size - 1], outline=theme.RED)
-    draw.rectangle([x0 + 2, y0 + 2, x0 + size - 3, y0 + size - 3], outline=theme.RED_DIM)
-    mark = "!"
-    width = fonts.pixel16.width(mark)
-    draw_text(draw, image, fonts.pixel16, int(theme.WIDTH / 2 - width / 2), MID, mark, theme.RED)
-    if t < ERROR_GLITCH:
-        strength = 1.0 - t / ERROR_GLITCH
-        source = image.copy()
-        band = 6
-        for k, top in enumerate(range(y0 - 4, y0 + size + 4, band)):
-            dx = int(round((hash01(k, int(t * 30)) - 0.5) * 18 * strength))
-            if dx:
-                strip = source.crop((0, top, theme.WIDTH, top + band))
-                image.paste(theme.VOID, (0, top, theme.WIDTH, top + band))
-                image.paste(strip, (dx, top))
+    _stage_optic(image, opening=11.0, act=8, bright=6, mark="!", jam=14)
     return None
 
 
-def _boxed_mark(image, draw, info, mark, fg, dim):
-    fonts = info.fonts
-    x0, y0, size = theme.WIDTH // 2 - 18, MID - 18, 36
-    draw.line([(24, MID), (x0 - 10, MID)], fill=dim)
-    draw.line([(x0 + size + 10, MID), (theme.WIDTH - 25, MID)], fill=dim)
-    draw.rectangle([x0, y0, x0 + size - 1, y0 + size - 1], outline=fg)
-    width = fonts.pixel16.width(mark)
-    draw_text(draw, image, fonts.pixel16, int(theme.WIDTH / 2 - width / 2), MID, mark, fg)
-
-
 def _approval(image, draw, t, info, color):
-    _boxed_mark(image, draw, info, "?", theme.AMBER, theme.AMBER_DIM)
+    _stage_optic(image, opening=22.0, act=8, bright=7, mark="?", notches=1)
     return None
 
 
 def _result(image, draw, t, info, color):
-    cx, cy = theme.WIDTH // 2, MID
     if is_denied(info.raw_status):
-        draw.line([(cx - 12, cy - 12), (cx + 12, cy + 12)], fill=theme.RED, width=3)
-        draw.line([(cx - 12, cy + 12), (cx + 12, cy - 12)], fill=theme.RED, width=3)
-        dim = theme.RED_DIM
+        _stage_optic(image, opening=16.0, act=8, bright=5, mark="x", jam=0)
     else:
-        draw.line([(cx - 14, cy + 1), (cx - 4, cy + 11), (cx + 15, cy - 11)], fill=theme.GREEN, width=3)
-        dim = theme.GREEN_DIM
-    draw.line([(24, cy), (cx - 28, cy)], fill=dim)
-    draw.line([(cx + 28, cy), (theme.WIDTH - 25, cy)], fill=dim)
+        _stage_optic(image, opening=24.0, act=8, bright=8, mark="ok", notches=4)
     return None
 
 
@@ -366,39 +347,39 @@ def caption_parts(state, t, info):
     color = STATE_COLORS.get(state, theme.MUTED)
     right, right_color, progress = "", theme.MUTED, None
     if state == vs.BOOT:
-        label = "STARTING"
+        label = "Starting"
     elif state == vs.IDLE:
-        label, right, right_color = "READY", "HOLD TO TALK", theme.DIM
+        label, right, right_color = "Ready", "", theme.INK3
     elif state == vs.CALIBRATE:
-        label, right = "CALIBRATING", "MIC LEVEL"
+        label, right = "Calibrating", "Mic level"
     elif state == vs.LISTEN:
-        label, right = "LISTENING", "REC " + fmt_mmss(t)
+        label, right = "Listening", fmt_mmss(t)
     elif state == vs.TRANSCRIBE:
-        label, right = "TRANSCRIBING", fmt_elapsed(t)
+        label, right = "Recognizing", fmt_elapsed(t)
     elif state == vs.THINK:
-        label, right = "THINKING", fmt_elapsed(t)
+        label, right = "Thinking", fmt_elapsed(t)
     elif state == vs.TOOL:
-        label, right = "TOOL CALL", fmt_elapsed(t)
+        label, right = "Tool call", fmt_elapsed(t)
     elif state == vs.ERROR:
-        label = "ERROR"
+        label = "Error"
         raw = (info.raw_status or "").strip()
         # Show the raw status only when it is itself an error string (not
         # the "idle" that arrives while the error is latched).
         if raw and raw.lower() != "error" and vs.classify(raw) == vs.ERROR:
-            right = raw.upper()
+            right = raw
     elif state == vs.APPROVAL:
-        label, right = "CONFIRM", "ACTION REQUIRED"
+        label, right = "Confirm", "Action required"
     elif state == vs.RESULT:
         if is_denied(info.raw_status):
-            label, color = "DENIED", theme.RED
+            label, color = "Denied", theme.RED
         else:
-            label = "ALLOWED"
+            label = "Allowed"
     elif state == vs.MUSIC:
-        label = "PLAYING"
+        label = "Playing"
     elif state == vs.CAMERA:
-        label = "CAMERA"
+        label = "Camera"
     else:
-        label = (info.raw_status or "").strip().upper() or "STATUS"
+        label = (info.raw_status or "").strip() or "Status"
     if info.music_progress is not None:
         progress = clamp01(float(info.music_progress))
         duration = info.music_duration_ms or 0
@@ -418,27 +399,21 @@ def render_caption(parts, t, info, state):
     draw = ImageDraw.Draw(image)
     fonts = info.fonts
     x = theme.CHROME_LEFT
-    if state == vs.LISTEN:
-        pulse = 0.5 + 0.5 * math.cos(t * math.pi * 2.0)
-        dot = mix(theme.GREEN_DIM, theme.GREEN, pulse)
-        draw.ellipse([x, CAPTION_MID - 3, x + 5, CAPTION_MID + 2], fill=dot)
-    else:
-        draw_text(draw, image, fonts.pixel8, x, CAPTION_MID, ">", color)
-    label_end = draw_text(draw, image, fonts.pixel8, x + 9, CAPTION_MID, fit_text(fonts.pixel8, label, 120), color)
+    lamp = theme.INK3 if color in (theme.INK2, theme.INK3, theme.MUTED) else color
+    draw.ellipse([x, CAPTION_MID - 3, x + 6, CAPTION_MID + 3], fill=lamp)
+    label_end = draw_text(draw, image, fonts.small_bold, x + 14, CAPTION_MID, fit_text(fonts.small_bold, label, 130), theme.INK)
     if right:
-        stack = fonts.pixel8
-        text = fit_text(stack, right, theme.CHROME_RIGHT - label_end - 10)
+        stack = fonts.small
+        text = fit_text(stack, right, theme.CHROME_RIGHT - label_end - 12)
         width = stack.width(text)
-        draw_text(draw, image, stack, int(theme.CHROME_RIGHT - width), CAPTION_MID, text, right_color)
+        draw_text(draw, image, stack, int(theme.CHROME_RIGHT - width), CAPTION_MID, text, right_color if right_color != theme.MUTED else theme.INK3)
+    y = CAPTION_H - 1
+    draw.line([(theme.CHROME_LEFT, y), (theme.CHROME_RIGHT - 1, y)], fill=theme.HAIR)
     if progress is not None:
         y = CAPTION_H - 4
         x0, x1 = theme.CHROME_LEFT, theme.CHROME_RIGHT - 1
-        draw.line([(x0, y), (x1, y)], fill=theme.LINE)
+        draw.line([(x0, y), (x1, y)], fill=theme.HAIR)
         fill_x = x0 + int((x1 - x0) * progress)
         if fill_x > x0:
-            draw.line([(x0, y), (fill_x, y)], fill=theme.GREEN)
-    # Dotted divider between the stage and the body.
-    y = CAPTION_H - 1
-    for dx in range(theme.CHROME_LEFT, theme.CHROME_RIGHT, 3):
-        draw.point((dx, y), fill=theme.LINE)
+            draw.line([(x0, y), (fill_x, y)], fill=theme.ACCENT)
     return image

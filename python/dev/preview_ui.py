@@ -28,11 +28,23 @@ os.chdir(PY_DIR)  # chatbot-ui.py resolves img/, emoji_svg/ and fonts from here
 if PY_DIR not in sys.path:
     sys.path.insert(0, PY_DIR)
 
+try:  # the preview needs no SVG emoji; a missing cairosvg must not stop it
+    import cairosvg  # noqa: F401
+except Exception:  # pragma: no cover - depends on the machine
+    _stub = types.ModuleType("cairosvg")
+
+    def _no_svg(*a, **k):
+        raise RuntimeError("cairosvg is not installed")
+
+    _stub.svg2png = _no_svg
+    sys.modules["cairosvg"] = _stub
+
 import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from whisplay_ui import clock  # noqa: E402
 from whisplay_ui import theme  # noqa: E402
+from whisplay_ui import visual_state as vs  # noqa: E402
 
 W, H = 240, 280
 FALLBACK_BASE_FONTS = [
@@ -343,6 +355,45 @@ def scenario(session):
            vpn_connected=False, rag_icon_visible=False, image_icon_visible=False, wifi_signal_level=3)
     wait(1.0)
 
+    # Microphone and response feedback (status tokens, see visual_state.split_status).
+    s.send(status="idle|capri", text="")
+    wait(0.8)
+    s.shot("ux_idle_capri")
+    s.send(status="idle|capri,heard", text="")
+    wait(0.8)
+    s.shot("ux_idle_capri_heard")
+    for name, status in (("ux_rec_hold", "listening"), ("ux_rec_capri", "listening|capri"), ("ux_rec_auto", "listening|auto"),
+                         ("ux_rec_answer", "listening|answer:7"), ("ux_rec_audio", "listening|answer:7,audio")):
+        s.send(status=status, text="Listening...")
+        wait(2.2)
+        s.shot(name)
+    s.send(status="recognizing", text="turn off the tv screen")
+    wait(0.8)
+    s.shot("ux_transcribing")
+    s.send(status="answering...|said", text="turn off the tv screen")
+    wait(1.0)
+    s.shot("ux_thinking_said")
+    s.send(status="answering", text="{tool:t1}", tool_placeholders={"t1": "% tv-screen..."})
+    wait(1.0)
+    s.shot("ux_executing")
+    s.send(status="answering", text="{tool:t1} Screen off.", tool_placeholders={"t1": "% tv-screen.ok..."}, transaction_id=9)
+    wait(2.0)
+    s.shot("ux_action_ok")
+    s.send(status="idle|capri,act:2.1", text="{tool:t1} Screen off.", tool_placeholders={"t1": "% tv-screen.ok..."})
+    wait(1.0)
+    s.shot("ux_idle_action_time")
+    s.send(status="idle|capri,resp:1.8", text="It is 14:05.", tool_placeholders={})
+    wait(1.0)
+    s.shot("ux_idle_response_time")
+    s.send(status="idle|capri,pend:capri", text="Do you mean the TV screen or Whisplay's screen?", tool_placeholders={})
+    wait(1.0)
+    s.shot("ux_pending_capri")
+    s.send(status="idle|pend:button", text="Do you mean the TV screen or Whisplay's screen?")
+    wait(0.8)
+    s.shot("ux_pending_button")
+    s.send(status="idle", text="")
+    wait(1.0)
+
 
 def contact_sheet(shots, columns=4, scale=1, bezel=True):
     pad, label_h = 12, 18
@@ -437,12 +488,149 @@ def selftest():
         check(renders <= 70, "settled idle renders only on blink/clock edges")
         check(pixels * 2 / 30.0 < 4096, "settled idle pushes < 4 KB/s")
         s.send(status="listening", text="Listening...")
-        s.run_until(70.5)
+        s.run_until(72.0)             # the shutter has settled into its steady listening motion
         s.lcd.pushes.clear()
-        s.run_until(71.5)
-        top = min(y for _, y, _, _ in s.lcd.pushes)
-        bottom = max(y + h for _, y, _, h in s.lcd.pushes)
-        check(top >= theme.PANE_Y and bottom <= theme.BODY_TOP_STAGE, "listening animates only the stage region")
+        s.run_until(73.0)
+        widest = max(w for _, _, w, _ in s.lcd.pushes)
+        listening_bytes = sum(w * h for _, _, w, h in s.lcd.pushes) * 2
+        check(widest <= 112, "listening pushes only small rectangles around the optic and its caption, never the whole pane")
+        check(listening_bytes < 700 * 1024, "listening pushes < 700 KB in a second (%d B): the optic square at 20 fps" % listening_bytes)
+    finally:
+        s.close()
+
+    print("[selftest] clarification status keeps the answer and never looks like listening")
+    s = Session()
+    try:
+        s.send(status="answering", emoji="💬", text="Do you mean the TV screen or Whisplay's screen?")
+        s.run_until(8.0)
+        body = lambda top: np.asarray(s.lcd.image())[top:theme.CONTENT_SAFE_BOTTOM].copy()
+        s.send(status="idle", emoji="😴")
+        s.run_until(9.0)
+        before = body(theme.BODY_TOP_STAGE)
+        s.send(status="Your turn", emoji="😴")
+        s.run_until(10.0)
+        check(s.rt.terminal_ui.tracker.state == vs.GENERIC, "pending clarification uses the existing generic state")
+        check(s.rt.terminal_ui.tracker.state not in (vs.LISTEN, vs.CALIBRATE, vs.TRANSCRIBE), "it is not a listening state")
+        check(s.rt.terminal_ui._status_model({}, vs.GENERIC)["label"] == "YOUR TURN", "status bar says YOUR TURN")
+        bright = lambda a: int((a.max(axis=2) > 128).sum())
+        pending = body(theme.BODY_TOP_STAGE)      # the generic state keeps the stage layout
+        check(bright(pending) > 200, f"the answer text is drawn while the clarification is pending ({bright(pending)} bright px)")
+        check(s.cb.current_text == "Do you mean the TV screen or Whisplay's screen?", "the status-only update leaves the answer text untouched")
+        s.send(status="idle", emoji="😴")
+        s.run_until(11.0)
+        check(s.rt.terminal_ui.tracker.state == vs.IDLE, "the pending status clears back to idle")
+        check(np.array_equal(before, body(theme.BODY_TOP_STAGE)), "the idle view is restored exactly")
+        check(s.cb.current_text == "Do you mean the TV screen or Whisplay's screen?", "the answer text is still held after returning to idle")
+    finally:
+        s.close()
+
+    print("[selftest] the reply text after an outcome tag is never swallowed")
+    s = Session()
+    try:
+        def shown_text(placeholder, text):
+            s.send(status="answering", emoji="💬", text="{tool:t1} " + text, tool_placeholders={"t1": placeholder}, transaction_id=int(s.now) + 1)
+            s.run_until(s.now + 8.0)
+            return " ".join("".join(g[0] for g in line.glyphs) for line in s.rt.terminal_ui.body.layout.lines if line.kind == "text")
+
+        replies = ["Screen off.", "I couldn't change the TV screen.", "TV screen change is unverified.", "tv-screen is off",
+                   "Line one.\nLine two.\nLine three.", "Screen off.\n\nSecond paragraph.", "42 degrees.", "ok then"]
+        for tag in ("% tv-screen...", "% tv-screen.ok...", "% tv-screen.failed...", "% tv-screen.unverified..."):
+            for reply in replies:
+                wanted = " ".join(reply.split())
+                check(wanted in " ".join(shown_text(tag, reply).split()), f"reply text intact after {tag}: {wanted[:30]!r}")
+        both = shown_text("% tv-screen.ok...", "Screen off.")
+        check("Screen off." in both, "a second tag (action then tool) leaves the text intact")
+        # Negative control: the form without the delimiter really does swallow the first word, so the checks above can fail.
+        check("Screen off." not in shown_text("% tv-screen.ok", "Screen off."), "control: an undelimited outcome tag hides the first word (why the delimiter is required)")
+    finally:
+        s.close()
+
+    print("[selftest] host action tags show the running and outcome states")
+    s = Session()
+    try:
+        s.send(status="answering...", emoji="🤔", text="")
+        s.run_until(1.0)
+        s.send(status="answering", text="{tool:t1}", tool_placeholders={"t1": "% tv-screen..."})
+        s.run_until(2.0)
+        running = np.asarray(s.lcd.image()).copy()
+        check(s.rt.terminal_ui.tracker.state in (vs.ANSWER, vs.THINK), "a running host action stays in the existing answer view")
+        for outcome in ("ok", "failed", "unverified"):
+            s.send(status="answering", text="{tool:t1} Screen off.", tool_placeholders={"t1": "% tv-screen." + outcome + "..."})
+            s.run_until(s.now + 1.5)
+            check(s.lcd.fb.any(), "outcome tag renders: " + outcome)
+        check(not np.array_equal(running, np.asarray(s.lcd.image())), "the outcome changes what is drawn")
+    finally:
+        s.close()
+
+    print("[selftest] microphone and response feedback wording")
+    s = Session()
+    try:
+        check(vs.split_status("idle|capri,resp:1.8") == ("idle", "capri,resp:1.8") and vs.classify("idle|capri") == vs.IDLE
+              and vs.classify("listening|auto,audio") == vs.LISTEN and vs.classify("answering...|said") == vs.THINK and vs.classify("idle") == vs.IDLE,
+              "status tokens do not change the classified state")
+        check(vs.parse_tokens("answer:7,audio") == {"answer": "7", "audio": ""} and vs.parse_tokens("") == {}, "token parsing")
+        frames = {}
+
+        def look(name, status, text="", settle=1.2, **extra):
+            s.send(status=status, emoji="😴", text=text, **extra)
+            s.run_until(s.now + settle)
+            frames[name] = np.asarray(s.lcd.image()).copy()
+            s.shot("selftest_" + name)
+            return s.rt.terminal_ui.tracker.state
+
+        check(look("idle", "idle") == vs.IDLE, "idle without Capri")
+        check(look("idle_capri", "idle|capri") == vs.IDLE, "idle with Capri running is still idle, not recording")
+        check(not np.array_equal(frames["idle"], frames["idle_capri"]), "the instruction line tells that Capri is available")
+        check(look("idle_heard", "idle|capri,heard") == vs.IDLE, "the wake acknowledgement stays in the idle layout and is not a recording state")
+        check(not np.array_equal(frames["idle_capri"], frames["idle_heard"]), "the wake acknowledgement is visible")
+        s.send(status="answering", emoji="😊", text="It is 14:05."); s.run_until(s.now + 2.5)
+        check(look("answer_idle", "idle|capri", "It is 14:05.") == vs.IDLE, "a completed answer stays shown in idle")
+        check(look("answer_heard", "idle|capri,heard", "It is 14:05.") == vs.IDLE, "the acknowledgement also shows over a retained answer")
+        check(not np.array_equal(frames["answer_idle"], frames["answer_heard"]), "retained answer: the acknowledgement is visible")
+        states = {n: look(n, st, "Listening...", settle=2.2) for n, st in
+                  (("hold", "listening"), ("auto", "listening|auto"), ("answer", "listening|answer:7"), ("audio", "listening|answer:7,audio"), ("capri_rec", "listening|capri"))}
+        check(all(v == vs.LISTEN for v in states.values()), "every active capture is the recording state")
+        names = list(states)
+        check(all(not np.array_equal(frames[a], frames[b]) for i, a in enumerate(names) for b in names[i + 1:]),
+              "hold, auto, answer, audio-detected and Capri captures are visibly different")
+        check(look("said", "answering...|said", "turn off the tv screen", settle=1.0) == vs.THINK, "thinking with the recognised text")
+        check(look("not_said", "answering...", "turn off the tv screen", settle=1.0) == vs.THINK, "thinking without a speech transcript")
+        check(not np.array_equal(frames["said"], frames["not_said"]), "the recognised text is shown only when Node says it came from speech")
+        def after_answer(name, status, text):
+            # The response strip replaces the microphone pane only after an answer was shown.
+            s.send(status="answering", emoji="💬", text=text, transaction_id=len(frames) + 20)
+            s.run_until(s.now + 2.5)
+            return look(name, status, text, settle=1.5)
+
+        after_answer("resp", "idle|capri,resp:1.8", "It is 14:05.")
+        after_answer("act", "idle|capri,act:2.1", "Screen off.")
+        after_answer("plain_response", "idle|capri", "Screen off.")
+        check(not np.array_equal(frames["resp"], frames["plain_response"]) and not np.array_equal(frames["act"], frames["resp"]),
+              "the response strip shows RESPONSE and ACTION values, and none when nothing was measured")
+        after_answer("pend_capri", "idle|capri,pend:capri", "Do you mean the TV screen or Whisplay's screen?")
+        check(not np.array_equal(frames["pend_capri"], frames["plain_response"]), "a pending clarification is visible on the response strip")
+        check(look("pend_idle", "idle|pend:button") == vs.IDLE, "pending clarification stays an idle state")
+        def changed_box(a, b):
+            ys, xs = np.nonzero((frames[a] != frames[b]).any(axis=2))
+            return (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())) if len(xs) else None
+
+        pairs = [("idle", "idle_capri"), ("idle", "pend_idle"), ("hold", "auto"), ("hold", "answer"), ("hold", "audio"), ("hold", "capri_rec"),
+                 ("not_said", "said"), ("plain_response", "resp"), ("plain_response", "act"), ("plain_response", "pend_capri")]
+        for a, b in pairs:
+            box = changed_box(a, b)
+            inside = box is not None and box[0] >= theme.CHROME_LEFT - 2 and box[2] <= theme.CHROME_RIGHT + 2 and box[1] >= theme.PANE_Y and box[3] < theme.CONTENT_SAFE_BOTTOM
+            check(inside, f"new wording stays inside the safe margins: {a} -> {b} changes only {box}")
+        # Hints must not make the settled screen redraw: same budget as plain idle.
+        s.send(status="idle|capri,resp:1.8", text="")
+        s.run_until(s.now + 40.0)
+        renders = s.frames
+        s.lcd.pushes.clear()
+        s.run_until(s.now + 30.0)
+        check(s.frames - renders <= 70, f"a settled idle screen with hints renders {s.frames - renders} times in 30 s")
+        s.send(status="idle|capri,resp:1.8", text="")      # identical status again: nothing to redraw
+        s.lcd.pushes.clear()
+        s.run_until(s.now + 1.0)
+        check(len(s.lcd.pushes) <= 4, "repeating the same status is not a redraw")
     finally:
         s.close()
 
