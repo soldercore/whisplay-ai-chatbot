@@ -20,7 +20,7 @@ from . import theme
 from . import visual_state as vs
 from .draw_util import mix
 
-SS = 4
+SS = 3
 LEAVES = 6
 SHEAR = 16.0                      # degrees: how far each leaf's radial edge is swept (the pinwheel look)
 LEAF = (22, 19, 16)
