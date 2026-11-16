@@ -21,7 +21,7 @@ def _q(r, g, b):
     return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
 
 
-VOID = _q(10, 8, 6)            # warm black
+VOID = (0, 0, 0)               # true black: it must disappear into the bezel of the LCD
 HAIR = _q(40, 36, 32)          # hairlines
 INK = _q(238, 231, 220)        # primary text
 INK2 = _q(170, 162, 150)       # secondary text

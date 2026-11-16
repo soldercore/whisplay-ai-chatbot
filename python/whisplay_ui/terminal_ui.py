@@ -20,7 +20,7 @@ from .eye import ERROR as EYE_ERROR, IDLE as EYE_IDLE, LISTEN as EYE_LISTEN, SPE
 from .fonts import Fonts
 from .panes import (
     STRIP_H,
-    MIC_H, MIC_STATES, MIC_FPS, render_microphone,
+    MIC_H, MIC_STATES, MIC_FPS, OPTIC, OPTIC_Y, render_microphone,
     STRIP_RECEIVING,
     STRIP_RESPONSE,
     STRIP_SPEAKING,
@@ -383,13 +383,22 @@ class TerminalUI:
         rects = []
         if kind == KIND_MIC:
             eye_img, eye_key = self._eye_for_mic(state, now)
-            key = (state, int(t * MIC_FPS) if state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK) else None,
-                   self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key)
+            static = (state, self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key)
+            key = (static, int(t * MIC_FPS) if state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK) else None)
             if key != self.side_key or force:
+                animation_only = (not force and self.side_key is not None and self.side_key[0] == static
+                                  and self.pane_h >= full_h)
                 self.side_key = key
                 self.pane_img = render_microphone(self.fonts, state, t, self.info, eye_img)
-                self._paste_pane(self.pane_img, full_h)
-                rects.append((0, y0, theme.WIDTH, y0+self.pane_h))
+                if animation_only:
+                    # Only the optic moved: repaint and push its square, not the whole pane.
+                    x = (theme.WIDTH - OPTIC) // 2
+                    box = (x, OPTIC_Y, x + OPTIC, OPTIC_Y + OPTIC)
+                    self.frame.paste(self.pane_img.crop(box), (x, y0 + OPTIC_Y))
+                    rects.append((x, y0 + OPTIC_Y, x + OPTIC, y0 + OPTIC_Y + OPTIC))
+                else:
+                    self._paste_pane(self.pane_img, full_h)
+                    rects.append((0, y0, theme.WIDTH, y0+self.pane_h))
             return rects
 
         if kind == KIND_STAGE:

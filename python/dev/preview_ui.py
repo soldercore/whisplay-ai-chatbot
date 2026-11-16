@@ -482,7 +482,9 @@ def selftest():
         s.run_until(71.5)
         top = min(y for _, y, _, _ in s.lcd.pushes)
         bottom = max(y + h for _, y, _, h in s.lcd.pushes)
-        check(top >= theme.PANE_Y and bottom <= theme.BODY_TOP_STAGE, "listening animates only the stage region")
+        from whisplay_ui import panes as _panes
+        check(top >= theme.PANE_Y + _panes.OPTIC_Y and bottom <= theme.PANE_Y + _panes.OPTIC_Y + _panes.OPTIC,
+              "listening animates only the optic square")
     finally:
         s.close()
 
