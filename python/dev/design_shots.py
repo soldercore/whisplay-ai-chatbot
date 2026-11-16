@@ -52,6 +52,8 @@ try:
     s.send(status="listening|capri,audio", emoji="😐", text="Listening..."); s.run_until(s.now + 0.5); snap(s, "03b_listening_audio")
     s.send(status="recognizing", emoji="😐", text=""); s.run_until(s.now + 0.5); snap(s, "04_recognizing")
     s.send(status="answering...|said", emoji="😐", text="what's the weather in Tokyo"); s.run_until(s.now + 0.9); snap(s, "05_thinking")
+    s.send(status="answering...|said", emoji="😐", text="Capri, tell me a long story about a robot who learns to paint and then forgets how to count the colors until morning"); s.run_until(s.now + 0.5); snap(s, "05b_thinking_long_utterance")
+    s.send(status="answering...|said", emoji="😐", text="what's the weather in Tokyo"); s.run_until(s.now + 0.5)
     s.send(status="answering", emoji="🌧", scroll_speed=3, transaction_id=2); s.run_until(s.now + 0.3)
     shown = 0
     while shown < len(ANSWER):
@@ -69,7 +71,7 @@ try:
     sheet_s.save(os.path.join(out, "film_speaking_strip.png"))
     snap(s, "06_speaking")
     s.run_until(s.now + 6.0)
-    s.send(status="idle|capri,resp:4.5"); s.run_until(s.now + 1.0); snap(s, "07_response_stays")
+    s.send(status="idle|capri,resp:4.5"); s.run_until(s.now + 1.0); snap(s, "07_response_stays_with_what_you_said")
     s.send(status="idle|capri,resp:4.5,heard"); s.run_until(s.now + 0.4); snap(s, "07b_wake_over_response")
     s.send(status="error", emoji="😐", text="Offline: cannot reach the language model"); s.run_until(s.now + 1.0); snap(s, "08_error")
     s.send(status="tool calling", emoji="😐", text="[webSearch] Tokyo weather", tool_placeholders={"t1": "% webSearch..."}); s.run_until(s.now + 0.8); snap(s, "09_tool")

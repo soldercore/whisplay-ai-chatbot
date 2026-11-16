@@ -21,7 +21,7 @@ from .fonts import Fonts
 from . import optic
 from .panes import (
     STRIP_H,
-    MIC_H, MIC_STATES, MIC_FPS, OPTIC, OPTIC_Y, render_microphone,
+    MIC_H, MIC_STATES, MIC_FPS, OPTIC, OPTIC_Y, render_microphone, render_heard, heard_height, hero_top,
     STRIP_RECEIVING,
     STRIP_RESPONSE,
     STRIP_SPEAKING,
@@ -126,6 +126,8 @@ class TerminalUI:
         self.pane_img = None
         self.geometry = None
         self.approval_drawn = False
+        self.said_text = ''
+        self.heard_key = None
         self._animating = False
         # transitions
         self.xfade_from = None
@@ -202,6 +204,8 @@ class TerminalUI:
         # Body text runs to the side margins, so it stops above the rounded
         # bottom corners (theme.CONTENT_SAFE_BOTTOM) or at the approval bar.
         body_bottom = theme.HEIGHT - theme.APPROVAL_H if approval else theme.CONTENT_SAFE_BOTTOM
+        heard_h = heard_height(self.fonts, self.said_text) if (kind == KIND_STRIP and self.said_text and not approval) else 0
+        body_bottom -= heard_h
         body_h = max(0, body_bottom - body_top)
         self.body.update(now, dt, body_h)
 
@@ -246,6 +250,12 @@ class TerminalUI:
             self.frame.paste(theme.VOID, (0, body_bottom, theme.WIDTH, theme.HEIGHT))
             dirty.append((0, body_bottom, theme.WIDTH, theme.HEIGHT))
         self.approval_drawn = approval
+        if heard_h and (geometry_changed or self.heard_key != (self.said_text, heard_h)):
+            self.heard_key = (self.said_text, heard_h)
+            self.frame.paste(render_heard(self.fonts, self.said_text), (0, body_bottom))
+            dirty.append((0, body_bottom, theme.WIDTH, body_bottom + heard_h))
+        elif not heard_h:
+            self.heard_key = None
 
         self.full = False
         self._push(dirty, full)
@@ -272,6 +282,7 @@ class TerminalUI:
             text = ""
         if state in (vs.LISTEN, vs.CALIBRATE):
             self.response_text = None
+            self.said_text = ''
         elif state == vs.ANSWER and text.strip():
             self.response_text = text
         elif state == vs.IDLE and self.response_text is not None:
@@ -344,7 +355,9 @@ class TerminalUI:
         info.raw_status, info.hint = vs.split_status(status)
         info.tokens = vs.parse_tokens(info.hint)
         # What was recognised, only while the answer is being prepared and only when Node says it came from speech.
-        info.transcript = (self.text or "").strip() if "said" in info.tokens else ""
+        info.transcript = (self.text or "").strip() if ("said" in info.tokens or self.tracker.state == vs.TRANSCRIBE) else ""
+        if info.transcript:
+            self.said_text = info.transcript      # kept under the answer until the next utterance starts
         info.music_progress = snapshot.get("music_progress")
         info.music_duration_ms = snapshot.get("music_duration_ms")
         label = ""
@@ -403,8 +416,9 @@ class TerminalUI:
                 if animation_only:
                     # Only the optic moved: repaint and push its square, not the whole pane (the words are unchanged).
                     x = (theme.WIDTH - OPTIC) // 2
-                    self.frame.paste(self.info.motion.render(OPTIC), (x, y0 + OPTIC_Y))
-                    rects.append((x, y0 + OPTIC_Y, x + OPTIC, y0 + OPTIC_Y + OPTIC))
+                    top = hero_top(self.info)
+                    self.frame.paste(self.info.motion.render(OPTIC), (x, y0 + top))
+                    rects.append((x, y0 + top, x + OPTIC, y0 + top + OPTIC))
                 else:
                     self.pane_img = render_microphone(self.fonts, state, t, self.info, eye_img)
                     self._paste_pane(self.pane_img, full_h)

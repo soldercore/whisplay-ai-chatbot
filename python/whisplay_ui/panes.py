@@ -138,6 +138,62 @@ def _center(draw, image, stack, y, text, fill, width=204):
     draw_text(draw, image, stack, int((theme.WIDTH - stack.width(text)) / 2), y, text, fill)
 
 
+QUOTE_X = 22
+QUOTE_W = 196
+QUOTE_LINE = 15
+HEARD_PAD = 6
+
+
+def wrap_quote(stack, text, width=QUOTE_W, max_lines=2):
+    """Greedy word wrap of what the user said, in typographic quotes. Never alters the words; only an overlong
+    tail is cut with an ellipsis. The result is exactly what recognition returned."""
+    text = " ".join((text or "").split())
+    if not text:
+        return []
+    text = "\u201c" + text + "\u201d"
+    words, lines, current, i = text.split(" "), [], "", 0
+    while i < len(words):
+        trial = (current + " " + words[i]).strip()
+        if stack.width(trial) <= width or not current:
+            current = trial
+            i += 1
+        else:
+            lines.append(current)
+            current = ""
+            if len(lines) == max_lines:
+                break
+    if len(lines) < max_lines and current:
+        lines.append(current)
+        current = ""
+    elif len(lines) == max_lines and i < len(words) or (current and len(lines) == max_lines):
+        rest = " ".join([lines[-1]] + ([current] if current else []) + words[i:])
+        lines[-1] = fit_text(stack, rest, width)
+    return [fit_text(stack, line, width) for line in lines]
+
+
+def heard_height(fonts, text, max_lines=2):
+    lines = wrap_quote(fonts.small, text, QUOTE_W, max_lines)
+    return HEARD_PAD * 2 + QUOTE_LINE * len(lines) - 3 if lines else 0
+
+
+def render_heard(fonts, text, max_lines=2):
+    """The bar under the answer: what speech recognition returned, in the secondary voice, with a rule on its left.
+    GLaDOS's words are large and warm white; yours are small, grey and quoted."""
+    lines = wrap_quote(fonts.small, text, QUOTE_W, max_lines)
+    height = heard_height(fonts, text, max_lines)
+    image = Image.new("RGB", (theme.WIDTH, max(1, height)), theme.VOID)
+    draw = ImageDraw.Draw(image)
+    draw.line([(theme.CHROME_LEFT, HEARD_PAD - 1), (theme.CHROME_LEFT, height - HEARD_PAD + 1)], fill=theme.INK3, width=2)
+    for index, line in enumerate(lines):
+        draw_text(draw, image, fonts.small, QUOTE_X, HEARD_PAD + 7 + index * QUOTE_LINE, line, theme.INK2)
+    return image
+
+
+def hero_top(info):
+    """The optic sits a little higher when what you said needs room under it."""
+    return OPTIC_Y - 8 if getattr(info, "transcript", "") else OPTIC_Y
+
+
 def _limit(tokens):
     for key in ("answer", "auto"):
         value = tokens.get(key, "")
@@ -170,8 +226,7 @@ def render_microphone(fonts, state, t, info, eye_image=None):
         title, sub = "Recognizing speech", ""
     elif state == vs.THINK:
         title = "Thinking"
-        said = getattr(info, "transcript", "")
-        sub = ("\u201c" + said.replace(chr(10), " ") + "\u201d") if said else "Preparing response"
+        sub = "" if getattr(info, "transcript", "") else "Preparing response"
     elif "heard" in tokens:
         title, sub = "Capri heard", ""
     else:
@@ -187,9 +242,16 @@ def render_microphone(fonts, state, t, info, eye_image=None):
             sub = "Hold to talk"
     motion = getattr(info, "motion", None)
     hero = motion.render(OPTIC) if motion is not None else optic.hero(OPTIC, 5.0, 0, 0.0, 0.0, 0, 2, -1, -1, -1, 0, "", 0)
-    image.paste(hero, ((theme.WIDTH - OPTIC) // 2, OPTIC_Y))
-    _center(draw, image, fonts.title, 178, title, theme.INK)
-    if sub:
+    quote = wrap_quote(fonts.small, getattr(info, "transcript", ""), QUOTE_W, 3) if state in (vs.TRANSCRIBE, vs.THINK) else []
+    shift = 8 if quote else 0
+    image.paste(hero, ((theme.WIDTH - OPTIC) // 2, OPTIC_Y - shift))
+    _center(draw, image, fonts.title, 178 - shift, title, theme.INK)
+    if quote:
+        top = 197 - shift
+        draw.line([(theme.CHROME_LEFT, top - 8), (theme.CHROME_LEFT, top - 8 + QUOTE_LINE * len(quote))], fill=theme.INK3, width=2)
+        for index, line in enumerate(quote):
+            draw_text(draw, image, fonts.small, QUOTE_X, top + index * QUOTE_LINE, line, theme.INK2)
+    elif sub:
         _center(draw, image, fonts.small, 203, sub, theme.INK2)
     if third:
         _center(draw, image, fonts.small, 223, third, theme.INK3)
