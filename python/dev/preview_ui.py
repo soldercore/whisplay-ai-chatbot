@@ -480,11 +480,10 @@ def selftest():
         s.run_until(70.5)
         s.lcd.pushes.clear()
         s.run_until(71.5)
-        top = min(y for _, y, _, _ in s.lcd.pushes)
-        bottom = max(y + h for _, y, _, h in s.lcd.pushes)
-        from whisplay_ui import panes as _panes
-        check(top >= theme.PANE_Y + _panes.OPTIC_Y and bottom <= theme.PANE_Y + _panes.OPTIC_Y + _panes.OPTIC,
-              "listening animates only the optic square")
+        widest = max(w for _, _, w, _ in s.lcd.pushes)
+        listening_bytes = sum(w * h for _, _, w, h in s.lcd.pushes) * 2
+        check(widest <= 112, "listening pushes only small rectangles around the optic and its caption, never the whole pane")
+        check(listening_bytes < 24 * 1024, "listening pushes < 24 KB in a second (%d B)" % listening_bytes)
     finally:
         s.close()
 
