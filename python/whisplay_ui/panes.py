@@ -62,7 +62,7 @@ def render_strip(fonts, mode, t, emoji_image=None, progress=None, tokens=None):
         # One measured value per response, from real events: RESPONSE (speech end to first audible reply) or, for a
         # device command, ACTION (speech end to the verified outcome). Nothing is drawn when it was not measured.
         measured = _seconds(tokens.get("act")) if "act" in tokens else _seconds(tokens.get("resp")) if "resp" in tokens else ""
-        if measured:
+        if measured and "heard" not in tokens:     # the acknowledgement needs the room
             label = ("Action" if "act" in tokens else "Response") + " " + chr(0xB7) + " " + measured
     image.paste(mark, (theme.CHROME_LEFT, mid - MINI // 2))
     end = draw_text(draw, image, fonts.small_bold, theme.CHROME_LEFT + MINI + 8, mid, label, theme.INK)

@@ -22,7 +22,7 @@ def _scaled(value):
     return int(round(value * SS))
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=96)
 def render(size, ticks, ring, ring_color, pupil, pupil_color, gap=0, ticks_color=None, highlight=True, mark=None):
     """RGB image size x size on a VOID background.
 
