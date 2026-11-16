@@ -15,8 +15,10 @@ const RECENCY =
 // They count only beside a cue that the question asks about something happening in the world, never inside a hypothetical.
 const DAY_WORD = /\b(today|tonight|tomorrow|yesterday)\b/i;
 const EVENT_CUE =
-  /\b(rain|raining|snow|snowing|storm|temperature|hot|cold|warm|windy|sunny|cloudy|sunrise|sunset|stocks?|stock market|markets?|scores?|won|win|beat|trending|match|game|playing|showing|happen(?:ed|s|ing)?|going on|traffic|flights?|delayed|opens?|closes?|what(?:'s| is) new|how (?:is|are|has|have) (?!you\b)\S+ (?:doing|performing|been))\b/i;
+  /\b(rain|raining|snow|snowing|storm|temperature|hot|cold|warm|windy|sunny|cloudy|sunrise|sunset|stocks?|stock market|markets?|scores?|won|win|lose|lost|beat|trending|match|game|playing|showing|happen(?:ed|s|ing)?|going on|traffic|flights?|trains?|buses|late|delayed|cancell?ed|worth|opens?|closes?|what(?:'s| is) new|how (?:is|are|has|have) (?!you\b)\S+ (?:doing|performing|been))\b/i;
 const HYPOTHETICAL = /\b(if|suppose|assuming|imagine|let's say)\b/i;
+// A statement ("I'm running late today") is conversation; only a question asks about the world.
+const QUESTION = /\?\s*$|^\s*(?:what|who|whom|when|where|how|which|is|are|was|were|did|does|do|will|can|could|has|have|any)\b/i;
 // "current" except physics ("electric current", "direct current", ...).
 const CURRENT = /\bcurrent\b/i;
 const PHYSICS_CURRENT = /\b(electric|electrical|alternating|direct|ac|dc)\s+current\b|\bcurrent\s+(flow|through|in a circuit|density)\b/i;
@@ -75,7 +77,7 @@ export const needsCurrentInformation = (
   if (hasExplicitWebSearch(text)) return true;
   if (!text || DATE_ONLY.test(text) || isCasualConversation(text)) return false;
   if (RECENCY.test(text)) return true;
-  if (DAY_WORD.test(text) && EVENT_CUE.test(text) && !HYPOTHETICAL.test(text)) return true;
+  if (DAY_WORD.test(text) && EVENT_CUE.test(text) && (QUESTION.test(text) || ADDITIONAL_REQUEST.test(text)) && !HYPOTHETICAL.test(text)) return true;
   if (CURRENT.test(text) && !PHYSICS_CURRENT.test(text)) return true;
   if (LIVE_DATA.test(text) || RELEASE_OR_RESULT.test(text) || OFFICE_HOLDER.test(text)) {
     return true;

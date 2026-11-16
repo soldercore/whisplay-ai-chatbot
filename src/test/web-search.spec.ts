@@ -573,12 +573,24 @@ test("other tools keep working (setVolume)", async () => {
 test("day words alone and hypotheticals do not trigger a search, real events still do", () => {
   for (const question of ["If tomorrow is Wednesday, what day is today?", "If today is Friday, what day was it two days ago?",
     "What should I cook tonight?", "Was yesterday a weekday?", "I am tired today.", "What does yesterday mean in French?",
-    "If it rains tomorrow, what should I wear?", "Why do people say tomorrow never comes?", "Spell the word tomorrow."]) {
+    "I'm running late today.", "My train was late yesterday.", "My dog's name is Biscuit.", "If it rains tomorrow, what should I wear?", "Why do people say tomorrow never comes?", "Spell the word tomorrow."]) {
     assert.equal(needsCurrentInformation(question), false, question);
   }
   for (const question of ["Is it going to rain tonight?", "What's the weather tomorrow?", "Who is playing in the football match tonight?",
     "What happened in the stock market yesterday?", "What's trending today?", "Who won the game last night?", "What's the news today?",
-    "Is the pharmacy open today?", "What's new in AI today?", "How is Apple doing today?", "What's happening today?"]) {
+    "Did the Lakers lose yesterday?", "Is my train running late today?", "Is the pharmacy open today?", "What's new in AI today?", "How is Apple doing today?", "What's happening today?"]) {
     assert.equal(needsCurrentInformation(question), true, question);
+  }
+});
+
+test("only questions that may need current information are offered web tools; statements and hypotheticals get none", () => {
+  const { toolsRelevantTo } = require("../config/tool-router");
+  const tools = ["web_search", "fetch_webpage", "whisplay"].map((name) => ({ function: { name } }));
+  const offered = (q: string) => toolsRelevantTo(q, tools, "").map((t: any) => t.function.name);
+  for (const q of ["My dog's name is Biscuit.", "If tomorrow is Wednesday, what day is today?", "I'm running late today.", "He is three years old."]) {
+    assert.deepEqual(offered(q), [], q);
+  }
+  for (const q of ["What's the weather in Oslo today?", "Did the Lakers lose yesterday?", "Is my train running late today?", "Search the web for the latest AI news."]) {
+    assert.ok(offered(q).includes("web_search"), q);
   }
 });
