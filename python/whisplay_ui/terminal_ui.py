@@ -18,6 +18,7 @@ from .body import TONE_ECHO, TONE_MUTED, TONE_TEXT, Body
 from .draw_util import STATE_COLORS, ease_in_out
 from .eye import ERROR as EYE_ERROR, IDLE as EYE_IDLE, LISTEN as EYE_LISTEN, SPEAK as EYE_SPEAK, THINK as EYE_THINK, UNSURE as EYE_UNSURE, Eye
 from .fonts import Fonts
+from . import optic
 from .panes import (
     STRIP_H,
     MIC_H, MIC_STATES, MIC_FPS, OPTIC, OPTIC_Y, render_microphone,
@@ -95,6 +96,7 @@ class TerminalUI:
         self.prepare_text = prepare_text
         self.statusbar = StatusBar(self.fonts, status_icon_factories, icon_context)
         self.info = StageInfo(self.fonts, self.flags)
+        self.info.motion = optic.Motion()
         self.body = Body(self.fonts, self.flags)
         self.tracker = vs.StateTracker()
         self.eye = Eye(20, self.flags.eye_idle_fps) if getattr(self.flags, "eye", False) else None
@@ -383,8 +385,9 @@ class TerminalUI:
         rects = []
         if kind == KIND_MIC:
             eye_img, eye_key = self._eye_for_mic(state, now)
+            self._step_optic(state, t, now)
             static = (state, self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key)
-            key = (static, int(t * MIC_FPS) if state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK) else None)
+            key = (static, self.info.motion.key())
             if key != self.side_key or force:
                 animation_only = (not force and self.side_key is not None and self.side_key[0] == static
                                   and self.pane_h >= full_h)
@@ -398,7 +401,7 @@ class TerminalUI:
                     rects.append((x, y0 + OPTIC_Y, x + OPTIC, y0 + OPTIC_Y + OPTIC))
                 else:
                     self._paste_pane(self.pane_img, full_h)
-                    rects.append((0, y0, theme.WIDTH, y0+self.pane_h))
+                    rects.append((0, y0, theme.WIDTH, y0 + self.pane_h))
             return rects
 
         if kind == KIND_STAGE:
@@ -426,12 +429,13 @@ class TerminalUI:
             else:
                 emoji = self._emoji_image(_snap(snapshot, "emoji", ""))
             progress = snapshot.get("music_progress")
-            animated = mode == STRIP_RECEIVING or (mode == STRIP_SPEAKING and self.eye is None)
-            bucket = int(t * (theme.SPEAKING_FPS if mode == STRIP_SPEAKING else 6)) if animated else -1
-            key = (mode, bucket, id(emoji) if emoji is not None else None, eye_key, progress, self.info.hint if mode == STRIP_RESPONSE else "")
+            pulse = self._word_pulse(now) if mode == STRIP_SPEAKING else 0.0
+            animated = mode == STRIP_RECEIVING
+            bucket = int(t * 6) if animated else -1
+            key = (mode, bucket, int(round(pulse * 6)), id(emoji) if emoji is not None else None, eye_key, progress, self.info.hint if mode == STRIP_RESPONSE else "")
             if key != self.side_key or force:
                 self.side_key = key
-                self.pane_img = render_strip(self.fonts, mode, t, emoji, progress, self.info.tokens if mode == STRIP_RESPONSE else None)
+                self.pane_img = render_strip(self.fonts, mode, t, emoji, progress, self.info.tokens if mode == STRIP_RESPONSE else None, pulse)
                 self._paste_pane(self.pane_img, full_h)
                 rects.append((0, y0, theme.WIDTH, y0 + self.pane_h))
             return rects
@@ -504,6 +508,23 @@ class TerminalUI:
         if mode == STRIP_SPEAKING and not self.eye.has_env:
             return 0.45
         return None
+
+    def _step_optic(self, state, t, now):
+        """Advance the hero optic's pose to `now` (continuous between states, independent of the frame rate)."""
+        motion = self.info.motion
+        if motion.last is not None and now - motion.last > 2.0:
+            motion.last = None          # a long gap: re-seat the pose instead of animating through it
+        tokens = self.info.tokens
+        glance = optic.idle_glance_phase(now) if state == vs.IDLE and "heard" not in tokens else 0.0
+        target, extra = motion.target(state, tokens, t, glance)
+        motion.step(target, extra, now)
+
+    def _word_pulse(self, now):
+        """1 at the moment the speech pipeline reveals a word, decaying to 0 over 0.18 s."""
+        times = self.body.tw.times
+        if not times:
+            return 0.0
+        return max(0.0, 1.0 - (now - times[-1]) / 0.18)
 
     def _eye_for_mic(self, state, now):
         if self.eye is None:
@@ -630,7 +651,7 @@ class TerminalUI:
         elif kind == KIND_STRIP:
             mode = self._strip_mode(now)
             if mode == STRIP_SPEAKING:
-                fps = max(fps, theme.SPEAKING_FPS)
+                fps = max(fps, theme.SPEAKING_FPS if self._word_pulse(now) > 0 else 0)
             elif mode == STRIP_RECEIVING:
                 fps = max(fps, 8 if self.eye is not None else 6)
             elif self.eye is not None:
@@ -643,7 +664,9 @@ class TerminalUI:
                 elif self.eye.idle_fps > 0:
                     eye_tick = 1.0 / self.eye.idle_fps
         if kind == KIND_MIC and state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK):
-            fps = max(fps, MIC_FPS)    # the optic's dial and lens; every other state of the optic is still
+            fps = max(fps, theme.OPTIC_FPS)
+        if kind == KIND_MIC and self.info.motion.settling(now):
+            fps = max(fps, theme.OPTIC_SETTLE_FPS)     # the shutter is moving between poses: smooth, and only briefly
         if kind != KIND_MIC:
             fps = max(fps, self.body.fps_needed(now))
         self._animating = fps > 0
@@ -652,6 +675,8 @@ class TerminalUI:
         waits = [clock.seconds_to_next_minute() + 0.05]
         if eye_tick is not None:
             waits.append(eye_tick)
+        if kind == KIND_MIC and state == vs.IDLE:
+            waits.append(optic.next_glance_in(now))      # the dormant optic glances aside now and then
         if kind == KIND_STAGE and state == vs.IDLE:
             waits.append(next_blink_edge(t))
             if rain_active(state, t, self.info):

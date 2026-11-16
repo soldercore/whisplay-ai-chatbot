@@ -254,41 +254,41 @@ def _think(image, draw, t, info, color):
 def _tool(image, draw, t, info, color):
     fonts = info.fonts
     label = info.tool_label or "tool"
-    text = fit_text(fonts.small_bold, label, 190)
-    width = fonts.small_bold.width(text)
-    draw_text(draw, image, fonts.small_bold, int((theme.WIDTH - width) / 2), MID - 8, text, theme.INK)
-    x0, x1, y = 40, 200, MID + 12
-    draw.line([(x0, y), (x1, y)], fill=theme.HAIR)
-    p = 0.5 - 0.5 * math.cos(t * 2.4)
-    block = 36
-    bx = int(x0 + (x1 - x0 - block) * p)
-    draw.line([(bx, y), (bx + block, y)], fill=theme.ACCENT, width=2)
+    x = 30
+    hero = optic.hero(OPTIC_STAGE, 14.0, int((-24.0 * t) % 60), 0.0, 0.0, 6, 4, -1, int(((360.0 * t / 1.8) % 360.0) / 3.0) * 3, -1, 0, "", 0)
+    image.paste(hero, (x, (VISUAL_H - OPTIC_STAGE) // 2))
+    text = fit_text(fonts.small_bold, label, 110)
+    draw_text(draw, image, fonts.small_bold, x + OPTIC_STAGE + 14, MID, text, theme.INK)
     return None
 
 
 OPTIC_STAGE = 72
 
 
-def _optic_mark(image, ring, mark, gap=0):
-    mark_image = optic.render(OPTIC_STAGE, None, 2, ring, 0, ring, gap=gap, mark=mark)
-    image.paste(mark_image, ((theme.WIDTH - OPTIC_STAGE) // 2, (VISUAL_H - OPTIC_STAGE) // 2))
+def _stage_optic(image, **pose):
+    base = dict(opening=5.0, rot=0, dx=0.0, dy=0.0, act=0, bright=2, arc=-1, orbit=-1, scan=-1, notches=0, mark="", jam=0)
+    base.update(pose)
+    hero = optic.hero(OPTIC_STAGE, base["opening"], base["rot"], base["dx"], base["dy"], base["act"], base["bright"], base["arc"],
+                      base["orbit"], base["scan"], base["notches"], base["mark"], base["jam"])
+    x = (theme.WIDTH - OPTIC_STAGE) // 2 if pose.get("_x") is None else pose["_x"]
+    image.paste(hero, (x, (VISUAL_H - OPTIC_STAGE) // 2))
 
 
 def _error(image, draw, t, info, color):
-    _optic_mark(image, theme.ALERT, "!", gap=56)
+    _stage_optic(image, opening=11.0, act=8, bright=6, mark="!", jam=14)
     return None
 
 
 def _approval(image, draw, t, info, color):
-    _optic_mark(image, theme.ACCENT, "?")
+    _stage_optic(image, opening=22.0, act=8, bright=7, mark="?", notches=1)
     return None
 
 
 def _result(image, draw, t, info, color):
     if is_denied(info.raw_status):
-        _optic_mark(image, theme.ALERT, "x")
+        _stage_optic(image, opening=16.0, act=8, bright=5, mark="x", jam=0)
     else:
-        _optic_mark(image, theme.ACCENT, "ok")
+        _stage_optic(image, opening=24.0, act=8, bright=8, mark="ok", notches=4)
     return None
 
 

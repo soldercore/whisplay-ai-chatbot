@@ -17,7 +17,7 @@ TERMINAL_MAX_LINES = 5
 STRIP_SPEAKING = "SPEAKING"
 STRIP_RECEIVING = "RECEIVING"
 STRIP_RESPONSE = "RESPONSE"
-MINI = 20
+MINI = 22
 
 
 def _dotted(draw, y):
@@ -41,23 +41,21 @@ def _seconds(value):
         return ""
 
 
-def render_strip(fonts, mode, t, emoji_image=None, progress=None, tokens=None):
+def render_strip(fonts, mode, t, emoji_image=None, progress=None, tokens=None, pulse=0.0):
     """One quiet line above the body: a small optic, what the device is doing, and one hint."""
     image = Image.new("RGB", (theme.WIDTH, STRIP_H), theme.VOID)
     draw = ImageDraw.Draw(image)
     tokens = tokens or {}
     mid = theme.STRIP_MID_Y
     if mode == STRIP_SPEAKING:
-        levels = speaking_levels(t, 5)
-        pupil = 3 + int(round(3 * sum(levels) / len(levels)))
-        mark = optic.render(MINI, None, 1.5, theme.ACCENT, pupil, theme.ACCENT, highlight=False)
+        # The shutter opens a little with every word the speech pipeline reveals, then relaxes (pulse 1 -> 0).
+        mark = optic.mini(MINI, 3.0 + 4.0 * pulse, 8, 4 + int(round(4 * pulse)))
         label = "Speaking"
     elif mode == STRIP_RECEIVING:
-        pupil = 2 + int(t * 4) % 3
-        mark = optic.render(MINI, None, 1.5, theme.ACCENT_MID, pupil, theme.ACCENT_MID, highlight=False)
+        mark = optic.mini(MINI, 3.0 + 1.5 * (0.5 - 0.5 * math.cos(t * math.pi * 2 / 1.2)), 5, 4)
         label = "Writing"
     else:
-        mark = optic.render(MINI, None, 1.5, theme.INK3, 3, theme.ACCENT_MID, highlight=False)
+        mark = optic.mini(MINI, 3.0, 1, 3)
         label = "Response"
         # One measured value per response, from real events: RESPONSE (speech end to first audible reply) or, for a
         # device command, ACTION (speech end to the verified outcome). Nothing is drawn when it was not measured.
@@ -149,20 +147,15 @@ def _limit(tokens):
 
 
 def render_microphone(fonts, state, t, info, eye_image=None):
-    """The optic and two lines of words. Physical-button affordance only: no touch handler, no microphone ownership."""
+    """The optic and two lines of words. Physical-button affordance only: no touch handler, no microphone ownership.
+    The optic pose is advanced by the caller (TerminalUI._step_optic) so that it stays continuous between states."""
     image = Image.new("RGB", (theme.WIDTH, MIC_H), theme.VOID)
     draw = ImageDraw.Draw(image)
     tokens = getattr(info, "tokens", None) or {}
     third = ""
     if state == vs.LISTEN:
-        limit = _limit(tokens)
-        audio = "audio" in tokens
-        ticks = optic.ticks_remaining(max(0.0, 1.0 - t / limit)) if limit else optic.ticks_all(0.75 if audio else 0.5)
-        pupil = 15 if audio else round((12 + 1.5 * math.sin(t * math.pi * 1.6)) * 4) / 4   # breathing, in quarter pixels
-        color = theme.mix_hint if False else mix(theme.ACCENT, theme.INK, 0.25) if audio else theme.ACCENT
-        hero = optic.render(OPTIC, ticks, 2, theme.ACCENT, pupil, color)
         title = "Listening"
-        if audio:
+        if "audio" in tokens:
             sub = "Audio detected"
         elif "answer" in tokens:
             sub = "Answer now"
@@ -174,20 +167,15 @@ def render_microphone(fonts, state, t, info, eye_image=None):
             sub = "Release to send"
             third = "%d:%02d" % (int(t) // 60, int(t) % 60)
     elif state == vs.TRANSCRIBE:
-        hero = optic.render(OPTIC, optic.ticks_comet((t / 1.2) % 1.0, 10), 2, theme.ACCENT_MID, 6, theme.ACCENT)
         title, sub = "Recognizing speech", ""
     elif state == vs.THINK:
-        hero = optic.render(OPTIC, optic.ticks_comet((t / 2.6) % 1.0, 7, 2), 2, theme.ACCENT_MID, 5, theme.ACCENT_MID)
         title = "Thinking"
         said = getattr(info, "transcript", "")
-        sub = ("“" + said.replace(chr(10), " ") + "”") if said else "Preparing response"
+        sub = ("\u201c" + said.replace(chr(10), " ") + "\u201d") if said else "Preparing response"
     elif "heard" in tokens:
-        hero = optic.render(OPTIC, optic.ticks_all(1.0), 3, theme.ACCENT, 9, mix(theme.ACCENT, theme.INK, 0.7))   # a bright flash of the lens: heard, not yet listening
         title, sub = "Capri heard", ""
     else:
         capri = "capri" in tokens
-        hero = optic.render(OPTIC, None, 2, theme.INK3, 7, theme.ACCENT_MID if capri else theme.INK3, highlight=False)
-        hero = optic.render(OPTIC, optic.ticks_all(0.0), 2, theme.INK3, 7, theme.ACCENT_MID if capri else theme.INK3, highlight=False)
         title = "Ready"
         if tokens.get("pend") == "capri":
             sub = "Say Capri to answer"
@@ -197,6 +185,8 @@ def render_microphone(fonts, state, t, info, eye_image=None):
             sub = "Say Capri or hold to talk"
         else:
             sub = "Hold to talk"
+    motion = getattr(info, "motion", None)
+    hero = motion.render(OPTIC) if motion is not None else optic.hero(OPTIC, 5.0, 0, 0.0, 0.0, 0, 2, -1, -1, -1, 0, "", 0)
     image.paste(hero, ((theme.WIDTH - OPTIC) // 2, OPTIC_Y))
     _center(draw, image, fonts.title, 178, title, theme.INK)
     if sub:

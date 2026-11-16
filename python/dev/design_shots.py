@@ -27,11 +27,13 @@ def snap(s, name):
     image.resize((480, 560), Image.NEAREST).save(os.path.join(out, name + ".png"))
 
 
-def film(s, name, status, text, seconds, step=0.25, crop=(0, 36, 240, 190), **extra):
+def film(s, name, status, text, seconds, step=0.25, crop=(56, 56, 184, 184), **extra):
+    """Frames from the instant of the update (t=0) every `step` seconds, cropped to the optic."""
     frames = []
     s.send(status=status, emoji="😐", text=text, **extra)
-    s.run_until(s.now + 0.3)
     t_end = s.now + seconds
+    s.run_until(s.now + 0.001)
+    frames.append(s.lcd.image().crop(crop))
     while s.now < t_end - 1e-6:
         s.run_until(s.now + step)
         frames.append(s.lcd.image().crop(crop))
@@ -70,10 +72,39 @@ for i in range(0, 1):
     pass
 s = pv.Session()
 try:
-    s.send(status="idle|capri", emoji="😴", text=""); s.run_until(s.now + 0.5)
-    film(s, "listening_drain", "listening|capri,answer:5", "Listening...", 5.0, 0.5)
-    film(s, "recognizing", "recognizing", "", 1.2, 0.2)
-    film(s, "thinking", "answering...", "", 2.6, 0.4)
+    s.send(status="idle|capri", emoji="😴", text=""); s.run_until(s.now + 1.5)
+    # wake: the shutter snaps open (every 50 ms for half a second), then settles into listening
+    film(s, "wake", "idle|capri,heard", "", 0.55, 0.05)
+    film(s, "heard_to_listening", "listening|capri", "Listening...", 1.2, 0.1)
+    film(s, "speech_detected", "listening|capri,audio", "Listening...", 0.8, 0.1)
+    film(s, "recognizing", "recognizing", "", 1.0, 0.125)
+    film(s, "thinking", "answering...", "", 3.2, 0.4)
+    film(s, "listening_drain", "listening|capri,answer:5", "Listening...", 5.0, 0.6)
+finally:
+    s.close()
+
+# the response text decode (the existing glitch effect): a sentence arrives, frames every ~27 ms
+s = pv.Session()
+try:
+    s.send(status="answering", emoji="🌧", scroll_speed=3, transaction_id=3); s.run_until(s.now + 0.3)
+    line = "Oh, how delightful. Another test."
+    frames, shown = [], 0
+    crop = (0, 60, 240, 130)
+    while shown < len(line):
+        shown = min(len(line), shown + 7)
+        s.send(status="answering", text=line[:shown], scroll_speed=3, transaction_id=3)
+        for _ in range(3):
+            s.run_until(s.now + 0.027)
+            frames.append(s.lcd.image().crop(crop))
+    s.run_until(s.now + 0.4)
+    frames.append(s.lcd.image().crop(crop))
+    cols_d = 3
+    rows_d = (len(frames) + cols_d - 1) // cols_d
+    w, h = frames[0].size
+    sheet_d = Image.new("RGB", (cols_d * (w + 4), rows_d * (h + 4)), (30, 30, 30))
+    for i, f in enumerate(frames):
+        sheet_d.paste(f, ((i % cols_d) * (w + 4), (i // cols_d) * (h + 4)))
+    sheet_d.save(os.path.join(out, "film_text_decode.png"))
 finally:
     s.close()
 

@@ -103,8 +103,8 @@ MORPH = 0.22
 LED_LERP = 0.15
 TEXT_FADE = 0.12
 TAG_FADE = 0.12
-DECODE_BASE = 0.06
-DECODE_STAGGER = 0.012
+DECODE_BASE = 0.07
+DECODE_STAGGER = 0.016
 BLINK_PERIOD = 1.06
 BLINK_ON = 0.53
 BLINK_EDGE = 0.06
@@ -147,7 +147,9 @@ STATE_FPS = {
     "GENERIC": 3,
 }
 RAIN_FPS = 8
-SPEAKING_FPS = 12
+SPEAKING_FPS = 20
+OPTIC_FPS = 20            # steady optic animation (listening, recognizing, thinking)
+OPTIC_SETTLE_FPS = 30     # while the shutter is moving between poses (a few tenths of a second)
 
 # Adaptive quality thresholds (milliseconds of render time, EMA)
 DEGRADE_1_MS = 12.0
