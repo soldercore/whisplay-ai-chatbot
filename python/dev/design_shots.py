@@ -58,7 +58,16 @@ try:
         shown = min(len(ANSWER), shown + 7)
         s.send(status="answering", text=ANSWER[:shown], scroll_speed=3, transaction_id=2); s.run_until(s.now + 0.08)
     s.run_until(s.now + 0.5)
-    s.send(scroll_sync={"char_end": 90, "duration_ms": 3600}); s.run_until(s.now + 1.2); snap(s, "06_speaking")
+    s.send(scroll_sync={"char_end": 90, "duration_ms": 3600})
+    strip_frames = []
+    for _ in range(14):
+        s.run_until(s.now + 0.09)
+        strip_frames.append(s.lcd.image().crop((0, 27, 240, 56)).resize((480, 58), Image.NEAREST))
+    sheet_s = Image.new("RGB", (480 * 2 + 4, (58 + 4) * 7), (30, 30, 30))
+    for i, f in enumerate(strip_frames):
+        sheet_s.paste(f, ((i % 2) * 484, (i // 2) * 62))
+    sheet_s.save(os.path.join(out, "film_speaking_strip.png"))
+    snap(s, "06_speaking")
     s.run_until(s.now + 6.0)
     s.send(status="idle|capri,resp:4.5"); s.run_until(s.now + 1.0); snap(s, "07_response_stays")
     s.send(status="idle|capri,resp:4.5,heard"); s.run_until(s.now + 0.4); snap(s, "07b_wake_over_response")
