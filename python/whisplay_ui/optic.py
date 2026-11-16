@@ -239,22 +239,20 @@ class Motion:
             self.vel += accel * h
             pose["opening"] += self.vel * h
         pose["opening"] = max(0.0, pose["opening"])
-        moved = abs(self.vel) > 4.0 or abs(tgt["opening"] - pose["opening"]) > 0.35
+        # "settling" means a real transition (a large move), not the steady breathing/orbit of an animated state
+        moved = abs(self.vel) > 25.0 or abs(tgt["opening"] - pose["opening"]) > 2.0
         for key, tau in self.TAU.items():
             k = 1.0 - math.exp(-dt / tau)
             if key == "rot":
-                delta = _wrap60(tgt[key] - pose[key])
-                if abs(delta) > 0.6:
-                    moved = True
-                pose[key] = (pose[key] + delta * k) % 60.0
+                pose[key] = (pose[key] + _wrap60(tgt[key] - pose[key]) * k) % 60.0
             else:
-                if abs(tgt[key] - pose[key]) > (0.05 if key in ("act", "bright") else 0.15):
+                if key in ("act", "bright") and abs(tgt[key] - pose[key]) > 1.0:
                     moved = True
                 pose[key] += (tgt[key] - pose[key]) * k
         pose["arc"] = tgt["arc"]
         self.quiet = extra
         if moved:
-            self.moving_until = now + 0.12
+            self.moving_until = now + 0.15
 
     def settling(self, now):
         return now < self.moving_until

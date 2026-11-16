@@ -386,20 +386,21 @@ class TerminalUI:
         if kind == KIND_MIC:
             eye_img, eye_key = self._eye_for_mic(state, now)
             self._step_optic(state, t, now)
-            static = (state, self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key)
+            static = (state, self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key, int(t) if state == vs.LISTEN else None)
+            if self.side_key is not None and self.side_key[0] != static:
+                self.info.motion.moving_until = max(self.info.motion.moving_until, now + 0.45)   # a new pose is coming: animate it smoothly
             key = (static, self.info.motion.key())
             if key != self.side_key or force:
                 animation_only = (not force and self.side_key is not None and self.side_key[0] == static
                                   and self.pane_h >= full_h)
                 self.side_key = key
-                self.pane_img = render_microphone(self.fonts, state, t, self.info, eye_img)
                 if animation_only:
-                    # Only the optic moved: repaint and push its square, not the whole pane.
+                    # Only the optic moved: repaint and push its square, not the whole pane (the words are unchanged).
                     x = (theme.WIDTH - OPTIC) // 2
-                    box = (x, OPTIC_Y, x + OPTIC, OPTIC_Y + OPTIC)
-                    self.frame.paste(self.pane_img.crop(box), (x, y0 + OPTIC_Y))
+                    self.frame.paste(self.info.motion.render(OPTIC), (x, y0 + OPTIC_Y))
                     rects.append((x, y0 + OPTIC_Y, x + OPTIC, y0 + OPTIC_Y + OPTIC))
                 else:
+                    self.pane_img = render_microphone(self.fonts, state, t, self.info, eye_img)
                     self._paste_pane(self.pane_img, full_h)
                     rects.append((0, y0, theme.WIDTH, y0 + self.pane_h))
             return rects

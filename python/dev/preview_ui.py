@@ -477,13 +477,13 @@ def selftest():
         check(renders <= 70, "settled idle renders only on blink/clock edges")
         check(pixels * 2 / 30.0 < 4096, "settled idle pushes < 4 KB/s")
         s.send(status="listening", text="Listening...")
-        s.run_until(70.5)
+        s.run_until(72.0)             # the shutter has settled into its steady listening motion
         s.lcd.pushes.clear()
-        s.run_until(71.5)
+        s.run_until(73.0)
         widest = max(w for _, _, w, _ in s.lcd.pushes)
         listening_bytes = sum(w * h for _, _, w, h in s.lcd.pushes) * 2
         check(widest <= 112, "listening pushes only small rectangles around the optic and its caption, never the whole pane")
-        check(listening_bytes < 24 * 1024, "listening pushes < 24 KB in a second (%d B)" % listening_bytes)
+        check(listening_bytes < 700 * 1024, "listening pushes < 700 KB in a second (%d B): the optic square at 20 fps" % listening_bytes)
     finally:
         s.close()
 
