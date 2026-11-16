@@ -286,7 +286,7 @@ class OpenWakeWord(unittest.TestCase):
             module = self._real_recognize(load(Timeline([ROOM]), []))
             module.recognize(frame(2500) * 40, Path(d) / "work.wav")
             self.assertFalse(off.exists())
-            self.assertEqual(list(Path(d).glob("**/clip-*.wav")), files, "nothing is saved unless the setting is present")
+            self.assertEqual(sorted(Path(d).glob("**/clip-*.wav")), sorted(files), "nothing is saved unless the setting is present")
 
     def test_a_folder_that_cannot_be_written_never_breaks_recognition(self):
         with tempfile.TemporaryDirectory() as d:
