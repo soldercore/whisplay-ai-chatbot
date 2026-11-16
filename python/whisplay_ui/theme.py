@@ -157,6 +157,65 @@ DEGRADE_2_MS = 25.0
 RECOVER_MS = 6.0
 
 
+# ---- Landscape layout -------------------------------------------------------
+# WHISPLAY_UI_LAYOUT=landscape draws a 280x240 canvas and turns it 90 degrees onto the 240x280 panel (terminal_ui._send).
+# The scene modules for this layout are land.py and land_ui.py; the portrait design above is unchanged and stays the default.
+LAYOUT = (os.environ.get("WHISPLAY_UI_LAYOUT") or "portrait").strip().lower()
+LANDSCAPE = LAYOUT == "landscape"
+PHYS_WIDTH = 240
+PHYS_HEIGHT = 280
+ROTATE = (os.environ.get("WHISPLAY_UI_ROTATE") or "cw").strip().lower()   # which edge of the panel becomes the top
+
+
+def _scale(rgb, k):
+    return _q(int(rgb[0] * k), int(rgb[1] * k), int(rgb[2] * k))
+
+
+ACCENTS = {   # one technical accent over a cool graphite ramp; the alert colour must never be mistaken for it
+    "lime": ((184, 240, 0), (255, 86, 62)),
+    "ice": ((92, 214, 255), (255, 86, 62)),
+    "vermilion": ((255, 86, 52), (255, 200, 0)),
+    "ultra": ((126, 140, 255), (255, 86, 62)),
+}
+
+if LANDSCAPE:
+    WIDTH = 280
+    HEIGHT = 240
+    HAIR = _q(36, 42, 48)
+    INK = _q(226, 232, 236)
+    INK2 = _q(152, 164, 173)
+    INK3 = _q(112, 124, 134)
+    TICK = _q(62, 72, 80)
+    _name = (os.environ.get("WHISPLAY_UI_ACCENT") or "lime").strip().lower()
+    _acc, _alert = ACCENTS.get(_name, ACCENTS["lime"])
+    ACCENT = _q(*_acc)
+    ACCENT_MID = _scale(_acc, 0.72)
+    ACCENT_DIM = _scale(_acc, 0.42)
+    ACCENT_DEEP = _scale(_acc, 0.16)
+    ALERT = _q(*_alert)
+    ALERT_DIM = _scale(_alert, 0.4)
+    RAISED = _q(10, 13, 16)
+    PANEL = _q(16, 20, 24)
+    LINE = HAIR
+    DIM = INK3
+    MUTED = INK2
+    TEXT = INK
+    GREEN, GREEN_MID, GREEN_DIM, GREEN_DEEP = ACCENT, ACCENT_MID, ACCENT_DIM, ACCENT_DEEP
+    AMBER, AMBER_MID, AMBER_DIM = ACCENT, ACCENT_MID, ACCENT_DIM
+    CYAN, CYAN_DIM = INK2, INK3
+    RED, RED_DIM = ALERT, ALERT_DIM
+    # Rounded panel corners (radius about 40 px, checked at 44): content keeps inside these insets.
+    STATUS_SAFE_LEFT = 24
+    STATUS_SAFE_RIGHT = 256
+    STATUS_CENTER_Y = 12
+    CONTENT_SAFE_BOTTOM = 224
+    CHROME_LEFT = 14
+    CHROME_RIGHT = 266
+    TEXT_LEFT = 12
+    TEXT_WIDTH = 256         # 28 cells of 9 px
+    CURSOR_RIGHT_LIMIT = 269
+
+
 def _env_bool(env, key, default):
     raw = env.get(key)
     if raw is None or str(raw).strip() == "":

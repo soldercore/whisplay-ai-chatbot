@@ -28,6 +28,17 @@ os.chdir(PY_DIR)  # chatbot-ui.py resolves img/, emoji_svg/ and fonts from here
 if PY_DIR not in sys.path:
     sys.path.insert(0, PY_DIR)
 
+try:  # the preview needs no SVG emoji; a missing cairosvg must not stop it
+    import cairosvg  # noqa: F401
+except Exception:  # pragma: no cover - depends on the machine
+    _stub = types.ModuleType("cairosvg")
+
+    def _no_svg(*a, **k):
+        raise RuntimeError("cairosvg is not installed")
+
+    _stub.svg2png = _no_svg
+    sys.modules["cairosvg"] = _stub
+
 import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 

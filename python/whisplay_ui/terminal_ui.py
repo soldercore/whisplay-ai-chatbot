@@ -87,8 +87,9 @@ class TerminalUI:
     ):
         width = int(getattr(hardware, "LCD_WIDTH", 0))
         height = int(getattr(hardware, "LCD_HEIGHT", 0))
-        if (width, height) != (theme.WIDTH, theme.HEIGHT):
-            raise RuntimeError(f"terminal UI needs a {theme.WIDTH}x{theme.HEIGHT} LCD, got {width}x{height}")
+        expected = (theme.PHYS_WIDTH, theme.PHYS_HEIGHT) if theme.LANDSCAPE else (theme.WIDTH, theme.HEIGHT)
+        if (width, height) != expected:
+            raise RuntimeError(f"terminal UI needs a {expected[0]}x{expected[1]} LCD, got {width}x{height}")
         self.hw = hardware
         self.flags = flags if flags is not None else theme.Flags()
         self.fonts = Fonts(base_font_path, emoji_loader)

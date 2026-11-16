@@ -14,5 +14,9 @@ def ui_mode(env=None):
 
 
 def create_terminal_ui(*args, **kwargs):
+    from . import theme
+    if theme.LANDSCAPE:      # WHISPLAY_UI_LAYOUT=landscape: 280x240 canvas turned onto the panel (land_ui.py)
+        from .land_ui import LandscapeUI
+        return LandscapeUI(*args, **kwargs)
     from .terminal_ui import TerminalUI
     return TerminalUI(*args, **kwargs)
