@@ -20,7 +20,7 @@ from .eye import ERROR as EYE_ERROR, IDLE as EYE_IDLE, LISTEN as EYE_LISTEN, SPE
 from .fonts import Fonts
 from .panes import (
     STRIP_H,
-    MIC_H, MIC_STATES, render_microphone,
+    MIC_H, MIC_STATES, MIC_FPS, render_microphone,
     STRIP_RECEIVING,
     STRIP_RESPONSE,
     STRIP_SPEAKING,
@@ -383,8 +383,7 @@ class TerminalUI:
         rects = []
         if kind == KIND_MIC:
             eye_img, eye_key = self._eye_for_mic(state, now)
-            key = (state, (t % theme.BLINK_PERIOD) < theme.BLINK_ON,
-                   int(t*2) if state in (vs.TRANSCRIBE, vs.THINK) else int(t) if state == vs.LISTEN else None,
+            key = (state, int(t * MIC_FPS) if state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK) else None,
                    self.info.hint, self.info.transcript if state == vs.THINK else "", eye_key)
             if key != self.side_key or force:
                 self.side_key = key
@@ -634,13 +633,8 @@ class TerminalUI:
                     fps = max(fps, 2)      # steady amber, then back to idle after the same time
                 elif self.eye.idle_fps > 0:
                     eye_tick = 1.0 / self.eye.idle_fps
-        if kind == KIND_MIC and state in (vs.TRANSCRIBE, vs.THINK):
-            fps = max(fps, 8 if self.eye is not None else 2)
-        elif kind == KIND_MIC and self.eye is not None:
-            if state == vs.LISTEN:
-                fps = max(fps, 4)
-            elif self.eye.idle_fps > 0:
-                eye_tick = 1.0 / self.eye.idle_fps
+        if kind == KIND_MIC and state in (vs.LISTEN, vs.TRANSCRIBE, vs.THINK):
+            fps = max(fps, MIC_FPS)    # the optic's dial and lens; every other state of the optic is still
         if kind != KIND_MIC:
             fps = max(fps, self.body.fps_needed(now))
         self._animating = fps > 0
@@ -649,10 +643,6 @@ class TerminalUI:
         waits = [clock.seconds_to_next_minute() + 0.05]
         if eye_tick is not None:
             waits.append(eye_tick)
-        if kind == KIND_MIC:
-            waits.append(next_blink_edge(t))
-            if state == vs.LISTEN:
-                waits.append(1.0 - (t % 1.0))
         if kind == KIND_STAGE and state == vs.IDLE:
             waits.append(next_blink_edge(t))
             if rain_active(state, t, self.info):

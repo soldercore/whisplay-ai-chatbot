@@ -25,8 +25,8 @@ def _wifi(draw, x, y, colors, point):
 def _wifi_sprite(mode, level):
     tile = Image.new('RGBA', (13,11))
     d = ImageDraw.Draw(tile)
-    colors = tuple(theme.GREEN if mode == 'active' and i < level else theme.DIM for i in range(3))
-    _wifi(d,0,0,colors,theme.GREEN if mode == 'active' else theme.DIM)
+    colors = tuple(theme.INK2 if mode == 'active' and i < level else theme.TICK for i in range(3))
+    _wifi(d,0,0,colors,theme.INK2 if mode == 'active' else theme.TICK)
     if mode == 'disconnected':
         d.line((2,0,10,10),fill=theme.RED)
     elif mode == 'unknown' or mode == 'active' and level == 0:
@@ -38,7 +38,7 @@ def _wifi_sprite(mode, level):
 def _bluetooth_sprite(mode):
     tile = Image.new('RGBA', (9,11))
     d = ImageDraw.Draw(tile)
-    color = theme.TEXT if mode == 'active' else theme.DIM
+    color = theme.INK2 if mode == 'active' else theme.TICK
     d.line(((3,0),(3,10),(7,7),(0,2)),fill=color)
     d.line(((3,0),(7,3),(0,8)),fill=color)
     if mode == 'unknown':

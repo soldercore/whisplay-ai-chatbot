@@ -12,25 +12,47 @@ def _hex(value):
 
 
 # ---- Palette -------------------------------------------------------------
-VOID = _hex("080C08")  # Approved Home charcoal.
-RAISED = _hex("080C08")
-PANEL = _hex("101810")
-LINE = _hex("182821")
-DIM = _hex("5A6D5A")
-MUTED = _hex("9CAA9C")
-TEXT = _hex("E7F7DE")
-BRIGHT = _hex("FFFFFF")
-GREEN = _hex("4AEB7B")
-GREEN_MID = _hex("29A24A")
-GREEN_DIM = _hex("186931")
-GREEN_DEEP = _hex("083018")
-CYAN = _hex("5ACBDE")
-CYAN_DIM = _hex("215152")
-AMBER = _hex("FFB231")
-AMBER_MID = _hex("B57D21")
-AMBER_DIM = _hex("634510")
-RED = _hex("FF5952")
-RED_DIM = _hex("521818")
+# One warm neutral ramp and a single accent (the optic's light). Amber is used only for what is
+# live or needs attention; nothing else is coloured. Old token names stay as aliases so every
+# scene keeps working; they now point into this ramp.
+def _q(r, g, b):
+    """Snap to the nearest-below RGB565-exact value (bit-replicated channels)."""
+    r5, g6, b5 = r >> 3, g >> 2, b >> 3
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+
+
+VOID = _q(10, 8, 6)            # warm black
+HAIR = _q(40, 36, 32)          # hairlines
+INK = _q(238, 231, 220)        # primary text
+INK2 = _q(170, 162, 150)       # secondary text
+INK3 = _q(134, 127, 116)       # tertiary text (>= 4.5:1 on VOID)
+TICK = _q(70, 64, 58)          # decorative marks only (idle dial ticks)
+ACCENT = _q(255, 160, 32)      # the optic
+ACCENT_MID = _q(190, 118, 24)
+ACCENT_DIM = _q(106, 66, 16)
+ACCENT_DEEP = _q(46, 29, 9)
+ALERT = _q(255, 90, 74)
+ALERT_DIM = _q(104, 34, 28)
+WHITE = _q(255, 255, 255)
+
+RAISED = _q(18, 15, 12)
+PANEL = _q(24, 20, 16)
+LINE = HAIR
+DIM = INK3
+MUTED = INK2
+TEXT = INK
+BRIGHT = WHITE
+GREEN = ACCENT
+GREEN_MID = ACCENT_MID
+GREEN_DIM = ACCENT_DIM
+GREEN_DEEP = ACCENT_DEEP
+AMBER = ACCENT
+AMBER_MID = ACCENT_MID
+AMBER_DIM = ACCENT_DIM
+CYAN = INK2
+CYAN_DIM = INK3
+RED = ALERT
+RED_DIM = ALERT_DIM
 
 # ---- Layout (absolute pixels unless noted) -------------------------------
 WIDTH = 240
@@ -111,11 +133,11 @@ AUTO_SCROLL_PX = 15.0
 STATE_FPS = {
     "BOOT": 8,
     "IDLE": 0,
-    "CALIBRATE": 20,
-    "LISTEN": 30,
-    "TRANSCRIBE": 20,
-    "THINK": 20,
-    "TOOL": 20,
+    "CALIBRATE": 12,
+    "LISTEN": 12,
+    "TRANSCRIBE": 12,
+    "THINK": 12,
+    "TOOL": 12,
     "ANSWER": 0,
     "ERROR": 10,
     "APPROVAL": 0,
@@ -125,7 +147,7 @@ STATE_FPS = {
     "GENERIC": 3,
 }
 RAIN_FPS = 8
-SPEAKING_FPS = 24
+SPEAKING_FPS = 12
 
 # Adaptive quality thresholds (milliseconds of render time, EMA)
 DEGRADE_1_MS = 12.0
@@ -153,12 +175,12 @@ class Flags:
 
     def __init__(self, env=None):
         env = os.environ if env is None else env
-        self.rain = _env_bool(env, "WHISPLAY_UI_RAIN", True)
-        self.scanlines = _env_bool(env, "WHISPLAY_UI_SCANLINES", True)
+        self.rain = _env_bool(env, "WHISPLAY_UI_RAIN", False)
+        self.scanlines = _env_bool(env, "WHISPLAY_UI_SCANLINES", False)
         self.decode = _env_bool(env, "WHISPLAY_UI_DECODE", True)
         self.speech_focus = _env_bool(env, "WHISPLAY_UI_SPEECH_FOCUS", True)
-        emoji = str(env.get("WHISPLAY_UI_EMOJI", "strip") or "strip").strip().lower()
-        self.emoji = emoji if emoji in ("strip", "off") else "strip"
+        emoji = str(env.get("WHISPLAY_UI_EMOJI", "off") or "off").strip().lower()
+        self.emoji = emoji if emoji in ("strip", "off") else "off"
         self.fps_cap = _env_int(env, "WHISPLAY_UI_FPS", 30, 5, 30)
         # Mechanical eye replaces the strip emoji; "off" restores the emoji. Extra idle breathing ticks per second; 0 = the idle eye only changes on frames that are drawn anyway (cursor blink, clock).
         self.eye = str(env.get("WHISPLAY_UI_EYE", "on") or "on").strip().lower() != "off"

@@ -30,31 +30,29 @@ class StatusBar:
         image = Image.new("RGB", (theme.WIDTH, theme.STATUS_H), theme.VOID)
         draw = ImageDraw.Draw(image)
         fonts, color = self.fonts, model["color"]
-        draw.line((0, theme.DIVIDER_Y, theme.WIDTH-1, theme.DIVIDER_Y), fill=theme.LINE)
-        draw.rectangle((24, CENTER_Y-3, 29, CENTER_Y+2), fill=color)
-        # Keep room for the clock for every state label. Unknown generic states fit.
-        label = fit_text(fonts.pixel8, model["label"], 64)
-        left = draw_text(draw, image, fonts.pixel8, 34, CENTER_Y, label, theme.TEXT)
-        draw.line((24, theme.DIVIDER_Y, int(left), theme.DIVIDER_Y), fill=theme.GREEN_MID if color == theme.GREEN else color)
+        # A small lamp tells the state at a glance; the name is the product mark. No divider, no badge.
+        lamp = theme.INK3 if color in (theme.INK2, theme.INK3, theme.MUTED) else color
+        draw.ellipse((24, CENTER_Y - 3, 30, CENTER_Y + 3), fill=lamp)
+        left = draw_text(draw, image, fonts.small_bold, 36, CENTER_Y, "GLaDOS", theme.INK2)
         level = model["battery_level"]
         valid = type(level) is int and 0 <= level <= 100
         text = "%d%%" % level if valid else "--%"
-        right = int(theme.STATUS_SAFE_RIGHT-fonts.meta_bold.width(text))
-        fg = battery_color(level) if valid and level <= 30 else theme.TEXT if valid else theme.MUTED
-        draw_text(draw, image, fonts.meta_bold, right, CENTER_Y, text, fg)
+        right = int(theme.STATUS_SAFE_RIGHT - fonts.small.width(text))
+        fg = battery_color(level) if valid and level <= 30 else theme.INK2
+        draw_text(draw, image, fonts.small, right, CENTER_Y, text, fg)
         state = model.get("wireless_status")
         if state is None:
             wifi = model["wifi_level"]
             state = {'wifi': {'enabled': True if wifi else None,
                      'connected': False if model["network_connected"] is False else True if wifi else None,
                      'signal': {1:20, 2:50, 3:90}.get(wifi)}, 'bluetooth': {}}
-        radio_right = int(theme.STATUS_SAFE_RIGHT-fonts.meta_bold.width("100%")-GAP)
+        radio_right = int(theme.STATUS_SAFE_RIGHT - fonts.small.width("100%") - GAP)
         right = draw_home_wireless(image, radio_right, CENTER_Y, state)
         if model["clock"]:
-            width = fonts.meta_bold.width(model["clock"])
-            x = max(int((theme.WIDTH-width)/2), int(left+GAP))
-            if x+width <= right-GAP:
-                draw_text(draw, image, fonts.meta_bold, x, CENTER_Y, model["clock"], theme.TEXT)
+            width = fonts.small.width(model["clock"])
+            x = max(int((theme.WIDTH - width) / 2), int(left + GAP))
+            if x + width <= right - GAP:
+                draw_text(draw, image, fonts.small, x, CENTER_Y, model["clock"], theme.INK)
         return image
 
     def render_extras(self, model):
@@ -72,12 +70,11 @@ class StatusBar:
         return image
 
     def _tag(self, draw, image, right, text, fg, border):
-        stack = self.fonts.pixel8
-        width = int(stack.width(text)) + 5
+        stack = self.fonts.small_bold
+        width = int(stack.width(text))
         x0 = right - width
-        draw.rectangle([x0, CENTER_Y - 5, right - 1, CENTER_Y + 4], outline=border)
-        draw_text(draw, image, stack, x0 + 3, CENTER_Y, text, fg)
-        return x0
+        draw_text(draw, image, stack, x0, CENTER_Y, text, theme.INK3)
+        return x0 - 2
 
     def _plugin_icons(self, image, right, model):
         if not self.icon_factories or self.icon_context is None:
