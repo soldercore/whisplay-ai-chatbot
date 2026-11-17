@@ -110,3 +110,13 @@ old file mode (re-apply `chmod 600 .env`).
 1. Reliable Capri activation.
 2. Natural conversation.
 3. Better cooperation between the existing components.
+
+## Source reproduces production (checked 2026-11-17, release/pi5-2026-11-17)
+Method: compile this tree with the pinned TypeScript (`tsc -p .`) and compare every compiled file with the Pi's `dist/` after removing whitespace.
+Result: all 154 files are identical. The last difference was `config/web-search-router.js` (the Pi's newer router, now in `src/config/web-search-router.ts`).
+`llm-config` and `persona` (shorter speech block, plainer memory replies) were already synced; `lg-c1-volume` already matched.
+
+Intentional differences from a sanitized checkout (not reproducible from Git alone):
+- `.env`, `data/`, models, voices, the TV pairing directory and keys are machine-specific and are not in the repository.
+- The Pi's own `src/` tree is older than its `dist/` for several files; `dist/` is what runs, and this repository matches `dist/`.
+- One test of the previous router, "intent priority preserves explicit/mixed searches...", fails against the deployed router: "I feel tired today and what happened in Oslo" no longer starts a search. This is the deployed behavior; the test was left unchanged as a signal.
