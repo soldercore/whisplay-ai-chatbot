@@ -607,3 +607,12 @@ test("the request-time note gives search guidance only when web_search is offere
   assert.equal(getWebSearchSystemNote(now, true), getWebSearchSystemNote(now));
   assert.equal(getWebSearchSystemNote(now, false), " Today is Tuesday, 17 November 2026.");
 });
+
+test("a statement followed by a question about the world searches; a plain statement or an unrelated question does not", () => {
+  for (const q of ["I feel tired today and what happened in Oslo", "I feel tired today and what happened in Oslo?", "I'm tired tonight, and what is trending now?",
+    "I slept badly and what happened in the match yesterday"]) assert.equal(needsCurrentInformation(q), true, q);
+  for (const q of ["I feel tired today.", "I feel tired today and what should I eat", "I was tired today and what is the capital of France?",
+    "I feel tired today and what happened in the story you told me", "If I feel tired today, what happened in Oslo?",
+    "Do not search the web. I feel tired today and what happened in Oslo"]) assert.equal(needsCurrentInformation(q), false, q);
+  assert.equal(needsCurrentInformation("Search the web: I feel tired today."), true);
+});

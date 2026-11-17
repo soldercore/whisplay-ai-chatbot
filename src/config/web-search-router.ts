@@ -129,6 +129,13 @@ export const needsCurrentInformation = (
   if (DAY_WORD.test(text) && (EVENT_CUE.test(text) || MARKET_EVENT.test(text))
     && asks && !HYPOTHETICAL.test(text)
     && !personal && !educational) return true;
+  // A statement followed by a question ("I feel tired today and what happened in Oslo"): the question clause is judged with the
+  // day word of the whole utterance. Past-dated history questions and hypotheticals stay with the model.
+  const mixed = ADDITIONAL_REQUEST.exec(text);
+  if (mixed && DAY_WORD.test(text) && !HYPOTHETICAL.test(text) && !personal && !educational) {
+    const clause = text.slice(mixed.index);
+    if ((WORLD_UPDATE.test(clause) || EVENT_CUE.test(clause) || MARKET_EVENT.test(clause)) && !/\b1\d{3}\b|\b(?:you|we|i)\s+(?:told|said|mentioned|talked|discussed)\b|\bearlier\b|\blast time\b/i.test(clause)) return true;
+  }
   if (LIVE_DATA.test(text) && !educational) return true;
   if (RELEASE_OR_RESULT.test(text) || OFFICE_HOLDER.test(text)) return true;
 
