@@ -68,6 +68,7 @@ def load(timeline, recognized, oww=True, detector=FakeDetector, calls=None, diag
     os.environ.clear(); os.environ.update(env)
     calls = calls if calls is not None else {}
     calls.update(recognize=[], chime=0, opens=0)
+    module.RESIDENT = False                    # one process per listen; ResidentListener below covers the stdin protocol
     module.authorize_capture = lambda: None
     module.recording_allowed = lambda: True
     module.OwwDetector = detector
@@ -342,6 +343,133 @@ class OpenWakeWord(unittest.TestCase):
         out, _ = run(load(Timeline([ROOM, WORD, WORD_END, (3000, 1.0), (100, 1.5)]), ["go"]))
         self.assertEqual(out.count("CAPRI_READY"), 1)
         self.assertEqual(out[0], "CAPRI_READY")
+
+
+class Resident:
+    """The resident process (CAPRI_RESIDENT): commands as the app sends them (each one only after the previous acknowledgement),
+    a fake microphone that counts its owners, and every output line recorded with the number of open microphones at that moment."""
+    def __init__(self, timelines, script, diagnostics=False, during=None):
+        self.module = load(None, ["go"] * len(timelines), diagnostics=diagnostics)
+        self.module.RESIDENT = True
+        self.timelines, self.script, self.during = list(timelines), list(script), during or {}
+        self.owners = self.max_owners = self.opens = 0
+        self.lines, self.resets, self.first_scored = [], 0, []
+        test = self
+        module = self.module
+
+        class Commands(module.Commands):
+            def __init__(self, stream):           # no stdin thread: the test hands over each line itself
+                self.queue, self.last = queue.Queue(), None
+        module.Commands = Commands
+
+        class Detector(FakeDetector):
+            def reset(self):
+                test.resets += 1
+                self.fresh = True
+            def score(self, block):
+                if getattr(self, "fresh", False):
+                    self.fresh = False
+                    test.first_scored.append(abs(array.array("h", block)[1]))
+                return FakeDetector.score(self, block)
+        module.OwwDetector = Detector
+
+        @contextlib.contextmanager
+        def live_mic():
+            test.owners += 1; test.opens += 1
+            test.max_owners = max(test.max_owners, test.owners)
+            line, count = test.timelines.pop(0), [0]
+            def read():
+                count[0] += 1
+                command = test.during.get((test.opens, count[0]))
+                if command: module.COMMANDS.queue.put(command)
+                return line.read()
+            try: yield read
+            finally: test.owners -= 1
+
+        module.live_mic = live_mic
+
+        class Out(io.StringIO):
+            def write(self, text):
+                for part in text.splitlines():
+                    if not part: continue
+                    test.lines.append((part, test.owners))
+                    if part == "CAPRI_PAUSED" and test.script:
+                        module.COMMANDS.queue.put(test.script.pop(0))
+                return len(text)
+        self.out, self.err = Out(), io.StringIO()
+
+    def run(self):
+        with contextlib.redirect_stdout(self.out), contextlib.redirect_stderr(self.err):
+            self.module.main()          # returns: a clean exit
+        return [line for line, _ in self.lines]
+
+    def owners_at(self, name):
+        return [owners for line, owners in self.lines if line == name]
+
+
+COMMAND = [ROOM, WORD, WORD_END, (2500, 1.2), (100, 1.5)]
+
+
+class ResidentListener(unittest.TestCase):
+    def test_twenty_resume_command_cycles_with_one_microphone_owner_and_a_clean_exit(self):
+        r = Resident([Timeline(COMMAND) for _ in range(20)], ["resume"] * 20 + ["eof"])
+        out = r.run()
+        self.assertEqual(sum(l.startswith("CAPRI_COMMAND") for l in out), 20)
+        self.assertEqual(r.opens, 20, "one microphone open per listen")
+        self.assertEqual(r.max_owners, 1, "never two microphone owners")
+        self.assertEqual(r.owners_at("CAPRI_PAUSED"), [0] * 21, "paused is acknowledged only after the microphone is closed")
+        self.assertEqual(r.owners_at("CAPRI_READY"), [1] * 20, "ready only while the microphone is capturing")
+        self.assertEqual(out.count("CAPRI_RESUMED"), 20)
+        self.assertEqual(r.resets, 20, "the detector starts every listen from a reset")
+        self.assertEqual(r.owners, 0)
+        self.assertEqual(r.err.getvalue(), "", "no traceback")
+
+    def test_pause_while_listening_then_a_fresh_listen_with_its_own_noise_and_detector_state(self):
+        first = Timeline([ROOM, WORD, ROOM, ROOM, ROOM])           # paused in the middle of a word: nothing of it may carry over
+        quiet_room = Timeline([(400, 1.0), WORD, WORD_END, (2500, 1.2), (400, 1.5)])
+        r = Resident([first, quiet_room], ["resume", "pause", "resume", "eof"], diagnostics=True,
+                     during={(1, 60): "pause", (2, 10): "resume"})   # a repeated resume while listening is ignored
+        out = r.run()
+        self.assertEqual(r.opens, 2, "the ignored resume opened no second microphone")
+        self.assertEqual(r.max_owners, 1)
+        self.assertEqual(r.owners_at("CAPRI_PAUSED"), [0, 0, 0, 0], "initial, pause, repeated pause, after the command")
+        self.assertEqual(sum(l.startswith("CAPRI_COMMAND") for l in out), 1)
+        self.assertEqual(r.resets, 2)
+        self.assertEqual(r.first_scored, [100, 400], "the first frame scored after the resume is from the new microphone")
+        noise = [l for l in r.err.getvalue().splitlines() if " oww_detect " in l]
+        self.assertEqual(len(noise), 1)
+        self.assertIn("noise=400", noise[0], "the noise baseline is measured again after the resume")
+        self.assertNotIn("Traceback", r.err.getvalue())
+
+    def test_end_of_input_while_listening_closes_the_microphone_and_exits_quietly(self):
+        r = Resident([Timeline([ROOM, ROOM, ROOM])], ["resume"], during={(1, 30): "eof"})
+        out = r.run()
+        self.assertEqual(r.owners, 0)
+        self.assertEqual(out[-1], "CAPRI_READY", "no pause acknowledgement on exit")
+        self.assertEqual(r.err.getvalue(), "")
+
+    def test_a_microphone_that_fails_ends_the_process_for_a_restart(self):
+        r = Resident([], ["resume"])
+        @contextlib.contextmanager
+        def broken():
+            raise OSError("no capture device")
+            yield
+        r.module.live_mic = broken
+        with self.assertRaises(OSError):
+            r.run()
+
+    def test_stdin_reader_turns_lines_and_end_of_input_into_commands(self):
+        module = load(None, [])
+        commands = module.Commands(io.StringIO("resume\npause\n"))
+        self.assertEqual([commands.next(), commands.next(), commands.next()], ["resume", "pause", "eof"])
+        commands = module.Commands(io.StringIO("resume\npause\n"))
+        time.sleep(0.05)
+        with self.assertRaises(module.Paused):
+            commands.check()                    # the repeated resume is skipped, the pause stops the listen
+        self.assertEqual(commands.last, "pause")
+        with self.assertRaises(module.Paused):
+            commands.check(0.5)                 # end of input stops it too
+        self.assertEqual(commands.last, "eof")
 
 
 if __name__ == "__main__":

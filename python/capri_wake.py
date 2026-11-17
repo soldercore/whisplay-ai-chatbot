@@ -33,7 +33,42 @@ def authorize_capture():
                     return
             except (OSError, ValueError, KeyError, RuntimeError):
                 pass
-        time.sleep(.5)
+        idle(.5)
+
+# Resident listener (CAPRI_RESIDENT, default on; 0 = the former one-process-per-listen behaviour). The process loads the detector once
+# and then follows the app's commands on stdin, one per line: "resume" opens the microphone and listens, "pause" (or a finished
+# command) closes it again; end of input means exit. CAPRI_PAUSED is printed only after SoX has exited, so the app never opens the
+# microphone while this process still holds it. Every listen starts with a fresh microphone queue, noise measurement and detector state.
+RESIDENT=os.getenv("CAPRI_RESIDENT","1")!="0"
+COMMANDS=None
+
+class Paused(Exception):
+    pass
+
+class Commands:
+    def __init__(self,stream):
+        self.queue=queue.Queue()
+        self.last=None
+        threading.Thread(target=self._read,args=(stream,),daemon=True).start()   # stdin never blocks the audio loop
+    def _read(self,stream):
+        for line in stream: self.queue.put(line.strip())
+        self.queue.put("eof")
+    def next(self):
+        self.last=self.queue.get()
+        return self.last
+    def check(self,timeout=0):
+        """While listening: wait at most `timeout` seconds; raise Paused on "pause" or end of input (a repeated "resume" is ignored)."""
+        deadline=time.monotonic()+timeout
+        while True:
+            try: command=self.queue.get(timeout=max(0.0,deadline-time.monotonic())) if timeout else self.queue.get_nowait()
+            except queue.Empty: return
+            if command in ("pause","eof"):
+                self.last=command
+                raise Paused()
+
+def idle(seconds):
+    if COMMANDS is None: time.sleep(seconds)
+    else: COMMANDS.check(seconds)
 
 PCM=Path("/proc/asound/whisplaysound/pcm0p/sub0/status")
 CAPTURE=["sox","-q","--buffer","640","-t","alsa",os.getenv("ALSA_INPUT_DEVICE") or "hw:whisplaysound,0","-r","16000","-b","16","-c","1","-e","signed-integer","-L","-t","raw","-"]
@@ -47,7 +82,7 @@ LINGER_S=5.0        # the microphone may stay open this long while the wake stag
 
 @contextlib.contextmanager
 def child(command, stdout=None):
-    with subprocess.Popen(command,stdout=stdout) as proc:
+    with subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=stdout) as proc:   # SoX never inherits the app's command pipe (as before)
         try:
             yield proc
         finally:
@@ -336,103 +371,140 @@ def oww_wake(detector,live,file):
     diag("oww_command",audio_s=round(len(raw)/32000,1),words=len(command.split()))
     return (command,last_loud,noise,detected)
 
-def main():
-    authorize_capture()
+def load_detector():
     detector=None
     if OWW_MODEL:
         try: detector=OwwDetector(OWW_MODEL)
         except Exception as error: print("CAPRI_OWW_UNAVAILABLE "+type(error).__name__,file=sys.stderr,flush=True)
     diag("detector",kind="openwakeword" if detector else "whisper",threshold=OWW_THRESHOLD if detector else "-")
-    print("CAPRI_READY",flush=True)
-    opens=0
-    streak=0    # consecutive captures that reached the speech limit
+    return detector
+
+def main():
+    global COMMANDS
+    if not RESIDENT:
+        authorize_capture()
+        detector=load_detector()
+        print("CAPRI_READY",flush=True)
+        with tempfile.TemporaryDirectory(dir="/dev/shm",prefix="whisplay-capri-") as temp:
+            listen(detector,Path(temp)/"speech.wav")
+        return
+    detector=load_detector()
+    COMMANDS=Commands(sys.stdin)
     with tempfile.TemporaryDirectory(dir="/dev/shm",prefix="whisplay-capri-") as temp:
         file=Path(temp)/"speech.wav"
         while True:
-            if not recording_allowed():
-                time.sleep(1)
-                continue
-            # The microphone stays open while Whisper decodes the wake stage, so a bare "Capri" can chime and keep capturing
-            # without reopening it (about 0.7 s). Frames recorded meanwhile wait in the reader queue (6 s of room).
-            mic=contextlib.ExitStack()
+            print("CAPRI_PAUSED",flush=True)        # no microphone is open: SoX has exited
+            command=COMMANDS.next()
+            while command!="resume":
+                if command=="eof": return
+                if command=="pause": print("CAPRI_PAUSED",flush=True)
+                command=COMMANDS.next()
+            print("CAPRI_RESUMED",flush=True)
             try:
-                live=mic.enter_context(live_mic())
-                opens+=1
-                diag("mic_open",opens=opens,noise_refreshed=1)
-                if detector is not None:
-                    found=oww_wake(detector,live,file)
-                    if found is None:
-                        if recording_allowed(): print("CAPRI_IDLE",flush=True)   # the wake acknowledgement on screen must not be left standing
-                        continue
-                    command,speech_last,noise,captured=found
-                else:
-                    noise=None
-                    complete=False
-                    while recording_allowed():
-                        raw,last_loud,noise,complete=capture(noise=noise,live=live)
-                        if raw: break
-                    else:
-                        raw=b""
-                    if raw and not complete:
-                        print("CAPRI_INCOMPLETE capture reached the speech limit; not recognized",file=sys.stderr,flush=True)
-                        streak+=1
-                        diag("incomplete",streak=streak,next="microphone reopened and noise re-measured")
-                        continue
-                    if not raw or not recording_allowed():
-                        continue
-                    streak=0
-                    captured=time.monotonic()
-                    # Whisper base rarely writes the name "Capri" unprompted; the hint is for this wake stage only.
-                    spoken=recognize(raw,file,hint="Capri.")
-                    diag("wake_check",audio_s=round(len(raw)/32000,1),asr_s=round(time.monotonic()-captured,1),words=len(spoken.split()),
-                         contains_capri=int("capri" in spoken.lower()),starts_with_capri=int(bool(re.match(r"\W*capri\b",spoken,re.I))))
-                    match=re.fullmatch(r"capri\b[\s,.:;!?-]*(.*)",spoken,re.I)
-                    if not match or not recording_allowed():
-                        continue
-                    command=match[1].strip()
-                    speech_last=last_loud
-                if not command:
-                    if time.monotonic()-captured>LINGER_S:
-                        # A slow decode would have overflowed the reader queue: reopen the microphone as before.
-                        mic.close()
-                        live=mic.enter_context(live_mic())
-                        live()
-                    if not recording_allowed(): continue
-                    chime_asked=time.monotonic()
-                    playback=chime()
-                    diag("chime",took_ms=round((time.monotonic()-chime_asked)*1000),began_ms_after_ask="-" if playback is None else round((playback-chime_asked)*1000))
-                    # The existing signal has 360 ms of tone, followed by padding.
-                    # Discard the tone and a 40 ms guard while keeping post-tone speech.
-                    gate=playback+.40 if playback is not None else time.monotonic()
-                    follow,last_follow,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING",
-                                                          **(dict(hold=True,min_speech=OWW_MIN_SPEECH_FRAMES) if detector is not None else {}))
-                    speech_last=last_follow
-            finally:
-                mic.close()
-            if not command:
-                if follow and complete and recording_allowed():
-                    print("CAPRI_PROCESSING",flush=True)   # capture is over; Whisper runs next
-                if follow and not complete:
-                    print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
-                    command=""
-                elif recording_allowed():
-                    command=recognize(follow,file)
-                else:
-                    command=""
-                if not command:
-                    print("CAPRI_IDLE",flush=True)
+                authorize_capture()
+                listen(detector,file,announce_ready=True)
+            except Paused:
+                if COMMANDS.last=="eof": return
+
+def listen(detector,file,announce_ready=False):
+    """Listen until one command has been printed. Resident: CAPRI_READY follows the first frame captured in this listen."""
+    opens=0
+    streak=0    # consecutive captures that reached the speech limit
+    ready=[announce_ready]
+    def guarded(read):
+        def frame():
+            if COMMANDS is not None: COMMANDS.check()
+            item=read()
+            if ready[0]:
+                ready[0]=False
+                print("CAPRI_READY",flush=True)
+            return item
+        return frame
+    while True:
+        if not recording_allowed():
+            idle(1)
+            continue
+        # The microphone stays open while Whisper decodes the wake stage, so a bare "Capri" can chime and keep capturing
+        # without reopening it (about 0.7 s). Frames recorded meanwhile wait in the reader queue (6 s of room).
+        mic=contextlib.ExitStack()
+        try:
+            live=guarded(mic.enter_context(live_mic()))
+            opens+=1
+            diag("mic_open",opens=opens,noise_refreshed=1)
+            if detector is not None:
+                found=oww_wake(detector,live,file)
+                if found is None:
+                    if recording_allowed(): print("CAPRI_IDLE",flush=True)   # the wake acknowledgement on screen must not be left standing
                     continue
-            if not recording_allowed():
+                command,speech_last,noise,captured=found
+            else:
+                noise=None
+                complete=False
+                while recording_allowed():
+                    raw,last_loud,noise,complete=capture(noise=noise,live=live)
+                    if raw: break
+                else:
+                    raw=b""
+                if raw and not complete:
+                    print("CAPRI_INCOMPLETE capture reached the speech limit; not recognized",file=sys.stderr,flush=True)
+                    streak+=1
+                    diag("incomplete",streak=streak,next="microphone reopened and noise re-measured")
+                    continue
+                if not raw or not recording_allowed():
+                    continue
+                streak=0
+                captured=time.monotonic()
+                # Whisper base rarely writes the name "Capri" unprompted; the hint is for this wake stage only.
+                spoken=recognize(raw,file,hint="Capri.")
+                diag("wake_check",audio_s=round(len(raw)/32000,1),asr_s=round(time.monotonic()-captured,1),words=len(spoken.split()),
+                     contains_capri=int("capri" in spoken.lower()),starts_with_capri=int(bool(re.match(r"\W*capri\b",spoken,re.I))))
+                match=re.fullmatch(r"capri\b[\s,.:;!?-]*(.*)",spoken,re.I)
+                if not match or not recording_allowed():
+                    continue
+                command=match[1].strip()
+                speech_last=last_loud
+            if not command:
+                if time.monotonic()-captured>LINGER_S:
+                    # A slow decode would have overflowed the reader queue: reopen the microphone as before.
+                    mic.close()
+                    live=guarded(mic.enter_context(live_mic()))
+                    live()
+                if not recording_allowed(): continue
+                chime_asked=time.monotonic()
+                playback=chime()
+                diag("chime",took_ms=round((time.monotonic()-chime_asked)*1000),began_ms_after_ask="-" if playback is None else round((playback-chime_asked)*1000))
+                # The existing signal has 360 ms of tone, followed by padding.
+                # Discard the tone and a 40 ms guard while keeping post-tone speech.
+                gate=playback+.40 if playback is not None else time.monotonic()
+                follow,last_follow,_,complete=capture(noise=noise,live=live,after=gate,announce="CAPRI_LISTENING",
+                                                      **(dict(hold=True,min_speech=OWW_MIN_SPEECH_FRAMES) if detector is not None else {}))
+                speech_last=last_follow
+        finally:
+            mic.close()
+        if not command:
+            if follow and complete and recording_allowed():
+                print("CAPRI_PROCESSING",flush=True)   # capture is over; Whisper runs next
+            if follow and not complete:
+                print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
+                command=""
+            elif recording_allowed():
+                command=recognize(follow,file)
+            else:
+                command=""
+            if not command:
                 print("CAPRI_IDLE",flush=True)
                 continue
-            if len(command)>1000 or any(ord(c)<32 for c in command):
-                print("CAPRI_IDLE",flush=True)
-                continue
-            if speech_last is not None:
-                print("CAPRI_TIMING %d"%round(max(0.0,time.monotonic()-speech_last)*1000),flush=True)   # ms since the last loud frame
-            diag("command_out",words=len(command.split()))
-            print("CAPRI_COMMAND "+json.dumps(command,ensure_ascii=True),flush=True)
-            return
+        if not recording_allowed():
+            print("CAPRI_IDLE",flush=True)
+            continue
+        if len(command)>1000 or any(ord(c)<32 for c in command):
+            print("CAPRI_IDLE",flush=True)
+            continue
+        if speech_last is not None:
+            print("CAPRI_TIMING %d"%round(max(0.0,time.monotonic()-speech_last)*1000),flush=True)   # ms since the last loud frame
+        diag("command_out",words=len(command.split()))
+        print("CAPRI_COMMAND "+json.dumps(command,ensure_ascii=True),flush=True)
+        return
 
 if __name__=="__main__":
     def stop(_signum,_frame):

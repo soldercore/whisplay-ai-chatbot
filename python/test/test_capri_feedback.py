@@ -18,6 +18,7 @@ def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    mod.RESIDENT = False                       # one process per listen; the resident protocol is tested in test_capri_oww.py
     mod.recording_allowed = lambda: True
     mod.authorize_capture = lambda: None
     mod.chime = lambda: -1.0

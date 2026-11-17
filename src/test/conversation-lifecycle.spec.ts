@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Module from "node:module";
 import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 
 // Invariant: whenever the device is idle (flow "sleep"), exactly one Capri child is running and has reported READY; whenever it is
 // not idle, no Capri child holds the microphone. Checked over repeated conversations that end in every exit path, using the REAL
@@ -16,12 +16,32 @@ const pc = require("../utils/pending-clarification");
 const { composeIdleStatus } = require("../utils/ui-status");
 
 // ---- Fake Capri children ----------------------------------------------------------------------------------------------
+// Resident mode (the default): the child speaks the stdin protocol and opens its microphone only between resume and pause.
+// Every microphone open is recorded with the flow state at that moment.
+const flowNow = { name: "sleep" };
+const mic = { owners: 0, max: 0, opensOutsideSleep: [] as string[] };
 class FakeChild extends EventEmitter {
-  stdout = new PassThrough(); stderr = new PassThrough(); alive = true; pid: number;
+  stdout = new PassThrough(); stderr = new PassThrough(); alive = true; pid: number; listening = false;
+  stdin = new Writable({ write: (chunk, _enc, done) => {
+    for (const line of chunk.toString().split("\n").filter(Boolean)) {
+      if (line === "resume" && !this.listening) {
+        this.stdout.write("CAPRI_RESUMED\n");
+        setTimeout(() => { if (this.alive && !this.listening) { this.open(); this.stdout.write("CAPRI_READY\n"); } }, 3);
+      } else if (line === "pause") setTimeout(() => this.release(), 4);
+    }
+    done();
+  } });
   constructor(pid: number) { super(); this.pid = pid; }
+  open() {
+    this.listening = true; mic.owners += 1; mic.max = Math.max(mic.max, mic.owners);
+    if (flowNow.name !== "sleep") mic.opensOutsideSleep.push(flowNow.name);
+  }
+  close() { if (this.listening) { this.listening = false; mic.owners -= 1; } }
+  release() { this.close(); if (this.alive) this.stdout.write("CAPRI_PAUSED\n"); }
 }
 const children: FakeChild[] = [];
 let maxAlive = 0;
+let resident = true;
 const aliveCount = () => children.filter(c => c.alive).length;
 const fakeLifecycle = {
   appSignal: { aborted: false },
@@ -29,10 +49,11 @@ const fakeLifecycle = {
     const child = new FakeChild(1000 + children.length);
     children.push(child);
     maxAlive = Math.max(maxAlive, aliveCount());
-    setImmediate(() => child.stdout.write("CAPRI_READY\n"));
+    setImmediate(() => child.stdout.write(resident ? "CAPRI_PAUSED\n" : "CAPRI_READY\n"));
     return child;
   },
   stopOwnedChild: (child: FakeChild) => new Promise<void>(resolve => setTimeout(() => {   // confirmed exit, like the real helper
+    child.close();
     child.alive = false;
     child.emit("close", null);
     resolve();
@@ -76,7 +97,9 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 type Exit = { name: string; turns: { heard: string; reply?: string; tools?: string[]; fail?: boolean }[]; limit?: string; interrupt?: boolean; asrThrows?: boolean };
 
 function makeFlow(exit: Exit) {
+  if (!resident) process.env.CAPRI_RESIDENT = "0";
   const listener = new WakeWordListener(true);
+  delete process.env.CAPRI_RESIDENT;
   const visited: string[] = [];
   let turn = 0;
   const ctx: any = {
@@ -92,6 +115,7 @@ function makeFlow(exit: Exit) {
     transitionTo: (name: string) => {
       visited.push(name);
       ctx.currentFlowName = name;
+      flowNow.name = name;
       if (name !== "sleep") void listener.stop();      // ChatFlow.transitionTo: leaving idle releases the microphone first
       queue.push(name);
       if (name === "sleep") listener.start();           // ... and idle restarts Capri
@@ -129,6 +153,7 @@ async function runStates(flow: ReturnType<typeof makeFlow>, exit: Exit) {
     const name = flow.queue.shift();
     if (!name) { await wait(40); if (!flow.queue.length && flow.ctx.currentFlowName === "sleep" && flow.visited.at(-1) === "sleep") break; continue; }
     if (name === "sleep") { flowStates.sleep(flow.ctx); continue; }
+    assert.equal(mic.owners, 0, `${exit.name}: Capri is not listening while the flow is ${name}`);
     flowStates[name](flow.ctx);
     if (exit.interrupt && name === "wake_listening") { await wait(20); pressed?.(); }   // the user presses the button during the follow-up window
     await wait(30);
@@ -146,41 +171,59 @@ const EXITS: Exit[] = [
   { name: "a noise-only follow-up", turns: [{ heard: "q", reply: "A." }, { heard: "Thank you." }] },
 ];
 
-test("every conversation exit returns to idle with exactly one healthy Capri child, over 24 cycles", async () => {
-  let cycles = 0;
-  for (let round = 0; round < 3; round++) {
-    for (const exit of EXITS) {
-      if (exit.limit) process.env.CONVERSATION_FOLLOWUPS = exit.limit; else delete process.env.CONVERSATION_FOLLOWUPS;
-      children.length = 0; maxAlive = 0; events.length = 0; pressed = undefined; pc.clearClarification();
-      const flow = makeFlow(exit);
-      // idle: Capri starts and reports ready
-      flow.ctx.currentFlowName = "sleep"; flow.listener.start();
-      await wait(60);
-      assert.equal(aliveCount(), 1, `${exit.name}: one Capri child while idle`);
-      assert.equal(flow.readyCount(), 1);
-      // the user wakes Capri with a command (the child prints it, the real listener stops the child and notifies the flow)
-      const first = children[0];
-      flow.visited.length = 0;
-      first.stdout.write(`CAPRI_COMMAND ${JSON.stringify(exit.turns[0].heard === "q" ? "tell me something" : exit.turns[0].heard)}\n`);
-      await wait(80);
-      assert.equal(first.alive, false, `${exit.name}: the child released the microphone before the conversation`);
-      await runStates(flow, exit);
-      await wait(120);
-      // the invariant
-      assert.equal(flow.ctx.currentFlowName, "sleep", `${exit.name}: back to idle (${flow.visited.join(">")})`);
-      assert.equal(aliveCount(), 1, `${exit.name}: exactly one Capri child after the conversation (${children.length} spawned)`);
-      assert.equal(children.at(-1)!.alive, true);
-      assert.ok(flow.readyCount() >= 2, `${exit.name}: the new child reported READY`);
-      assert.ok(maxAlive <= 1, `${exit.name}: never two Capri children at once (max ${maxAlive})`);
-      assert.equal(flow.ctx.conversationCapture, false, `${exit.name}: no leftover follow-up marker`);
-      await flow.listener.stop();
-      assert.equal(aliveCount(), 0, `${exit.name}: shutdown leaves no child`);
-      cycles += 1;
+for (const mode of ["resident", "one process per listen (CAPRI_RESIDENT=0)"]) {
+  test(`every conversation exit returns to idle with exactly one healthy Capri child, over 24 cycles: ${mode}`, async () => {
+    resident = mode === "resident";
+    let cycles = 0;
+    for (let round = 0; round < 3; round++) {
+      for (const exit of EXITS) {
+        if (exit.limit) process.env.CONVERSATION_FOLLOWUPS = exit.limit; else delete process.env.CONVERSATION_FOLLOWUPS;
+        children.length = 0; maxAlive = 0; events.length = 0; pressed = undefined; pc.clearClarification();
+        mic.owners = 0; mic.max = 0; mic.opensOutsideSleep.length = 0; flowNow.name = "sleep";
+        const flow = makeFlow(exit);
+        // idle: Capri starts and reports ready
+        flow.ctx.currentFlowName = "sleep"; flow.listener.start();
+        await wait(60);
+        assert.equal(aliveCount(), 1, `${exit.name}: one Capri child while idle`);
+        assert.equal(flow.readyCount(), 1);
+        if (resident) assert.equal(mic.owners, 1, `${exit.name}: listening while idle`);
+        // the user wakes Capri with a command (the child prints it and releases the microphone; the real listener waits for that)
+        const first = children[0];
+        flow.visited.length = 0;
+        first.stdout.write(`CAPRI_COMMAND ${JSON.stringify(exit.turns[0].heard === "q" ? "tell me something" : exit.turns[0].heard)}\n`);
+        if (resident) setTimeout(() => first.release(), 4);
+        await wait(80);
+        if (resident) assert.equal(mic.owners, 0, `${exit.name}: the microphone was released before the conversation`);
+        else assert.equal(first.alive, false, `${exit.name}: the child released the microphone before the conversation`);
+        await runStates(flow, exit);
+        await wait(120);
+        // the invariant
+        assert.equal(flow.ctx.currentFlowName, "sleep", `${exit.name}: back to idle (${flow.visited.join(">")})`);
+        assert.equal(aliveCount(), 1, `${exit.name}: exactly one Capri child after the conversation (${children.length} spawned)`);
+        assert.equal(children.at(-1)!.alive, true);
+        assert.ok(flow.readyCount() >= 2, `${exit.name}: Capri reported READY again`);
+        assert.ok(maxAlive <= 1, `${exit.name}: never two Capri children at once (max ${maxAlive})`);
+        assert.equal(flow.ctx.conversationCapture, false, `${exit.name}: no leftover follow-up marker`);
+        if (resident) {
+          assert.equal(children.length, 1, `${exit.name}: the resident process was reused`);
+          assert.equal(mic.owners, 1, `${exit.name}: listening again in idle`);
+          assert.ok(mic.max <= 1, `${exit.name}: never two microphone owners`);
+          assert.deepEqual(mic.opensOutsideSleep, [], `${exit.name}: the microphone was never opened outside idle`);
+        }
+        await flow.listener.stop();
+        if (resident) {
+          assert.equal(mic.owners, 0, `${exit.name}: stop releases the microphone`);
+          await fakeLifecycle.stopOwnedChild(children[0]);   // application shutdown ends the resident process
+        }
+        assert.equal(aliveCount(), 0, `${exit.name}: shutdown leaves no child`);
+        cycles += 1;
+      }
     }
-  }
-  delete process.env.CONVERSATION_FOLLOWUPS;
-  assert.equal(cycles, 24);
-});
+    delete process.env.CONVERSATION_FOLLOWUPS;
+    resident = true;
+    assert.equal(cycles, 24);
+  });
+}
 
 test("a stale follow-up timer from an abandoned conversation cannot reopen the microphone after idle returned", async () => {
   delete process.env.CONVERSATION_FOLLOWUPS; children.length = 0; events.length = 0; pc.clearClarification();
@@ -195,4 +238,5 @@ test("a stale follow-up timer from an abandoned conversation cannot reopen the m
   assert.equal(events.filter(e => e === "record").length, 0);
   assert.equal(aliveCount(), 1, "Capri is running");
   await flow.listener.stop();
+  for (const child of children) if (child.alive) await fakeLifecycle.stopOwnedChild(child);
 });

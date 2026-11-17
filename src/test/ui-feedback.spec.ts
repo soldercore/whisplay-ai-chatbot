@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import Module from "node:module";
+process.env.CAPRI_RESIDENT = "0";   // these fakes exit after each listen; the resident protocol: capri-resident and conversation-lifecycle specs
 
 // Truthful microphone and response feedback. The recorder, display and Capri child process are fixtures; the real
 // state handlers, the real wake-word parser and the real timing module run against them.

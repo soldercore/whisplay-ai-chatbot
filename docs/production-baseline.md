@@ -38,6 +38,11 @@ Active system units: `ollama`, `whisplay-daemon`, `whisplay-whisper`, `whisplay-
 `whisplay-soundcard-warmup` (oneshot), `pisugar-server`. Only SSH listens on a
 non-loopback address.
 
+Capri lifecycle (code after this baseline; not on the Pi until deployed): one resident `capri_wake.py` process keeps
+openWakeWord loaded; outside idle it is paused with SoX closed (`CAPRI_PAUSED` only after SoX exited), and idle sends
+`resume` instead of starting Python again. Unacknowledged pause/resume, a failed write or an exit kills and restarts it.
+Rollback switch: `CAPRI_RESIDENT=0` in `.env` restores one process per listen.
+
 Behaviour switches in the Pi `.env` (values, no secrets): `LLM_SERVER=ollama`,
 `OLLAMA_ENABLE_TOOLS=true`, `ASR_SERVER=faster-whisper`, `TTS_SERVER=piper-http`,
 `ASSISTANT_PERSONA=glados`, `GLADOS_PERSONA_VARIANT=A`, `MEMORY_ENABLED=true`,

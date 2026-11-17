@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import Module from "node:module";
+process.env.CAPRI_RESIDENT = "0";   // these fakes exit after each listen; the resident protocol: capri-resident and conversation-lifecycle specs
 
 // Wake acknowledgement, no calibration when the recorder ignores it, and no Whisper call for an empty recording.
 // The real state handler, the real wake-word parser and the real recording check run against fixtures.

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+process.env.CAPRI_RESIDENT = "0";   // these fakes exit after each listen; the resident protocol: capri-resident and conversation-lifecycle specs
 
 // Question-triggered follow-ups (QUESTION_FOLLOWUPS) on the real state handlers and the real Capri listener (fake children).
 // Invariant: whenever the device is idle (flow "sleep"), exactly one Capri child is running and has reported READY; whenever it is
