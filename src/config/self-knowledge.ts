@@ -7,11 +7,15 @@ import path from "node:path";
 
 export type SelfTopic =
   | "model" | "hardware" | "stt" | "tts" | "tools" | "limits"
-  | "music" | "timer" | "search" | "image" | "internet" | "tv" | "memory";
+  | "music" | "timer" | "search" | "image" | "internet" | "tv" | "memory" | "ai" | "origin" | "feelings";
 
 const TIMING = "(?:in (?:an?|\\d+|[a-z]+(?: and a half)?) (?:seconds?|minutes?|hours?|days?)|at \\S.*|tomorrow|tonight|later)";
 
 const PATTERNS: [SelfTopic, RegExp][] = [
+  // Identity, origin and feelings: a small model invents a provider or denies being an AI, so these whole questions are answered from facts.
+  ["ai", /^(?:(?:so|well|but|and|okay|ok),? )?(?:(?:are you|is this) (?:an? )?(?:ai|a\.i\.|artificial intelligence|robot|computer|machine|program|bot|chatbot|language model|human|person|real|real person|real human)(?: or (?:an? )?(?:ai|robot|computer|human|person|real))?|what (?:exactly )?are you)$/],
+  ["origin", /^(?:(?:so|well|but|and|okay|ok),? )?(?:who (?:made|created|built|programmed|trained|developed|designed) you|who(?:'s| is) your (?:maker|creator|developer|author)|(?:what|which) company (?:made|created|built|trained|developed) you|who (?:are|were) you (?:made|created|built|trained) by|where (?:do|did) you come from)$/],
+  ["feelings", /^(?:(?:so|well|but|and|okay|ok),? )?(?:do you (?:have|feel) (?:any )?(?:feelings|emotions)|do you (?:ever )?(?:get|feel) (?:lonely|sad|happy|bored|angry|scared|afraid)|can you feel(?: (?:anything|emotions))?|do you have (?:a )?(?:soul|consciousness)|are you (?:conscious|sentient|self[- ]aware))$/],
   ["model", /^(?:(?:what|which) (?:ai |llm |language )?(?:model|brain)(?: are you| do you (?:use|run on|run)| are you (?:using|running)| powers you| runs you)|(?:what|which) ai are you(?: using| running)?)$/],
   ["hardware", /^(?:where do you run|where are you running|what (?:hardware|computer|device|board) (?:do you run on|are you running on|are you on)|what are you running on|what raspberry pi are you (?:on|running on)|(?:are|do) you (?:running|run) (?:locally|on a raspberry pi|in the cloud)|are you (?:local|in the cloud|a raspberry pi))$/],
   ["stt", /^(?:(?:what|which) (?:speech(?: |-)?(?:recognition|to(?: |-)?text)|stt|asr|transcription|speech recogni[sz]er)(?: engine| model| system| software)? (?:do you use|are you using|do you run|is this)|how do you (?:transcribe|recogni[sz]e) (?:my )?(?:speech|voice))$/],
@@ -142,6 +146,9 @@ function limitsAnswer(facts: SelfFacts): string {
 
 export function selfKnowledgeReply(topic: SelfTopic, facts: SelfFacts): string {
   switch (topic) {
+    case "ai": return "I am GLaDOS, an artificial intelligence: a program running on this device, not a person.";
+    case "origin": return `${modelAnswer(facts)} I cannot read anything about who built or trained it.`;
+    case "feelings": return "No. I do not have feelings or experiences. I generate replies from text.";
     case "model": return modelAnswer(facts);
     case "hardware": return hardwareAnswer(facts);
     case "stt": return sttAnswer(facts);

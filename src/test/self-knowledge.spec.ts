@@ -184,3 +184,26 @@ test("the answered exchange is kept in history so a follow-up sees what was said
   const sent = JSON.stringify(requests[0].messages);
   assert.match(sent, /What model are you\?/); assert.match(sent, /served locally by Ollama/);
 });
+
+test("identity, origin and feelings questions are answered from facts, truthfully, and nothing else is captured", () => {
+  const cases: [string, string][] = [
+    ["Are you an AI?", "ai"], ["Are you a robot?", "ai"], ["Are you human?", "ai"], ["Are you a real person?", "ai"], ["Hey GLaDOS, are you an artificial intelligence?", "ai"],
+    ["Are you an AI or a human?", "ai"], ["Who made you?", "origin"], ["Who created you?", "origin"], ["Who trained you?", "origin"],
+    ["What company built you?", "origin"], ["Where do you come from?", "origin"], ["Do you have feelings?", "feelings"], ["Can you feel anything?", "feelings"],
+    ["Are you conscious?", "feelings"], ["Do you have emotions?", "feelings"], ["So are you a robot?", "ai"], ["What exactly are you?", "ai"], ["Do you ever get lonely?", "feelings"],
+  ];
+  for (const [q, topic] of cases) assert.equal(sk.selfKnowledgeTopic(q), topic, q);
+  for (const q of ["Who made this soup?", "Are you free tomorrow?", "Are you sure?", "Do you feel like talking about space?", "Can you feel the temperature in the room?",
+    "Who is the creator of Portal?", "Are you an AI? What is the weather today?", "Who are you?", "Where do you come from, and what is 2 plus 2?"]) {
+    assert.equal(sk.selfKnowledgeTopic(q), undefined, q);
+  }
+  const ai = reply("ai");
+  assert.match(ai, /^I am GLaDOS, an artificial intelligence/);
+  assert.equal(/\bnot an? (?:ai|artificial)/i.test(ai), false, "never denies being an AI");
+  const origin = reply("origin", { env: { LLM_SERVER: "ollama", OLLAMA_MODEL: "openbmb/minicpm5-2b:q4_K_M", OLLAMA_ENDPOINT: "http://localhost:11434" } });
+  assert.match(origin, /openbmb\/minicpm5-2b:q4_K_M/);
+  assert.match(origin, /cannot read anything about who built or trained it/);
+  for (const provider of ["Anthropic", "Google", "OpenAI", "Meta"]) assert.equal(origin.includes(provider), false);
+  assert.match(reply("origin", { env: {} }), /cannot read which language model is configured/);
+  assert.match(reply("feelings"), /^No\. I do not have feelings/);
+});
