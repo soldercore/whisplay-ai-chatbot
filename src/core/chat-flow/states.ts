@@ -264,21 +264,27 @@ export const flowStates: Record<FlowName, FlowStateHandler> = {
       // The recorder writes nothing until sound passes its start level, so growth of its file is real speech detection.
       const recordingFile = ctx.currentRecordFilePath;
       const startedAt = performance.now();
+      let spoke = false;
       let poll: ReturnType<typeof setInterval> | undefined = setInterval(() => {
         try {
           if (fs.statSync(recordingFile).size > 1024) {
             display({ status: uiStatus("listening", mode, "audio") });   // the recorder wrote sound: energy over its start level
+            spoke = true;
             if (poll) { clearInterval(poll); poll = undefined; }
           }
         } catch { /* the file does not exist yet */ }
       }, 250);
       const stopPolling = () => { if (poll) { clearInterval(poll); poll = undefined; } };
-      recordAudio(recordingFile, maxSec, level)
+      // A follow-up or clarification listen has a short WAITING window (maxSec); once the person has started speaking the recording is
+      // allowed to finish (up to the normal wake recording limit) instead of being cut at the end of that window.
+      const speechLimit = clarification ? ctx.wakeRecordMaxSec : undefined;
+      recordAudio(recordingFile, maxSec, level, speechLimit)
         .then(() => {
           stopPolling();
           // The recorder stops only after its end-silence, so the speech ended that long before it stopped (unless the time limit ended it).
           const ended = performance.now();
-          const bySilence = ended - startedAt < maxSec * 1000 - 250;
+          const hardEnd = (maxSec + (spoke && speechLimit ? speechLimit : 0)) * 1000;
+          const bySilence = ended - startedAt < hardEnd - 250;
           beginTurn("auto", bySilence ? ended - voiceDetectEndSilenceSec * 1000 : ended);
           ctx.transitionTo("asr");
         })

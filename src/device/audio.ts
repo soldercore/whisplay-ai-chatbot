@@ -1,4 +1,5 @@
 import { ChildProcess } from "child_process";
+import fs from "fs";
 import { spawnOwned as spawn } from "../utils/app-lifecycle";
 import { isEmpty, noop, set } from "lodash";
 import dotenv from "dotenv";
@@ -164,10 +165,16 @@ export const playWakeupChime = (): Promise<void> => {
   });
 };
 
+/**
+ * `duration` is how long the recorder may run. With `speechLimitSec` it is only the WAITING window: when speech has started by then
+ * (the recorder writes nothing until sound passes its start level, so the file has grown) the recording is not cut; it ends by
+ * silence, or after `speechLimitSec` more seconds, and that cut is logged. Without it the old hard limit applies.
+ */
 const recordAudio = async (
   outputPath: string,
   duration: number = 10,
   voiceDetectLevel: number = 30,
+  speechLimitSec?: number,
 ): Promise<string> => {
   // Delegate to browser microphone when web audio is enabled and a client is connected.
   if (webAudioBridge.isAvailable()) {
@@ -230,10 +237,24 @@ const recordAudio = async (
 
     // Set a timeout to kill the recording process after the specified duration
     setTimeout(() => {
-      if (recordingProcessList.includes(recordingProcess)) {
+      if (!recordingProcessList.includes(recordingProcess)) return;
+      let speaking = false;
+      if (speechLimitSec) {
+        try { speaking = fs.statSync(outputPath).size > 1024; } catch { /* nothing recorded yet */ }
+      }
+      if (!speaking) {
         killRecordingProcess(recordingProcess);
         resolve(outputPath);
+        return;
       }
+      // Speech is in progress at the end of the waiting window: let it finish instead of cutting the answer.
+      setTimeout(() => {
+        if (recordingProcessList.includes(recordingProcess)) {
+          console.warn(`[Recording] speech limit of ${speechLimitSec} s reached; the recording was cut`);
+          killRecordingProcess(recordingProcess);
+          resolve(outputPath);
+        }
+      }, speechLimitSec! * 1000);
     }, duration * 1000);
   });
 };
