@@ -152,6 +152,12 @@ class OpenWakeWord(unittest.TestCase):
         out, _ = run(load(line, ["", ""]))
         self.assertFalse(any(l.startswith("CAPRI_COMMAND") for l in out), out)
 
+    def test_a_detection_that_gives_no_command_says_why(self):
+        _, err = run(load(Timeline([ROOM, (100, 0.4), WORD_END, (100, 8.0)]), [], diagnostics=True))
+        self.assertRegex(err, r"wake_outcome ts=\S+ reason=no_follow_up_speech")
+        _, err = run(load(Timeline([ROOM, WORD, WORD_END, (3000, 1.0), (100, 1.0), (100, 8.0)]), ["", ""], diagnostics=True))
+        self.assertRegex(err, r"wake_outcome ts=\S+ reason=(?:asr_returned_no_words|no_follow_up_speech)")
+
     def test_without_the_model_setting_the_whisper_wake_stage_is_unchanged(self):
         calls = {}
         line = Timeline([ROOM, (3000, 1.5), (100, 1.5)])

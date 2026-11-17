@@ -96,6 +96,7 @@ export class WakeWordListener extends EventEmitter {
           this.pendingSpeechEnd = Number.isFinite(agoMs) && agoMs >= 0 && agoMs < 60_000 ? { at: performance.now(), agoMs } : undefined;
         } else if (this.resident && (line === "CAPRI_PAUSED" || line === "CAPRI_RESUMED")) {
           this.listening = line === "CAPRI_RESUMED";
+          console.log(`[WakeWord] CAPRI_NODE ${line} received ts=${(Date.now() / 1000).toFixed(3)}`);
           if (this.listening) this.wakePending = false;   // a new listen: its command is accepted
           if (this.expected?.line === line) this.expected.finish(true);
         } else if (this.capri && (line === "CAPRI_LISTENING" || line === "CAPRI_IDLE")) {
@@ -189,6 +190,7 @@ export class WakeWordListener extends EventEmitter {
   private send(child: ChildProcess, command: string, line: string, ms: number): Promise<void> {
     const acknowledged = this.expect(child, line, ms);
     const fail = this.expected!.finish;
+    console.log(`[WakeWord] CAPRI_NODE ${command} requested ts=${(Date.now() / 1000).toFixed(3)}`);     // measured against Capri's own CAPRI_DIAG timestamps
     try {
       child.stdin!.write(`${command}
 `, error => { if (error) fail(false); });

@@ -99,6 +99,12 @@ DIAG=os.getenv("CAPRI_DIAGNOSTICS","1")!="0"
 def diag(event,**fields):
     if DIAG: print("CAPRI_DIAG "+event+" ts=%.3f "%time.time()+" ".join("%s=%s"%(k,v) for k,v in fields.items()),file=sys.stderr,flush=True)
 
+ASR_FAILED=False    # set by recognize() when the last Whisper exchange failed, so "no command" can be told from "heard nothing"
+
+def outcome(reason,**fields):
+    """Why a wake detection did not become a command (numbers and fixed words only); the success is the command_out event."""
+    diag("wake_outcome",reason=reason,**fields)
+
 # TEMPORARY audio copy for diagnosing wrong transcripts. CAPRI_SAVE_AUDIO_DIR=/path keeps the last CAPRI_SAVE_AUDIO_KEEP (default 10)
 # clips that were sent to Whisper (only those, never ambient audio), in a private folder on this machine; unset = nothing is written.
 SAVE_DIR=os.getenv("CAPRI_SAVE_AUDIO_DIR","").strip()
@@ -273,6 +279,8 @@ def _capture(noise, live, after, announce, stats, preload=(), immediate=False, h
         return b"".join(frames),last,round(noise),False
 
 def recognize(raw,file,hint=None):
+    global ASR_FAILED
+    ASR_FAILED=False
     if not raw: return ""
     with wave.open(str(file),"wb") as out:
         out.setparams((1,2,16000,0,"NONE","not compressed"))
@@ -291,6 +299,7 @@ def recognize(raw,file,hint=None):
             # Only the HTTP exchange is guarded (timeout, refused, reset, HTTP error, bad JSON): Whisper is busy or
             # unavailable, so this utterance is not recognized. One request, no retry; the listener loop carries on.
             print("CAPRI_ASR_UNAVAILABLE "+type(error).__name__,file=sys.stderr,flush=True)
+            ASR_FAILED=True
             return ""
         text=data.get("recognition","").strip()
         diag("recognize",purpose="wake" if hint else "command",audio_s=round(len(raw)/32000,1),asr_s=round(time.monotonic()-asked,2),words=len(text.split()))
@@ -358,12 +367,17 @@ def oww_wake(detector,live,file):
         if loud>=OWW_SPEECH_FRAMES: break
     if loud<OWW_SPEECH_FRAMES:
         diag("oww_bare",probe_s=round(len(probe)*0.02,2),loud_frames=loud)
-        return ("",None,noise,detected) if recording_allowed() else None
+        if recording_allowed(): return ("",None,noise,detected)
+        outcome("recording_not_allowed",stage="bare_wake")
+        return None
     raw,last_loud,noise,complete=capture(noise=noise,live=live,preload=list(ring)+probe,immediate=True)
     if raw and not complete:
         print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
+        outcome("command_over_speech_limit")
         return None
-    if not recording_allowed(): return None
+    if not recording_allowed():
+        outcome("recording_not_allowed",stage="command_capture")
+        return None
     if not raw or last_loud is None:
         return ("",None,noise,detected)             # nothing was said after the wake word: a bare wake word
     text=recognize(raw,file)
@@ -399,6 +413,7 @@ def main():
                 if command=="eof": return
                 if command=="pause": print("CAPRI_PAUSED",flush=True)
                 command=COMMANDS.next()
+            diag("resume_cmd")       # the app's resume request arrived; mic_open and listening follow
             print("CAPRI_RESUMED",flush=True)
             try:
                 authorize_capture()
@@ -487,17 +502,23 @@ def listen(detector,file,announce_ready=False):
             if follow and not complete:
                 print("CAPRI_INCOMPLETE command reached the speech limit; not dispatched",file=sys.stderr,flush=True)
                 command=""
+                why="follow_up_over_speech_limit"
             elif recording_allowed():
                 command=recognize(follow,file)
+                why="no_follow_up_speech" if not follow else "asr_unavailable" if ASR_FAILED else "asr_returned_no_words"
             else:
                 command=""
+                why="recording_not_allowed"
             if not command:
+                outcome(why,stage="follow_up")
                 print("CAPRI_IDLE",flush=True)
                 continue
         if not recording_allowed():
+            outcome("recording_not_allowed",stage="before_dispatch")
             print("CAPRI_IDLE",flush=True)
             continue
         if len(command)>1000 or any(ord(c)<32 for c in command):
+            outcome("command_rejected",chars=len(command))
             print("CAPRI_IDLE",flush=True)
             continue
         if speech_last is not None:
