@@ -5,8 +5,12 @@ import { personaName, personaPrompt } from "./persona";
 const baseSystemPrompt = personaPrompt();
 console.log(`[Persona] ${personaName()}`);
 
-const speechFriendlyPrompt =
-  " Format your replies for spoken text-to-speech. Simple questions: one or two natural sentences, usually 25 to 40 words; shorter when sufficient. Expand for requested detail, accuracy or safety. Omit needless implementation details. Use plain conversational prose without Markdown.";
+// One owner per rule. The GLaDOS persona already sets reply length ("Simple questions: usually one to three sentences"), "Give detail
+// when requested" and plain spoken sentences, so the shared block adds only what it lacks (no Markdown, accuracy and safety, no
+// implementation detail). Repeating the length rule here contradicted it (one to three against one or two sentences).
+const speechFriendlyPrompt = personaName() === "glados"
+  ? " Format your replies for spoken text-to-speech. Use plain conversational prose without Markdown. Expand for accuracy or safety. Omit needless implementation details."
+  : " Format your replies for spoken text-to-speech. Simple questions: one or two natural sentences, usually 25 to 40 words; shorter when sufficient. Expand for requested detail, accuracy or safety. Omit needless implementation details. Use plain conversational prose without Markdown.";
 
 const wakeWordEnabled =
   (process.env.WAKE_WORD_ENABLED || "").toLowerCase() === "true";

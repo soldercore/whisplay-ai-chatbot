@@ -463,7 +463,12 @@ for (const mode of ["native", "JSON fallback"] as const) {
     assert.equal(searches.length, 1, "only the preceding genuine search may execute");
     assert.equal(chatRequests.length, 2);
     assert.equal(toolNames(chatRequests[1]).includes("web_search"), false);
-    assert.deepEqual(chatRequests[1].messages.slice(0, previous.length), previous, "existing history remains unchanged");
+    assert.deepEqual(chatRequests[1].messages.slice(1, previous.length), previous.slice(1), "existing history remains unchanged");
+    // Without web_search the system prompt keeps its stable text and ends with the date only (no search guidance for a tool it lacks).
+    const stable = previous[0].content.split(" Today is")[0];
+    assert.ok(chatRequests[1].messages[0].content.startsWith(stable));
+    assert.match(chatRequests[1].messages[0].content, /Today is [^.]+\d{4}\.$/);
+    assert.equal(chatRequests[1].messages[0].content.includes("call web_search"), false);
     assert.equal(chatRequests[1].messages[chatRequests[1].messages.length - 1].content, "What's up?");
   });
 }
@@ -593,4 +598,12 @@ test("only questions that may need current information are offered web tools; st
   for (const q of ["What's the weather in Oslo today?", "Did the Lakers lose yesterday?", "Is my train running late today?", "Search the web for the latest AI news."]) {
     assert.ok(offered(q).includes("web_search"), q);
   }
+});
+
+test("the request-time note gives search guidance only when web_search is offered", () => {
+  const { getWebSearchSystemNote } = require("../config/web-search");
+  const now = new Date("2026-11-17T12:00:00Z");
+  assert.match(getWebSearchSystemNote(now), /^ Today is Tuesday, 17 November 2026\. .*call web_search before answering/);
+  assert.equal(getWebSearchSystemNote(now, true), getWebSearchSystemNote(now));
+  assert.equal(getWebSearchSystemNote(now, false), " Today is Tuesday, 17 November 2026.");
 });

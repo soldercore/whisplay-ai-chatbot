@@ -351,8 +351,9 @@ const previousToolResultFor = (toolName: string): string => {
 const withRequestSystemNote = <T extends { role: string; content: string }>(
   msg: T,
   index: number,
+  searchOffered = false,
 ): T => {
-  const note = ollamaEnableTools ? getWebSearchSystemNote() : "";
+  const note = ollamaEnableTools ? getWebSearchSystemNote(undefined, searchOffered) : "";
   return note && index === 0 && msg.role === "system"
     ? { ...msg, content: `${msg.content}${note}` }
     : msg;
@@ -869,7 +870,7 @@ const chatWithLLMStreamInternal = async (
     const requestTools = previousUserIndex < 0 ? toolsForRequest(toolLoopState) : undefined;
     let requestMessages = history.map((msg, index) => ({
       role: msg.role,
-      content: withRequestSystemNote(msg, index).content,
+      content: withRequestSystemNote(msg, index, !!requestTools?.some((tool) => tool.function.name === "web_search")).content,
       ...(msg.contextScope ? { contextScope: msg.contextScope } : {}),
       ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.flat() } : {}),
       ...(msg.tool_name !== undefined ? { tool_name: msg.tool_name } : {}),

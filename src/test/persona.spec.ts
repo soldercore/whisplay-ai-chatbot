@@ -657,3 +657,16 @@ test("optional drafting is explicit, preserves zero and rejects invalid configur
   assert.equal(comparison.settings({}, p.sampling, p.model).options.draft_num_predict, 0);
   assert.throws(() => comparison.parseArgs(["--draft-tokens=0"]), /restricted/);
 });
+
+test("the shared speech block does not repeat or contradict the GLaDOS persona's own length and format rules", () => {
+  const out = require("child_process").execFileSync(process.execPath, ["--require", "ts-node/register/transpile-only", "-e",
+    "console.log(JSON.stringify(require('./src/config/llm-config').systemPrompt))"], {
+    cwd: path.join(__dirname, "..", ".."), encoding: "utf8",
+    env: { ...process.env, ASSISTANT_PERSONA: "glados", GLADOS_PERSONA_VARIANT: "A", WAKE_WORD_ENABLED: "false", WHISPLAY_VOICE_CONTROL_ENABLED: "false" } });
+  const glados: string = JSON.parse(out.trim().split("\n").pop() as string);
+  assert.ok(glados.startsWith(personaPrompt({ ASSISTANT_PERSONA: "glados" }) + SPEECH_PROMPT));
+  assert.equal((glados.match(/Simple questions:/g) || []).length, 1, "one reply-length rule");
+  assert.equal(glados.includes("one or two natural sentences"), false);
+  assert.equal(/Give detail when requested/.test(glados) && /Expand for requested detail/.test(glados), false);
+  assert.match(glados, /plain conversational prose without Markdown/);
+});

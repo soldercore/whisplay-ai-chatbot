@@ -70,9 +70,10 @@ function relevantNews(results: SearchResult[], query: string): SearchResult[] {
 
 /**
  * Request-time system prompt addition: today's date plus when to search.
- * Empty when web search is disabled.
+ * Empty when web search is disabled. The search guidance is only given when web_search is among the tools offered for
+ * this request; otherwise it would tell the model to call a tool it does not have, so only the date remains.
  */
-export const getWebSearchSystemNote = (now: Date = new Date()): string => {
+export const getWebSearchSystemNote = (now: Date = new Date(), searchOffered = true): string => {
   if (!webSearchEnabled) return "";
   const today = now.toLocaleDateString("en-GB", {
     weekday: "long",
@@ -80,6 +81,7 @@ export const getWebSearchSystemNote = (now: Date = new Date()): string => {
     month: "long",
     year: "numeric",
   });
+  if (!searchOffered) return ` Today is ${today}.`;
   return ` Today is ${today}. Your built-in knowledge stops in the past. Only for questions whose answer changes over time (news, prices, weather, release dates, who currently holds a role, recent events) call web_search before answering. Answer stable general knowledge, jokes and small talk directly without any tool.`;
 };
 
