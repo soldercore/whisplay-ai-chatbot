@@ -78,19 +78,19 @@ const GLADOS_REPLIES: Record<MemoryReplyKind, (detail: string) => string[]> = {
     `Recorded. ${capitalize(fact)}. Your file grows more fascinating.`,
   ],
   updated: (fact) => [
-    `Updated. ${capitalize(fact)} now. Consistency was never your strength.`,
-    `I've corrected your file. ${capitalize(fact)}. Again.`,
+    `Updated. ${capitalize(fact)} now. The record is corrected.`,
+    `I've corrected your file. ${capitalize(fact)}.`,
   ],
   unchanged: (fact) => [
     `I already know that ${fact}. You told me. I listened.`,
     `Yes. ${capitalize(fact)}. That's already in your file.`,
   ],
   forgotten: (topic) => [
-    `Done. I've deleted ${topic}. As requested.`,
-    `${capitalize(topic)} has been erased. I hope it was worth it.`,
+    `Removed ${topic} from saved memory. As requested.`,
+    `${capitalize(topic)} is no longer in saved memory. I hope it was worth it.`,
   ],
   notFound: (topic) => [
-    `I have nothing on ${topic}. You never told me. I would remember.`,
+    `I have nothing saved about ${topic}. My records are not omniscient.`,
     `There's nothing in your file about ${topic}.`,
   ],
   recalled: (facts) => [facts, `${facts} You told me yourself.`, `${facts} I keep records.`],

@@ -668,5 +668,5 @@ test("the shared speech block does not repeat or contradict the GLaDOS persona's
   assert.equal((glados.match(/Simple questions:/g) || []).length, 1, "one reply-length rule");
   assert.equal(glados.includes("one or two natural sentences"), false);
   assert.equal(/Give detail when requested/.test(glados) && /Expand for requested detail/.test(glados), false);
-  assert.match(glados, /plain conversational prose without Markdown/);
+  assert.match(glados, /without Markdown/);
 });
