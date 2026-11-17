@@ -120,3 +120,20 @@ Intentional differences from a sanitized checkout (not reproducible from Git alo
 - `.env`, `data/`, models, voices, the TV pairing directory and keys are machine-specific and are not in the repository.
 - The Pi's own `src/` tree is older than its `dist/` for several files; `dist/` is what runs, and this repository matches `dist/`.
 - One test of the previous router, "intent priority preserves explicit/mixed searches...", fails against the deployed router: "I feel tired today and what happened in Oslo" no longer starts a search. This is the deployed behavior; the test was left unchanged as a signal.
+
+## Stabilization pass (2026-11-18)
+Each change was deployed on its own with a hash-checked backup (stage folders `~/.glados-step0-hotfix.6NYzuY/oww-test16..21`, each has `deploy-oww.py restore`).
+
+| Change | Files | Stage |
+|---|---|---|
+| Identity, origin and feelings answered from facts; date-only note when `web_search` is not offered | `self-knowledge`, `web-search`, `ollama-llm` (dist) | oww-test16 |
+| A statement followed by a question about the world searches ("I feel tired today and what happened in Oslo") | `web-search-router` | oww-test17 |
+| Capri: request/acknowledgement timestamps (`CAPRI_NODE ...`, `resume_cmd`) and `wake_outcome reason=...` for detections that give no command | `python/capri_wake.py`, `wakeword` | oww-test18 |
+| Follow-up recording: the 5 s limit is the waiting window only; started speech is not cut (up to the wake recording limit, logged if cut) | `audio`, `chat-flow/states` | oww-test19 |
+| Conversation history reset 300 s -> 1800 s | `.env`: `CHAT_HISTORY_RESET_TIME=1800` | oww-test20 |
+| TV ducking: failed restore retried after 15 s, 45 s, 2 min, 5 min with the same safety condition | `tv-ducking` | oww-test21 |
+
+Decided against: replacing Persona A with a shorter description (worse: more generic-assistant wording, refused a sarcastic joke 5/6, reasoning 11/14 against 13/14).
+The Pi's `src/` was synchronized with this tree (33 files; originals in `~/.glados-step0-hotfix.6NYzuY/src-sync/backup`); compiling the Pi's `src/` in a separate folder reproduces all 154 deployed files.
+Reading the new Capri logs: `CAPRI_NODE resume requested` -> `CAPRI_DIAG resume_cmd` -> `mic_open` -> `listening` give the restart timeline in milliseconds.
+Production `.env` additions for this layout: `WHISPLAY_UI_LAYOUT=landscape`, `WHISPLAY_UI_ROTATE=ccw`, `CHAT_HISTORY_RESET_TIME=1800` (machine-specific, not in the repository).
