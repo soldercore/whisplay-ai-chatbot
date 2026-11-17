@@ -133,6 +133,61 @@ test("TV disconnects mid-conversation: not claimed restored; the next conversati
   assert.equal(tv.volume, 20, "original volume, not 8 -> 3");
 });
 
+test("a temporary connection failure at the end is retried with the same safety condition until the TV is restored", async () => {
+  const { tv, stateFile, ducker, logs } = setup(ducking.TvDucker, {}, { retryMs: [25, 25, 25] });
+  ducker.begin(); await wait(30);
+  tv.online = false;
+  ducker.end(); await wait(15);
+  assert.ok(logs.some(l => /NOT_RESTORED/.test(l)) && fs.existsSync(stateFile));
+  tv.online = true;                                       // the connection comes back
+  await wait(120);
+  assert.equal(tv.volume, 20, "restored without waiting for the next conversation");
+  assert.equal(fs.existsSync(stateFile), false);
+  assert.ok(logs.some(l => /RESTORED volume=20/.test(l)));
+});
+
+test("a retry never overwrites a volume the user changed in the meantime, or one on another output", async () => {
+  const user = setup(ducking.TvDucker, {}, { retryMs: [25, 25] });
+  user.ducker.begin(); await wait(30);
+  user.tv.online = false; user.ducker.end(); await wait(15);
+  user.tv.volume = 14; user.tv.online = true;               // the user turned it up while the connection was down
+  await wait(100);
+  assert.equal(user.tv.volume, 14);
+  assert.deepEqual(user.tv.sets, [8], "only the original duck was ever sent");
+  assert.equal(fs.existsSync(user.stateFile), false, "the record is obsolete once the TV no longer matches");
+  const other = setup(ducking.TvDucker, {}, { retryMs: [25, 25] });
+  other.ducker.begin(); await wait(30);
+  other.tv.online = false; other.ducker.end(); await wait(15);
+  other.tv.output = "external_arc"; other.tv.online = true;
+  await wait(100);
+  assert.equal(other.tv.volume, 8, "another output is left alone");
+});
+
+test("restore retries stop after the schedule; the state is kept for the next conversation", async () => {
+  const { tv, stateFile, ducker, logs } = setup(ducking.TvDucker, {}, { retryMs: [20, 20] });
+  ducker.begin(); await wait(30);
+  tv.online = false; ducker.end(); await wait(150);
+  const reads = tv.reads;
+  assert.ok(logs.some(l => /retries exhausted/.test(l)) && fs.existsSync(stateFile));
+  await wait(100);
+  assert.equal(tv.reads, reads, "no further probing");
+  tv.online = true;
+  ducker.begin(); await wait(30);
+  assert.equal(tv.volume, 8, "the next conversation still adopts the original volume");
+});
+
+test("a new conversation cancels a pending restore retry", async () => {
+  const { tv, ducker } = setup(ducking.TvDucker, {}, { retryMs: [40, 40] });
+  ducker.begin(); await wait(30);
+  tv.online = false; ducker.end(); await wait(15);
+  tv.online = true;
+  ducker.begin(); await wait(20);                         // adopted before the retry fires
+  await wait(120);
+  assert.equal(tv.volume, 8, "the retry did not restore under the running conversation");
+  ducker.end(); await wait(30);
+  assert.equal(tv.volume, 20);
+});
+
 test("ducking fails during the command: the TV is not trusted, the state stays for recovery", async () => {
   const { tv, stateFile, ducker, logs } = setup();
   tv.dropDuringSet = true;

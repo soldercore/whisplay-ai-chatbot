@@ -12,11 +12,14 @@ import { onAppShutdown } from "../utils/app-lifecycle";
 
 type Tv = (decide: (current: TvAudioState) => TvPlan | Promise<TvPlan>) => Promise<TvAdjustResult>;
 type DuckRecord = { before: number; ducked: number; output?: string; at: number };
-type Options = { tv?: Tv; env?: NodeJS.ProcessEnv; now?: () => number; stateFile?: string; log?: (line: string) => void; idleMs?: number };
+type Options = { tv?: Tv; env?: NodeJS.ProcessEnv; now?: () => number; stateFile?: string; log?: (line: string) => void; idleMs?: number; retryMs?: number[] };
 
 const defaultStateFile = path.resolve(__dirname, "../../data/.glados-tv/duck-state.json");
 const STATE_TTL_MS = 10 * 60_000;   // a leftover older than this is obsolete and is deleted, never applied
 const UNREACHABLE_PAUSE_MS = 30_000;   // after "TV unavailable" do not probe again for a while
+// A restore that failed on a temporary connection problem is retried with the same recovery path (recover(): same safety condition),
+// within the state file's lifetime, so the TV is not left quiet until the next conversation or restart.
+const RESTORE_RETRY_MS = [15_000, 45_000, 120_000, 300_000];
 
 export class TvDucker {
   private phase: "idle" | "ducking" | "ducked" | "restoring" = "idle";
@@ -25,6 +28,8 @@ export class TvDucker {
   private rebegin = false;
   private unreachableUntil = 0;
   private watchdog?: NodeJS.Timeout;
+  private retryTimer?: NodeJS.Timeout;
+  private readonly retryMs: number[];
   private readonly tv: Tv;
   private readonly env: NodeJS.ProcessEnv;
   private readonly now: () => number;
@@ -39,6 +44,7 @@ export class TvDucker {
     this.stateFile = options.stateFile ?? defaultStateFile;
     this.log = options.log ?? (line => console.info(line));
     this.idleMs = options.idleMs;
+    this.retryMs = options.retryMs ?? RESTORE_RETRY_MS;
   }
 
   get enabled(): boolean { return ["1", "true"].includes((this.env.TV_DUCKING ?? "").trim().toLowerCase()); }
@@ -75,6 +81,7 @@ export class TvDucker {
   /** Wake word heard: lower the TV once for this conversation. Never awaited by the caller. */
   begin(): void {
     if (!this.enabled) return;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }   // a new conversation adopts or restores through the normal path
     if (this.phase === "restoring") { this.rebegin = true; return; }
     if (this.phase !== "idle") { this.wantEnd = false; this.touch(); return; }   // one session at a time: no second duck
     if (this.now() < this.unreachableUntil) return;
@@ -140,13 +147,26 @@ export class TvDucker {
     if (this.watchdog) { clearTimeout(this.watchdog); this.watchdog = undefined; }
     this.phase = "restoring";
     const record = this.record;
-    void this.runEnd(record).catch(() => undefined).finally(() => {
+    void this.runEnd(record).then(done => { if (!done) this.scheduleRestoreRetry(0); }).catch(() => undefined).finally(() => {
       this.record = undefined; this.phase = "idle";
       if (this.rebegin) { this.rebegin = false; this.begin(); }
     });
   }
 
-  private async runEnd(record: DuckRecord): Promise<void> {
+  /** Retry a restore that could not reach the TV. Returns through recover(), so the TV must still show the ducked volume on the same output. */
+  private scheduleRestoreRetry(attempt: number): void {
+    const delay = this.retryMs[attempt];
+    if (delay === undefined) { this.log("[TV duck] restore retries exhausted; the state is kept for the next conversation or restart"); return; }
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      if (this.phase !== "idle") return;   // a conversation owns the TV now
+      void this.recover().then(done => { if (!done && this.phase === "idle") this.scheduleRestoreRetry(attempt + 1); }).catch(() => undefined);
+    }, delay);
+    this.retryTimer.unref?.();
+  }
+
+  /** True when the record is finished (restored, obsolete or no longer matching); false when the TV could not be reached. */
+  private async runEnd(record: DuckRecord): Promise<boolean> {
     const started = this.now();
     const result = await this.tv(current => {
       if (current.muted) return { skip: "muted" };                      // the user muted: leave it
@@ -158,19 +178,20 @@ export class TvDucker {
     if (result.status === "UNAVAILABLE" || result.status === "UNVERIFIED") {
       // Not restored and not claimed as restored; the fresh state file stays for a restart or the next conversation.
       this.log(`[TV duck] end status=${result.status} NOT_RESTORED total_ms=${ms}`);
-      return;
+      return false;
     }
     this.clearState();   // restored, or the TV no longer matches: the record is complete or obsolete
     this.log(result.status === "SET" ? `[TV duck] end status=RESTORED volume=${result.actual} total_ms=${ms}` : `[TV duck] end status=LEFT reason=${result.reason} total_ms=${ms}`);
+    return true;
   }
 
   /** Startup: finish a restore a crash or restart interrupted, only while the record is fresh and the TV still matches. */
-  async recover(): Promise<void> {
+  async recover(): Promise<boolean> {
     const record = this.readState();
-    if (!record) { if (fs.existsSync(this.stateFile)) this.clearState(); return; }
-    if (!this.fresh(record)) { this.clearState(); this.log("[TV duck] recovery: obsolete state removed"); return; }
+    if (!record) { if (fs.existsSync(this.stateFile)) this.clearState(); return true; }
+    if (!this.fresh(record)) { this.clearState(); this.log("[TV duck] recovery: obsolete state removed"); return true; }
     this.phase = "restoring";
-    try { await this.runEnd(record); } finally { this.phase = "idle"; if (this.rebegin) { this.rebegin = false; this.begin(); } }
+    try { return await this.runEnd(record); } finally { this.phase = "idle"; if (this.rebegin) { this.rebegin = false; this.begin(); } }
   }
 
   /** Application shutdown: best effort. If it cannot finish, the state file lets the next start recover. */
